@@ -10,10 +10,11 @@ from app.schemas import (
     AccountList, AccountOut, AccountCreate, AccountUpdate,
     AssetList, AssetOut, AssetCreate,
     HoldingList, HoldingOut,
-    TransactionList, TransactionOut, TransactionCreate
+    TransactionEventList, TransactionEventOut, TransactionEventCreate,
+    TransactionLegList
 )
 
-app = FastAPI(title="LedgerVault API", version="2.0.0")
+app = FastAPI(title="LedgerVault API", version="3.0.0")
 models.Base.metadata.create_all(bind=engine)
 
 app.add_middleware(
@@ -35,7 +36,7 @@ def get_db():
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "LedgerVault v2 backend is running"}
+    return {"status": "ok", "message": "LedgerVault v3 backend is running"}
 
 
 @app.post("/reset")
@@ -138,78 +139,94 @@ def list_holdings(db: Session = Depends(get_db)):
 
 
 # -----------------------------------
-# Transactions
+# Transaction Events v3
 # -----------------------------------
 
-@app.get("/transactions", response_model=TransactionList)
-def list_transactions(db: Session = Depends(get_db)):
-    items = db.query(models.Transaction).all()
+@app.get("/transaction-events", response_model=TransactionEventList)
+def list_transaction_events(db: Session = Depends(get_db)):
+    items = db.query(models.TransactionEvent).all()
     return {"items": items}
 
 
-@app.post("/transactions", response_model=TransactionOut)
-def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)):
-    account = db.query(models.Account).filter(models.Account.id == payload.account_id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
+@app.get("/transaction-legs", response_model=TransactionLegList)
+def list_transaction_legs(db: Session = Depends(get_db)):
+    items = db.query(models.TransactionLeg).all()
+    return {"items": items}
 
-    asset = db.query(models.Asset).filter(models.Asset.id == payload.asset_id).first()
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
 
-    holding = (
-        db.query(models.Holding)
-        .filter(
-            models.Holding.account_id == payload.account_id,
-            models.Holding.asset_id == payload.asset_id
-        )
-        .first()
-    )
+@app.post("/transaction-events", response_model=TransactionEventOut)
+def create_transaction_event(payload: TransactionEventCreate, db: Session = Depends(get_db)):
+    if len(payload.legs) == 0:
+        raise HTTPException(status_code=400, detail="At least one leg is required")
 
-    if not holding:
-        holding = models.Holding(
-            id=str(uuid4()),
-            account_id=payload.account_id,
-            asset_id=payload.asset_id,
-            quantity=0.0,
-            avg_cost=0.0,
-        )
-        db.add(holding)
-        db.flush()
-
-    if payload.type in ["deposit", "buy", "transfer_in"]:
-        new_total_qty = holding.quantity + payload.quantity
-
-        if payload.price is not None and payload.quantity > 0:
-            existing_cost_value = holding.quantity * holding.avg_cost
-            new_cost_value = payload.quantity * payload.price
-            if new_total_qty > 0:
-                holding.avg_cost = (existing_cost_value + new_cost_value) / new_total_qty
-
-        holding.quantity = new_total_qty
-
-    elif payload.type in ["withdrawal", "sell", "transfer_out"]:
-        holding.quantity -= payload.quantity
-        if holding.quantity < 0:
-            holding.quantity = 0
-
-    new_item = models.Transaction(
+    new_event = models.TransactionEvent(
         id=str(uuid4()),
-        account_id=payload.account_id,
-        asset_id=payload.asset_id,
-        type=payload.type,
-        quantity=payload.quantity,
-        price=payload.price,
-        fee=payload.fee,
-        fee_currency=payload.fee_currency.upper() if payload.fee_currency else None,
-        total_value=payload.total_value,
+        event_type=payload.event_type,
+        category=payload.category,
+        description=payload.description,
+        date=payload.date,
         note=payload.note,
+        source=payload.source,
+        external_id=payload.external_id,
     )
+    db.add(new_event)
+    db.flush()
 
-    db.add(new_item)
+    for leg in payload.legs:
+        account = db.query(models.Account).filter(models.Account.id == leg.account_id).first()
+        if not account:
+            raise HTTPException(status_code=404, detail=f"Account not found: {leg.account_id}")
+
+        asset = db.query(models.Asset).filter(models.Asset.id == leg.asset_id).first()
+        if not asset:
+            raise HTTPException(status_code=404, detail=f"Asset not found: {leg.asset_id}")
+
+        holding = (
+            db.query(models.Holding)
+            .filter(
+                models.Holding.account_id == leg.account_id,
+                models.Holding.asset_id == leg.asset_id
+            )
+            .first()
+        )
+
+        if not holding:
+            holding = models.Holding(
+                id=str(uuid4()),
+                account_id=leg.account_id,
+                asset_id=leg.asset_id,
+                quantity=0.0,
+                avg_cost=0.0,
+            )
+            db.add(holding)
+            db.flush()
+
+        # Update holdings
+        old_qty = holding.quantity
+        new_qty = old_qty + leg.quantity
+
+        if leg.quantity > 0 and leg.unit_price is not None:
+            existing_cost_value = old_qty * holding.avg_cost
+            new_cost_value = leg.quantity * leg.unit_price
+            if new_qty > 0:
+                holding.avg_cost = (existing_cost_value + new_cost_value) / new_qty
+
+        holding.quantity = max(new_qty, 0.0)
+
+        new_leg = models.TransactionLeg(
+            id=str(uuid4()),
+            event_id=new_event.id,
+            account_id=leg.account_id,
+            asset_id=leg.asset_id,
+            quantity=leg.quantity,
+            unit_price=leg.unit_price,
+            fee_flag="true" if leg.fee_flag else "false",
+        )
+        db.add(new_leg)
+
     db.commit()
-    db.refresh(new_item)
-    return new_item
+    db.refresh(new_event)
+    return new_event
 
 
 # -----------------------------------
@@ -218,50 +235,25 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
 
 @app.post("/seed")
 def seed_data(db: Session = Depends(get_db)):
-    if not db.query(models.Asset).filter(models.Asset.symbol == "EUR").first():
-        db.add(models.Asset(
-            id=str(uuid4()),
-            symbol="EUR",
-            name="Euro",
-            asset_class="fiat",
-            quote_currency="EUR",
-        ))
+    seed_assets = [
+        ("EUR", "Euro", "fiat", "EUR"),
+        ("USD", "US Dollar", "fiat", "USD"),
+        ("USDT", "Tether", "crypto", "USD"),
+        ("USDC", "USD Coin", "crypto", "USD"),
+        ("BTC", "Bitcoin", "crypto", "USD"),
+        ("ETH", "Ethereum", "crypto", "USD"),
+    ]
 
-    if not db.query(models.Asset).filter(models.Asset.symbol == "USD").first():
-        db.add(models.Asset(
-            id=str(uuid4()),
-            symbol="USD",
-            name="US Dollar",
-            asset_class="fiat",
-            quote_currency="USD",
-        ))
-
-    if not db.query(models.Asset).filter(models.Asset.symbol == "BTC").first():
-        db.add(models.Asset(
-            id=str(uuid4()),
-            symbol="BTC",
-            name="Bitcoin",
-            asset_class="crypto",
-            quote_currency="USD",
-        ))
-
-    if not db.query(models.Asset).filter(models.Asset.symbol == "ETH").first():
-        db.add(models.Asset(
-            id=str(uuid4()),
-            symbol="ETH",
-            name="Ethereum",
-            asset_class="crypto",
-            quote_currency="USD",
-        ))
-
-    if not db.query(models.Asset).filter(models.Asset.symbol == "USDT").first():
-        db.add(models.Asset(
-            id=str(uuid4()),
-            symbol="USDT",
-            name="Tether",
-            asset_class="crypto",
-            quote_currency="USD",
-        ))
+    for symbol, name, asset_class, quote_currency in seed_assets:
+        existing = db.query(models.Asset).filter(models.Asset.symbol == symbol).first()
+        if not existing:
+            db.add(models.Asset(
+                id=str(uuid4()),
+                symbol=symbol,
+                name=name,
+                asset_class=asset_class,
+                quote_currency=quote_currency,
+            ))
 
     db.commit()
     return {"status": "ok"}

@@ -4,7 +4,7 @@ from typing import List, Literal, Optional
 
 AccountType = Literal["bank", "exchange", "broker", "crypto_wallet", "cash"]
 AssetClass = Literal["fiat", "crypto", "stock", "etf", "commodity", "custom"]
-TransactionType = Literal["deposit", "withdrawal", "buy", "sell", "transfer_in", "transfer_out"]
+EventType = Literal["income", "expense", "transfer", "conversion", "trade"]
 
 
 # -------------------------
@@ -78,29 +78,53 @@ class HoldingList(BaseModel):
 
 
 # -------------------------
-# Transactions
+# Transaction Engine v3
 # -------------------------
 
-class TransactionBase(BaseModel):
+class TransactionLegCreate(BaseModel):
     account_id: str
     asset_id: str
-    type: TransactionType
     quantity: float
-    price: Optional[float] = None
-    fee: float = 0.0
-    fee_currency: Optional[str] = None
-    total_value: float
-    note: Optional[str] = None
+    unit_price: Optional[float] = None
+    fee_flag: bool = False
 
 
-class TransactionCreate(TransactionBase):
-    pass
-
-
-class TransactionOut(TransactionBase):
+class TransactionLegOut(BaseModel):
     id: str
+    event_id: str
+    account_id: str
+    asset_id: str
+    quantity: float
+    unit_price: Optional[float] = None
+    fee_flag: str
 
 
-class TransactionList(BaseModel):
-    items: List[TransactionOut]
+class TransactionLegList(BaseModel):
+    items: List[TransactionLegOut]
+
+
+class TransactionEventCreate(BaseModel):
+    event_type: EventType
+    category: Optional[str] = None
+    description: Optional[str] = None
+    date: str
+    note: Optional[str] = None
+    source: str = "manual"
+    external_id: Optional[str] = None
+    legs: List[TransactionLegCreate]
+
+
+class TransactionEventOut(BaseModel):
+    id: str
+    event_type: str
+    category: Optional[str] = None
+    description: Optional[str] = None
+    date: str
+    note: Optional[str] = None
+    source: str
+    external_id: Optional[str] = None
+
+
+class TransactionEventList(BaseModel):
+    items: List[TransactionEventOut]
 
