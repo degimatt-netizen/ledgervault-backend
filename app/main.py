@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from app.db import engine, SessionLocal
+from app.db import engine, SessionLocal, Base
 from app import models
 from app.schemas import (
     AccountList, AccountOut, AccountCreate, AccountUpdate,
@@ -36,6 +36,13 @@ def get_db():
 @app.get("/")
 def root():
     return {"status": "ok", "message": "LedgerVault v2 backend is running"}
+
+
+@app.post("/reset")
+def reset_database():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    return {"status": "ok", "message": "database reset complete"}
 
 
 # -----------------------------------
@@ -170,7 +177,6 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
         db.add(holding)
         db.flush()
 
-    # Simple MVP holding logic
     if payload.type in ["deposit", "buy", "transfer_in"]:
         new_total_qty = holding.quantity + payload.quantity
 
@@ -207,7 +213,7 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
 
 
 # -----------------------------------
-# Seed endpoint for fast testing
+# Seed endpoint
 # -----------------------------------
 
 @app.post("/seed")
@@ -244,6 +250,15 @@ def seed_data(db: Session = Depends(get_db)):
             id=str(uuid4()),
             symbol="ETH",
             name="Ethereum",
+            asset_class="crypto",
+            quote_currency="USD",
+        ))
+
+    if not db.query(models.Asset).filter(models.Asset.symbol == "USDT").first():
+        db.add(models.Asset(
+            id=str(uuid4()),
+            symbol="USDT",
+            name="Tether",
             asset_class="crypto",
             quote_currency="USD",
         ))
