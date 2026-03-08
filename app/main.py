@@ -14,7 +14,7 @@ from app.schemas import (
     TransactionLegList
 )
 
-app = FastAPI(title="LedgerVault API", version="3.1.0")
+app = FastAPI(title="LedgerVault API", version="3.1.1")
 models.Base.metadata.create_all(bind=engine)
 
 app.add_middleware(
@@ -45,10 +45,6 @@ def reset_database():
     Base.metadata.create_all(bind=engine)
     return {"status": "ok", "message": "database reset complete"}
 
-
-# -----------------------------------
-# Mock/manual rates for MVP
-# -----------------------------------
 
 MOCK_PRICES_USD = {
     "USD": 1.0,
@@ -129,7 +125,11 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
         elif asset.asset_class in ["stock", "etf"]:
             stock_total += value_base
 
-    recent_events = db.query(models.TransactionEvent).order_by(models.TransactionEvent.date.desc()).all()[:10]
+    recent_events = (
+        db.query(models.TransactionEvent)
+        .order_by(models.TransactionEvent.date.desc())
+        .all()[:10]
+    )
 
     return {
         "base_currency": base_currency.upper(),
@@ -151,10 +151,6 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
         ]
     }
 
-
-# -----------------------------------
-# Accounts
-# -----------------------------------
 
 @app.get("/accounts", response_model=AccountList)
 def list_accounts(db: Session = Depends(get_db)):
@@ -200,14 +196,30 @@ def delete_account(account_id: str, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    has_legs = (
+        db.query(models.TransactionLeg)
+        .filter(models.TransactionLeg.account_id == account_id)
+        .first()
+        is not None
+    )
+
+    has_holdings = (
+        db.query(models.Holding)
+        .filter(models.Holding.account_id == account_id)
+        .first()
+        is not None
+    )
+
+    if has_legs or has_holdings:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete account with activity or holdings. Delete related transactions first."
+        )
+
     db.delete(item)
     db.commit()
     return {"status": "ok"}
 
-
-# -----------------------------------
-# Assets
-# -----------------------------------
 
 @app.get("/assets", response_model=AssetList)
 def list_assets(db: Session = Depends(get_db)):
@@ -234,23 +246,19 @@ def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):
     return new_item
 
 
-# -----------------------------------
-# Holdings
-# -----------------------------------
-
 @app.get("/holdings", response_model=HoldingList)
 def list_holdings(db: Session = Depends(get_db)):
     items = db.query(models.Holding).all()
     return {"items": items}
 
 
-# -----------------------------------
-# Transaction Events v3
-# -----------------------------------
-
 @app.get("/transaction-events", response_model=TransactionEventList)
 def list_transaction_events(db: Session = Depends(get_db)):
-    items = db.query(models.TransactionEvent).all()
+    items = (
+        db.query(models.TransactionEvent)
+        .order_by(models.TransactionEvent.date.desc())
+        .all()
+    )
     return {"items": items}
 
 
@@ -277,10 +285,11 @@ def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
             )
             .first()
         )
+
         if holding:
             holding.quantity -= leg.quantity
-            if holding.quantity < 0:
-                holding.quantity = 0
+            if holding.quantity <= 0:
+                db.delete(holding)
 
         db.delete(leg)
 
@@ -347,6 +356,9 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
 
         holding.quantity = max(new_qty, 0.0)
 
+        if holding.quantity == 0:
+            db.delete(holding)
+
         new_leg = models.TransactionLeg(
             id=str(uuid4()),
             event_id=new_event.id,
@@ -362,10 +374,6 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
     db.refresh(new_event)
     return new_event
 
-
-# -----------------------------------
-# Seed endpoint
-# -----------------------------------
 
 @app.post("/seed")
 def seed_data(db: Session = Depends(get_db)):
