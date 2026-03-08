@@ -270,35 +270,53 @@ def list_transaction_legs(db: Session = Depends(get_db)):
 
 @app.delete("/transaction-events/{event_id}")
 def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
-    event = db.query(models.TransactionEvent).filter(models.TransactionEvent.id == event_id).first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Transaction event not found")
-
-    legs = db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == event_id).all()
-
-    for leg in legs:
-        holding = (
-            db.query(models.Holding)
-            .filter(
-                models.Holding.account_id == leg.account_id,
-                models.Holding.asset_id == leg.asset_id
-            )
+    try:
+        event = (
+            db.query(models.TransactionEvent)
+            .filter(models.TransactionEvent.id == event_id)
             .first()
         )
+        if not event:
+            raise HTTPException(status_code=404, detail="Transaction event not found")
 
-        if holding:
-            reversed_quantity = holding.quantity - leg.quantity
+        legs = (
+            db.query(models.TransactionLeg)
+            .filter(models.TransactionLeg.event_id == event_id)
+            .all()
+        )
 
-            if reversed_quantity <= 0:
-                db.delete(holding)
-            else:
-                holding.quantity = reversed_quantity
+        for leg in legs:
+            holding = (
+                db.query(models.Holding)
+                .filter(
+                    models.Holding.account_id == leg.account_id,
+                    models.Holding.asset_id == leg.asset_id
+                )
+                .first()
+            )
 
-        db.delete(leg)
+            if holding:
+                new_quantity = holding.quantity - leg.quantity
 
-    db.delete(event)
-    db.commit()
-    return {"status": "ok"}
+                if new_quantity <= 0:
+                    db.delete(holding)
+                else:
+                    holding.quantity = new_quantity
+
+            db.delete(leg)
+
+        db.flush()
+        db.delete(event)
+        db.commit()
+
+        return {"status": "ok"}
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 
 @app.post("/transaction-events", response_model=TransactionEventOut)
