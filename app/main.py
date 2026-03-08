@@ -287,9 +287,12 @@ def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
         )
 
         if holding:
-            holding.quantity -= leg.quantity
-            if holding.quantity <= 0:
+            reversed_quantity = holding.quantity - leg.quantity
+
+            if reversed_quantity <= 0:
                 db.delete(holding)
+            else:
+                holding.quantity = reversed_quantity
 
         db.delete(leg)
 
