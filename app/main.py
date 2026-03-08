@@ -9,12 +9,12 @@ from app import models
 from app.schemas import (
     AccountList, AccountOut, AccountCreate, AccountUpdate,
     AssetList, AssetOut, AssetCreate,
-    HoldingList, HoldingOut,
+    HoldingList,
     TransactionEventList, TransactionEventOut, TransactionEventCreate,
     TransactionLegList
 )
 
-app = FastAPI(title="LedgerVault API", version="3.0.0")
+app = FastAPI(title="LedgerVault API", version="3.1.0")
 models.Base.metadata.create_all(bind=engine)
 
 app.add_middleware(
@@ -36,7 +36,7 @@ def get_db():
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "LedgerVault v3 backend is running"}
+    return {"status": "ok", "message": "LedgerVault personal MVP backend is running"}
 
 
 @app.post("/reset")
@@ -44,6 +44,112 @@ def reset_database():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     return {"status": "ok", "message": "database reset complete"}
+
+
+# -----------------------------------
+# Mock/manual rates for MVP
+# -----------------------------------
+
+MOCK_PRICES_USD = {
+    "USD": 1.0,
+    "EUR": 1.08,
+    "GBP": 1.27,
+    "USDT": 1.0,
+    "USDC": 1.0,
+    "BTC": 90000.0,
+    "ETH": 3500.0,
+    "TSLA": 10.0,
+    "AAPL": 210.0,
+}
+
+FX_TO_USD = {
+    "USD": 1.0,
+    "EUR": 1.08,
+    "GBP": 1.27,
+}
+
+
+def convert_usd_to_base(value_usd: float, base_currency: str) -> float:
+    rate = FX_TO_USD.get(base_currency.upper(), 1.0)
+    return value_usd / rate if rate != 0 else value_usd
+
+
+@app.get("/rates")
+def get_rates():
+    return {
+        "base_reference": "USD",
+        "prices": MOCK_PRICES_USD,
+        "fx_to_usd": FX_TO_USD
+    }
+
+
+@app.get("/valuation")
+def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
+    holdings = db.query(models.Holding).all()
+    assets = {a.id: a for a in db.query(models.Asset).all()}
+    accounts = {a.id: a for a in db.query(models.Account).all()}
+
+    portfolio_items = []
+    total_value_base = 0.0
+    cash_total = 0.0
+    crypto_total = 0.0
+    stock_total = 0.0
+
+    for holding in holdings:
+        asset = assets.get(holding.asset_id)
+        account = accounts.get(holding.account_id)
+        if not asset or not account:
+            continue
+
+        price_usd = MOCK_PRICES_USD.get(asset.symbol.upper(), 0.0)
+        value_usd = holding.quantity * price_usd
+        value_base = convert_usd_to_base(value_usd, base_currency)
+
+        portfolio_items.append({
+            "holding_id": holding.id,
+            "account_id": account.id,
+            "account_name": account.name,
+            "asset_id": asset.id,
+            "symbol": asset.symbol,
+            "asset_name": asset.name,
+            "asset_class": asset.asset_class,
+            "quantity": holding.quantity,
+            "avg_cost": holding.avg_cost,
+            "price_usd": price_usd,
+            "value_in_base": round(value_base, 2),
+            "base_currency": base_currency.upper(),
+        })
+
+        total_value_base += value_base
+
+        if asset.asset_class == "fiat":
+            cash_total += value_base
+        elif asset.asset_class == "crypto":
+            crypto_total += value_base
+        elif asset.asset_class in ["stock", "etf"]:
+            stock_total += value_base
+
+    recent_events = db.query(models.TransactionEvent).order_by(models.TransactionEvent.date.desc()).all()[:10]
+
+    return {
+        "base_currency": base_currency.upper(),
+        "total": round(total_value_base, 2),
+        "cash": round(cash_total, 2),
+        "crypto": round(crypto_total, 2),
+        "stocks": round(stock_total, 2),
+        "portfolio": portfolio_items,
+        "recent_activity": [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "category": e.category,
+                "description": e.description,
+                "date": e.date,
+                "note": e.note,
+            }
+            for e in recent_events
+        ]
+    }
 
 
 # -----------------------------------
@@ -154,6 +260,35 @@ def list_transaction_legs(db: Session = Depends(get_db)):
     return {"items": items}
 
 
+@app.delete("/transaction-events/{event_id}")
+def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
+    event = db.query(models.TransactionEvent).filter(models.TransactionEvent.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Transaction event not found")
+
+    legs = db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == event_id).all()
+
+    for leg in legs:
+        holding = (
+            db.query(models.Holding)
+            .filter(
+                models.Holding.account_id == leg.account_id,
+                models.Holding.asset_id == leg.asset_id
+            )
+            .first()
+        )
+        if holding:
+            holding.quantity -= leg.quantity
+            if holding.quantity < 0:
+                holding.quantity = 0
+
+        db.delete(leg)
+
+    db.delete(event)
+    db.commit()
+    return {"status": "ok"}
+
+
 @app.post("/transaction-events", response_model=TransactionEventOut)
 def create_transaction_event(payload: TransactionEventCreate, db: Session = Depends(get_db)):
     if len(payload.legs) == 0:
@@ -201,7 +336,6 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
             db.add(holding)
             db.flush()
 
-        # Update holdings
         old_qty = holding.quantity
         new_qty = old_qty + leg.quantity
 
@@ -238,10 +372,13 @@ def seed_data(db: Session = Depends(get_db)):
     seed_assets = [
         ("EUR", "Euro", "fiat", "EUR"),
         ("USD", "US Dollar", "fiat", "USD"),
+        ("GBP", "British Pound", "fiat", "GBP"),
         ("USDT", "Tether", "crypto", "USD"),
         ("USDC", "USD Coin", "crypto", "USD"),
         ("BTC", "Bitcoin", "crypto", "USD"),
         ("ETH", "Ethereum", "crypto", "USD"),
+        ("TSLA", "Tesla", "stock", "USD"),
+        ("AAPL", "Apple", "stock", "USD"),
     ]
 
     for symbol, name, asset_class, quote_currency in seed_assets:
