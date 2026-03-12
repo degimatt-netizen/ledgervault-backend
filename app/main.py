@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 import time
 import os
 import httpx
+import logging
 
 from app.db import engine, SessionLocal, Base
 from app import models
@@ -19,6 +20,8 @@ from app.schemas import (
 
 app = FastAPI(title="LedgerVault API", version="3.1.1")
 models.Base.metadata.create_all(bind=engine)
+
+logger = logging.getLogger("ledgervault")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,7 +74,12 @@ FX_TO_USD = {
 # -------------------------
 # Live FX rates (cache)
 # -------------------------
-FX_PROVIDER_URL = os.getenv("FX_PROVIDER_URL", "https://api.exchangerate.host/latest")
+#
+# NOTE:
+# - `exchangerate.host` has had reliability / access changes for some users.
+# - `open.er-api.com` works without an API key and returns a wide currency set.
+#
+FX_PROVIDER_URL = os.getenv("FX_PROVIDER_URL", "https://open.er-api.com/v6/latest/USD")
 FX_CACHE_TTL_SECONDS = int(os.getenv("FX_CACHE_TTL_SECONDS", "900"))  # 15 minutes
 
 _fx_cache = {
@@ -90,13 +98,12 @@ def _fetch_live_fx_to_usd() -> dict:
     if cached and (now - float(_fx_cache.get("ts", 0.0)) < FX_CACHE_TTL_SECONDS):
         return cached
 
-    # exchangerate.host can return base=USD without an API key.
-    params = {"base": "USD"}
     with httpx.Client(timeout=8.0) as client:
-        r = client.get(FX_PROVIDER_URL, params=params)
+        r = client.get(FX_PROVIDER_URL)
         r.raise_for_status()
         data = r.json()
 
+    # open.er-api.com shape: {"result":"success","rates":{...}}
     rates = data.get("rates", {})
     if not isinstance(rates, dict) or not rates:
         raise RuntimeError("FX provider returned no rates")
@@ -126,13 +133,17 @@ def get_rates():
     # Live FX if possible; fallback to static FX_TO_USD
     try:
         fx_to_usd = _fetch_live_fx_to_usd()
+        fx_source = "live"
     except Exception:
         fx_to_usd = FX_TO_USD
+        fx_source = "fallback"
+        logger.exception("Live FX fetch failed; using fallback FX_TO_USD")
 
     return {
         "base_reference": "USD",
         "prices": MOCK_PRICES_USD,
-        "fx_to_usd": fx_to_usd
+        "fx_to_usd": fx_to_usd,
+        "fx_source": fx_source,
     }
 
 
