@@ -3,6 +3,9 @@ from uuid import uuid4
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+import time
+import os
+import httpx
 
 from app.db import engine, SessionLocal, Base
 from app import models
@@ -65,22 +68,81 @@ FX_TO_USD = {
 }
 
 
-def convert_usd_to_base(value_usd: float, base_currency: str) -> float:
-    rate = FX_TO_USD.get(base_currency.upper(), 1.0)
+# -------------------------
+# Live FX rates (cache)
+# -------------------------
+FX_PROVIDER_URL = os.getenv("FX_PROVIDER_URL", "https://api.exchangerate.host/latest")
+FX_CACHE_TTL_SECONDS = int(os.getenv("FX_CACHE_TTL_SECONDS", "900"))  # 15 minutes
+
+_fx_cache = {
+    "ts": 0.0,
+    "fx_to_usd": None,  # dict[str, float]
+}
+
+
+def _fetch_live_fx_to_usd() -> dict:
+    """
+    Returns a dict mapping currency code -> units per 1 USD.
+    Example: {"USD": 1.0, "EUR": 0.92, "GBP": 0.79, ...}
+    """
+    now = time.time()
+    cached = _fx_cache.get("fx_to_usd")
+    if cached and (now - float(_fx_cache.get("ts", 0.0)) < FX_CACHE_TTL_SECONDS):
+        return cached
+
+    # exchangerate.host can return base=USD without an API key.
+    params = {"base": "USD"}
+    with httpx.Client(timeout=8.0) as client:
+        r = client.get(FX_PROVIDER_URL, params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    rates = data.get("rates", {})
+    if not isinstance(rates, dict) or not rates:
+        raise RuntimeError("FX provider returned no rates")
+
+    fx = {"USD": 1.0}
+    for k, v in rates.items():
+        try:
+            code = str(k).upper()
+            val = float(v)
+            if val > 0:
+                fx[code] = val
+        except Exception:
+            continue
+
+    _fx_cache["ts"] = now
+    _fx_cache["fx_to_usd"] = fx
+    return fx
+
+
+def convert_usd_to_base(value_usd: float, base_currency: str, fx_to_usd: dict) -> float:
+    rate = fx_to_usd.get(base_currency.upper(), 1.0)
     return value_usd / rate if rate != 0 else value_usd
 
 
 @app.get("/rates")
 def get_rates():
+    # Live FX if possible; fallback to static FX_TO_USD
+    try:
+        fx_to_usd = _fetch_live_fx_to_usd()
+    except Exception:
+        fx_to_usd = FX_TO_USD
+
     return {
         "base_reference": "USD",
         "prices": MOCK_PRICES_USD,
-        "fx_to_usd": FX_TO_USD
+        "fx_to_usd": fx_to_usd
     }
 
 
 @app.get("/valuation")
 def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
+    try:
+        fx_to_usd = _fetch_live_fx_to_usd()
+    except Exception:
+        fx_to_usd = FX_TO_USD
+
     holdings = db.query(models.Holding).all()
     assets = {a.id: a for a in db.query(models.Asset).all()}
     accounts = {a.id: a for a in db.query(models.Account).all()}
@@ -99,7 +161,7 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
 
         price_usd = MOCK_PRICES_USD.get(asset.symbol.upper(), 0.0)
         value_usd = holding.quantity * price_usd
-        value_base = convert_usd_to_base(value_usd, base_currency)
+        value_base = convert_usd_to_base(value_usd, base_currency, fx_to_usd)
 
         portfolio_items.append({
             "holding_id": holding.id,
