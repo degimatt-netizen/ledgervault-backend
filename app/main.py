@@ -259,6 +259,86 @@ def get_rates(db: Session = Depends(get_db)):
     }
 
 
+
+def _build_recent_activity(events, db, fx_to_usd: dict, base_currency: str) -> list:
+    """Build recent activity list with FX-converted amounts and account names."""
+    assets_map   = {a.id: a for a in db.query(models.Asset).all()}
+    accounts_map = {a.id: a for a in db.query(models.Account).all()}
+    base_upper   = base_currency.upper()
+    result = []
+
+    for e in events:
+        legs = db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == e.id).all()
+
+        # Compute FX-converted amount
+        display_amount = 0.0
+        account_name   = None
+
+        for leg in legs:
+            if leg.quantity <= 0:
+                continue  # only look at inflows for display
+            asset   = assets_map.get(leg.asset_id)
+            account = accounts_map.get(leg.account_id)
+            if account:
+                account_name = account.name
+
+            if not asset:
+                display_amount += leg.quantity
+                continue
+
+            sym = asset.symbol.upper()
+            cls = asset.asset_class.lower()
+
+            if cls == "fiat" or sym in FIAT_SYMBOLS:
+                asset_rate = fx_to_usd.get(sym, 1.0)
+                base_rate  = fx_to_usd.get(base_upper, 1.0)
+                if asset_rate > 0 and base_rate > 0:
+                    display_amount += (leg.quantity / asset_rate) * base_rate
+                else:
+                    display_amount += leg.quantity
+            elif sym in STABLECOIN_SYMBOLS:
+                base_rate = fx_to_usd.get(base_upper, 1.0)
+                display_amount += leg.quantity * base_rate
+            else:
+                price_usd = leg.unit_price or 0.0
+                base_rate = fx_to_usd.get(base_upper, 1.0)
+                display_amount += leg.quantity * price_usd * base_rate
+
+        # For expenses, use outflow legs
+        if e.event_type.lower() == "expense" and display_amount == 0:
+            for leg in legs:
+                if leg.quantity >= 0:
+                    continue
+                asset = assets_map.get(leg.asset_id)
+                account = accounts_map.get(leg.account_id)
+                if account:
+                    account_name = account.name
+                if not asset:
+                    display_amount += abs(leg.quantity)
+                    continue
+                sym = asset.symbol.upper()
+                cls = asset.asset_class.lower()
+                if cls == "fiat" or sym in FIAT_SYMBOLS:
+                    asset_rate = fx_to_usd.get(sym, 1.0)
+                    base_rate  = fx_to_usd.get(base_upper, 1.0)
+                    if asset_rate > 0 and base_rate > 0:
+                        display_amount += (abs(leg.quantity) / asset_rate) * base_rate
+                    else:
+                        display_amount += abs(leg.quantity)
+
+        result.append({
+            "id":           e.id,
+            "event_type":   e.event_type,
+            "category":     e.category,
+            "description":  e.description,
+            "date":         e.date,
+            "note":         e.note,
+            "amount":       round(display_amount, 2),
+            "account_name": account_name,
+        })
+
+    return result
+
 @app.get("/valuation")
 def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
     fx_to_usd = fetch_fx_rates()
@@ -322,22 +402,7 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
         "crypto":          round(crypto_total, 2),
         "stocks":          round(stock_total, 2),
         "portfolio":       portfolio_items,
-        "recent_activity": [
-            {
-                "id":          e.id,
-                "event_type":  e.event_type,
-                "category":    e.category,
-                "description": e.description,
-                "date":        e.date,
-                "note":        e.note,
-                "amount": round(sum(
-                    leg.quantity for leg in
-                    db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == e.id).all()
-                    if leg.quantity > 0
-                ), 2),
-            }
-            for e in recent_events
-        ],
+        "recent_activity": _build_recent_activity(recent_events, db, fx_to_usd, base_upper),
     }
 
 
