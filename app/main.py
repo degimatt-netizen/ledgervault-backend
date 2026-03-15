@@ -330,6 +330,11 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
                 "description": e.description,
                 "date":        e.date,
                 "note":        e.note,
+                "amount": round(sum(
+                    leg.quantity for leg in
+                    db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == e.id).all()
+                    if leg.quantity > 0
+                ), 2),
             }
             for e in recent_events
         ],
@@ -403,9 +408,37 @@ def list_holdings(db: Session = Depends(get_db)):
 
 
 # ── Transactions ──────────────────────────────────────────────────────────────
-@app.get("/transaction-events", response_model=TransactionEventList)
+@app.get("/transaction-events")
 def list_transaction_events(db: Session = Depends(get_db)):
-    return {"items": db.query(models.TransactionEvent).order_by(models.TransactionEvent.date.desc()).all()}
+    events = db.query(models.TransactionEvent).order_by(models.TransactionEvent.date.desc()).all()
+    items = []
+    for e in events:
+        legs = db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == e.id).all()
+        # Compute net amount: sum of positive legs (inflows) for income/trade, negative for expense
+        inflow  = sum(leg.quantity for leg in legs if leg.quantity > 0)
+        outflow = sum(leg.quantity for leg in legs if leg.quantity < 0)
+        # Pick the most meaningful amount to display
+        if e.event_type.lower() == "income":
+            display_amount = inflow
+        elif e.event_type.lower() == "expense":
+            display_amount = abs(outflow)
+        elif e.event_type.lower() == "transfer":
+            display_amount = inflow
+        else:  # trade
+            display_amount = inflow  # units bought
+        items.append({
+            "id": e.id,
+            "event_type": e.event_type,
+            "category": e.category,
+            "description": e.description,
+            "date": e.date,
+            "note": e.note,
+            "source": e.source,
+            "external_id": e.external_id,
+            "amount": round(display_amount, 2),
+            "outflow": round(abs(outflow), 2),
+        })
+    return {"items": items}
 
 
 @app.get("/transaction-legs", response_model=TransactionLegList)
