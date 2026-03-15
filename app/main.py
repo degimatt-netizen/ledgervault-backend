@@ -409,34 +409,73 @@ def list_holdings(db: Session = Depends(get_db)):
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 @app.get("/transaction-events")
-def list_transaction_events(db: Session = Depends(get_db)):
-    events = db.query(models.TransactionEvent).order_by(models.TransactionEvent.date.desc()).all()
+def list_transaction_events(base_currency: str = "USD", db: Session = Depends(get_db)):
+    """
+    Returns transactions with amounts converted to base_currency.
+    e.g. €1,000 income displayed in USD = ~$1,145 (not $1,000).
+    """
+    try:
+        fx_to_usd = fetch_fx_rates()
+    except Exception:
+        fx_to_usd = _FALLBACK_FX
+
+    events  = db.query(models.TransactionEvent).order_by(models.TransactionEvent.date.desc()).all()
+    assets  = {a.id: a for a in db.query(models.Asset).all()}
+    base_upper = base_currency.upper()
+
     items = []
     for e in events:
         legs = db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == e.id).all()
-        # Compute net amount: sum of positive legs (inflows) for income/trade, negative for expense
-        inflow  = sum(leg.quantity for leg in legs if leg.quantity > 0)
-        outflow = sum(leg.quantity for leg in legs if leg.quantity < 0)
-        # Pick the most meaningful amount to display
-        if e.event_type.lower() == "income":
-            display_amount = inflow
-        elif e.event_type.lower() == "expense":
-            display_amount = abs(outflow)
-        elif e.event_type.lower() == "transfer":
-            display_amount = inflow
-        else:  # trade
-            display_amount = inflow  # units bought
+
+        # Convert each leg's quantity to base currency value
+        def leg_value_in_base(leg) -> float:
+            asset = assets.get(leg.asset_id)
+            if not asset:
+                return abs(leg.quantity)   # fallback: raw quantity
+            sym = asset.symbol.upper()
+            cls = asset.asset_class.lower()
+
+            if cls == "fiat" or sym in FIAT_SYMBOLS:
+                # Fiat: convert via FX
+                asset_rate = fx_to_usd.get(sym, 1.0)
+                base_rate  = fx_to_usd.get(base_upper, 1.0)
+                if asset_rate > 0 and base_rate > 0:
+                    value_usd = abs(leg.quantity) / asset_rate
+                    return value_usd * base_rate
+                return abs(leg.quantity)
+            elif sym in STABLECOIN_SYMBOLS or cls == "stablecoin":
+                # Stablecoin: always $1 → convert to base
+                base_rate = fx_to_usd.get(base_upper, 1.0)
+                return abs(leg.quantity) * base_rate if base_rate > 0 else abs(leg.quantity)
+            else:
+                # Crypto/stock: use unit_price if available, else price from map
+                price_usd = leg.unit_price if leg.unit_price else 0.0
+                base_rate = fx_to_usd.get(base_upper, 1.0)
+                value_usd = abs(leg.quantity) * price_usd
+                return value_usd * base_rate if base_rate > 0 else value_usd
+
+        # Separate inflow and outflow legs
+        inflow_legs  = [l for l in legs if l.quantity > 0]
+        outflow_legs = [l for l in legs if l.quantity < 0]
+
+        if e.event_type.lower() in ("income", "expense", "transfer"):
+            # For fiat transactions, use the fiat leg amount converted to base
+            display_amount = sum(leg_value_in_base(l) for l in inflow_legs) if inflow_legs else sum(leg_value_in_base(l) for l in outflow_legs)
+        else:
+            # Trade: show the fiat cost (outflow) converted to base
+            display_amount = sum(leg_value_in_base(l) for l in outflow_legs) if outflow_legs else sum(leg_value_in_base(l) for l in inflow_legs)
+
         items.append({
-            "id": e.id,
-            "event_type": e.event_type,
-            "category": e.category,
-            "description": e.description,
-            "date": e.date,
-            "note": e.note,
-            "source": e.source,
-            "external_id": e.external_id,
-            "amount": round(display_amount, 2),
-            "outflow": round(abs(outflow), 2),
+            "id":           e.id,
+            "event_type":   e.event_type,
+            "category":     e.category,
+            "description":  e.description,
+            "date":         e.date,
+            "note":         e.note,
+            "source":       e.source,
+            "external_id":  e.external_id,
+            "amount":       round(display_amount, 2),
+            "base_currency": base_upper,
         })
     return {"items": items}
 
