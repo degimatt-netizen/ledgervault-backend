@@ -261,6 +261,31 @@ def get_rates(db: Session = Depends(get_db)):
 
 
 
+@app.get("/accounts/{account_id}/transactions")
+def get_account_transactions(account_id: str, base_currency: str = "USD", db: Session = Depends(get_db)):
+    """Return all transactions that have a leg touching this account."""
+    try:
+        fx_to_usd  = fetch_fx_rates()
+        assets_map = {a.id: a for a in db.query(models.Asset).all()}
+        base_upper = base_currency.upper()
+
+        # Find all event_ids that have a leg for this account
+        legs = db.query(models.TransactionLeg).filter(
+            models.TransactionLeg.account_id == account_id
+        ).all()
+        event_ids = list({leg.event_id for leg in legs})
+
+        events = db.query(models.TransactionEvent).filter(
+            models.TransactionEvent.id.in_(event_ids)
+        ).order_by(models.TransactionEvent.date.desc()).all()
+
+        result = _build_recent_activity(events, db, fx_to_usd, base_upper)
+        return {"items": result}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/price/{symbol}")
 def get_symbol_price(symbol: str, db: Session = Depends(get_db)):
     """
