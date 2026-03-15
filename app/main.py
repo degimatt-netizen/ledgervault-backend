@@ -362,7 +362,12 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
 
         sym        = asset.symbol.upper()
         cls        = asset.asset_class.lower()
-        price_usd  = price_map.get(sym, 0.0)
+        live_price = price_map.get(sym, 0.0)
+
+        # ✅ Fall back to avg_cost when live price unavailable (after-hours, API down)
+        # avg_cost is stored in the asset's quote_currency (USD for stocks/crypto)
+        price_usd = live_price if live_price > 0 else holding.avg_cost
+
         value_usd  = holding.quantity * price_usd
         value_base = usd_to_base(value_usd, base_upper, fx_to_usd)
 
@@ -377,6 +382,7 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
             "quantity":      holding.quantity,
             "avg_cost":      holding.avg_cost,
             "price_usd":     round(price_usd, 6),
+            "price_live":    live_price > 0,   # false = using avg_cost fallback
             "value_in_base": round(value_base, 2),
             "base_currency": base_upper,
         })
