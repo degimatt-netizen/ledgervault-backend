@@ -165,24 +165,47 @@ def fetch_stock_prices(symbols: set) -> dict:
     cached = _cached(cached_key, STOCK_TTL)
     if cached:
         return cached
+
+    sym_str = ",".join(sorted(symbols))
+    prices  = {}
+
+    # Try 1: quote-short (fastest, real-time during market hours)
     try:
-        sym_str = ",".join(sorted(symbols))
         url = f"https://financialmodelingprep.com/api/v3/quote-short/{sym_str}?apikey={FMP_API_KEY}"
         with httpx.Client(timeout=10.0) as c:
-            r = c.get(url)
-            r.raise_for_status()
+            r = c.get(url); r.raise_for_status()
             data = r.json()
-        prices = {}
-        for item in data:
+        for item in (data or []):
             sym   = item.get("symbol", "").upper()
             price = item.get("price")
             if sym and price and float(price) > 0:
                 prices[sym] = float(price)
-        logger.info(f"FMP stock prices: {prices}")
-        return _store(cached_key, prices)
+        logger.info(f"FMP quote-short: {prices}")
     except Exception as e:
-        logger.warning(f"FMP fetch failed: {e}")
-        return {}
+        logger.warning(f"FMP quote-short failed: {e}")
+
+    # Try 2: full /quote/ endpoint — returns previousClose when market is closed
+    missing = symbols - set(prices.keys())
+    if missing:
+        try:
+            miss_str = ",".join(sorted(missing))
+            url2 = f"https://financialmodelingprep.com/api/v3/quote/{miss_str}?apikey={FMP_API_KEY}"
+            with httpx.Client(timeout=10.0) as c:
+                r = c.get(url2); r.raise_for_status()
+                data2 = r.json()
+            for item in (data2 or []):
+                sym = item.get("symbol", "").upper()
+                # Use price if available, else previousClose
+                price = item.get("price") or item.get("previousClose")
+                if sym and price and float(price) > 0:
+                    prices[sym] = float(price)
+                    logger.info(f"FMP quote fallback: {sym} = {price}")
+        except Exception as e:
+            logger.warning(f"FMP quote fallback failed: {e}")
+
+    if prices:
+        _store(cached_key, prices)
+    return prices
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -402,15 +425,45 @@ def _build_recent_activity(events, db, fx_to_usd: dict, base_currency: str) -> l
                     else:
                         display_amount += abs(leg.quantity)
 
+        # For trades/transfers: build from→to summary
+        from_account_name = None
+        to_account_name   = None
+        traded_symbol     = None
+
+        for leg in legs:
+            asset   = assets_map.get(leg.asset_id)
+            account = accounts_map.get(leg.account_id)
+            if not asset or not account:
+                continue
+            sym = asset.symbol.upper()
+            cls = asset.asset_class.lower()
+
+            if leg.quantity < 0:
+                # Outflow = source account
+                if cls == "fiat" or sym in FIAT_SYMBOLS or sym in STABLECOIN_SYMBOLS:
+                    from_account_name = account.name
+                else:
+                    from_account_name = account.name
+            else:
+                # Inflow = destination account
+                if cls in ("stock", "etf", "crypto") and sym not in STABLECOIN_SYMBOLS:
+                    to_account_name = account.name
+                    traded_symbol   = sym
+                else:
+                    to_account_name = account.name
+
         result.append({
-            "id":           e.id,
-            "event_type":   e.event_type,
-            "category":     e.category,
-            "description":  e.description,
-            "date":         e.date,
-            "note":         e.note,
-            "amount":       round(display_amount, 2),
-            "account_name": account_name,
+            "id":               e.id,
+            "event_type":       e.event_type,
+            "category":         e.category,
+            "description":      e.description,
+            "date":             e.date,
+            "note":             e.note,
+            "amount":           round(display_amount, 2),
+            "account_name":     account_name,
+            "from_account":     from_account_name,
+            "to_account":       to_account_name,
+            "traded_symbol":    traded_symbol,
         })
 
     return result
