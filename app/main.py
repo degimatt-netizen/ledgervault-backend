@@ -492,6 +492,122 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
     return event
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /assets/search  — live search across Binance (crypto) + FMP (stocks)
+# Auto-creates the asset in DB if not already there so it's available for trades
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/assets/search")
+def search_assets(q: str, db: Session = Depends(get_db)):
+    q = q.strip().upper()
+    if not q or len(q) < 1:
+        return {"items": []}
+
+    results = []
+
+    # ── 1. Check existing DB assets first ──────────────────────────────────
+    db_assets = db.query(models.Asset).filter(
+        (models.Asset.symbol.ilike(f"%{q}%")) |
+        (models.Asset.name.ilike(f"%{q}%"))
+    ).limit(10).all()
+
+    seen_symbols = set()
+    for a in db_assets:
+        seen_symbols.add(a.symbol.upper())
+        results.append({
+            "id": a.id, "symbol": a.symbol, "name": a.name,
+            "asset_class": a.asset_class, "quote_currency": a.quote_currency,
+            "source": "db",
+        })
+
+    # ── 2. Search Binance for crypto ────────────────────────────────────────
+    try:
+        binance_prices = fetch_binance_all_prices()
+        crypto_matches = []
+        for pair, price in binance_prices.items():
+            if not pair.endswith("USDT"):
+                continue
+            sym = pair.replace("USDT", "")
+            if q in sym and sym not in seen_symbols and sym not in FIAT_SYMBOLS and sym not in STABLECOIN_SYMBOLS:
+                crypto_matches.append((sym, price))
+
+        crypto_matches.sort(key=lambda x: (len(x[0]), x[0]))
+
+        for sym, price in crypto_matches[:8]:
+            if sym in seen_symbols:
+                continue
+            seen_symbols.add(sym)
+
+            existing = db.query(models.Asset).filter(models.Asset.symbol == sym).first()
+            if not existing:
+                new_asset = models.Asset(
+                    id=str(uuid4()), symbol=sym, name=sym,
+                    asset_class="crypto", quote_currency="USD",
+                )
+                db.add(new_asset)
+                db.flush()
+                asset_id = new_asset.id
+            else:
+                asset_id = existing.id
+
+            results.append({
+                "id": asset_id, "symbol": sym, "name": sym,
+                "asset_class": "crypto", "quote_currency": "USD",
+                "price_usd": price, "source": "binance",
+            })
+
+        db.commit()
+
+    except Exception as e:
+        logger.warning(f"Binance search failed: {e}")
+
+    # ── 3. Search FMP for stocks ─────────────────────────────────────────────
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/search?query={q}&limit=10&apikey={FMP_API_KEY}"
+        with httpx.Client(timeout=8.0) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            fmp_results = r.json()
+
+        for item in fmp_results:
+            sym        = item.get("symbol", "").upper()
+            name       = item.get("name", sym)
+            exchange   = item.get("exchangeShortName", "")
+            stock_type = item.get("type", "stock").lower()
+
+            if exchange not in ("NYSE", "NASDAQ", "AMEX", "ETF", "TSX"):
+                continue
+            if sym in seen_symbols or sym in FIAT_SYMBOLS:
+                continue
+            seen_symbols.add(sym)
+
+            asset_class = "etf" if stock_type == "etf" else "stock"
+
+            existing = db.query(models.Asset).filter(models.Asset.symbol == sym).first()
+            if not existing:
+                new_asset = models.Asset(
+                    id=str(uuid4()), symbol=sym, name=name,
+                    asset_class=asset_class, quote_currency="USD",
+                )
+                db.add(new_asset)
+                db.flush()
+                asset_id = new_asset.id
+            else:
+                asset_id = existing.id
+
+            results.append({
+                "id": asset_id, "symbol": sym, "name": name,
+                "asset_class": asset_class, "quote_currency": "USD",
+                "exchange": exchange, "source": "fmp",
+            })
+
+        db.commit()
+
+    except Exception as e:
+        logger.warning(f"FMP search failed: {e}")
+
+    return {"items": results[:20]}
+
 # ── Seed ──────────────────────────────────────────────────────────────────────
 @app.post("/seed")
 def seed_data(db: Session = Depends(get_db)):
