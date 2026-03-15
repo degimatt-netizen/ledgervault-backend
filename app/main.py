@@ -260,6 +260,57 @@ def get_rates(db: Session = Depends(get_db)):
 
 
 
+
+@app.get("/price/{symbol}")
+def get_symbol_price(symbol: str, db: Session = Depends(get_db)):
+    """
+    Get live price for a single symbol — bypasses cache for freshness.
+    Used by AddStockView / AddCryptoBuyView when first selecting an asset.
+    """
+    sym = symbol.upper()
+    fx_to_usd = fetch_fx_rates()
+
+    asset = db.query(models.Asset).filter(models.Asset.symbol == sym).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"Asset {sym} not found")
+
+    cls = asset.asset_class.lower()
+
+    if cls == "fiat" or sym in FIAT_SYMBOLS:
+        rate = fx_to_usd.get(sym, 1.0)
+        price_usd = (1.0 / rate) if rate > 0 else 1.0
+    elif sym in STABLECOIN_SYMBOLS:
+        price_usd = 1.0
+    elif cls == "crypto":
+        # Force fresh Binance fetch (invalidate cache for this symbol)
+        binance_prices = fetch_binance_all_prices()
+        pair  = BINANCE_PAIR_OVERRIDES.get(sym, f"{sym}USDT")
+        price_usd = float(binance_prices.get(pair, 0.0))
+    elif cls in ("stock", "etf"):
+        # Force fresh FMP fetch — bypass 5min cache for single symbol lookup
+        try:
+            url = f"https://financialmodelingprep.com/api/v3/quote-short/{sym}?apikey={FMP_API_KEY}"
+            with httpx.Client(timeout=8.0) as c:
+                r = c.get(url); r.raise_for_status()
+                data = r.json()
+            if data and isinstance(data, list):
+                price_usd = float(data[0].get("price", 0.0))
+            else:
+                price_usd = 0.0
+        except Exception as e:
+            logger.warning(f"FMP single price failed for {sym}: {e}")
+            price_usd = 0.0
+    else:
+        price_usd = 0.0
+
+    return {
+        "symbol":    sym,
+        "price_usd": price_usd,
+        "price_live": price_usd > 0,
+        "fx_to_usd": fx_to_usd,
+    }
+
+
 def _build_recent_activity(events, db, fx_to_usd: dict, base_currency: str) -> list:
     """Build recent activity list with FX-converted amounts and account names."""
     assets_map   = {a.id: a for a in db.query(models.Asset).all()}
