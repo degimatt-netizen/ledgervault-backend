@@ -64,7 +64,7 @@ class AssetList(BaseModel):
 
 class HoldingBase(BaseModel):
     account_id: str
-    asset_id: str
+    asset_id: Optional[str] = None
     quantity: float
     avg_cost: float
 
@@ -83,7 +83,7 @@ class HoldingList(BaseModel):
 
 class TransactionLegCreate(BaseModel):
     account_id: str
-    asset_id: str
+    asset_id: Optional[str] = None
     quantity: float
     unit_price: Optional[float] = None
     fee_flag: bool = False
@@ -93,7 +93,7 @@ class TransactionLegOut(BaseModel):
     id: str
     event_id: str
     account_id: str
-    asset_id: str
+    asset_id: Optional[str] = None
     quantity: float
     unit_price: Optional[float] = None
     fee_flag: str
