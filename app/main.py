@@ -3,6 +3,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import time, os, httpx, logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.db import engine, SessionLocal, Base
 from app import models
@@ -56,7 +57,8 @@ def _fetch_live_fx() -> dict:
         fx = {"USD": 1.0}
         for k, v in rates.items():
             try:
-                if float(v) > 0: fx[str(k).upper()] = float(v)
+                # API gives "foreign per USD"; invert to "USD per foreign" to match FALLBACK_FX
+                if float(v) > 0: fx[str(k).upper()] = 1.0 / float(v)
             except: pass
         _fx_cache.update({"ts": now, "fx_to_usd": fx})
         return fx
@@ -187,7 +189,7 @@ def get_rates():
     # Merge: crypto prices take priority; fiat symbols use FX rates
     prices = {}
     for sym, rate in fx.items():
-        prices[sym] = 1.0 / rate if rate else 1.0   # value in USD
+        prices[sym] = rate if rate else 1.0   # value in USD (USD per 1 unit of sym)
     prices.update(crypto_prices)   # crypto overrides
 
     return {
@@ -313,6 +315,22 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
     assets    = {a.id: a for a in db.query(models.Asset).all()}
     accounts  = {a.id: a for a in db.query(models.Account).all()}
 
+    # Pre-fetch all stock prices in parallel
+    stock_symbols = {
+        assets[h.asset_id].symbol.upper()
+        for h in holdings
+        if h.asset_id in assets and assets[h.asset_id].asset_class in ("stock", "etf")
+    }
+    stock_prices: dict[str, float] = {}
+    if stock_symbols:
+        with ThreadPoolExecutor(max_workers=min(len(stock_symbols), 8)) as pool:
+            futures = {pool.submit(_fetch_stock_price, sym): sym for sym in stock_symbols}
+            for fut in as_completed(futures):
+                sym = futures[fut]
+                info = fut.result()
+                if info:
+                    stock_prices[sym] = info["price"]
+
     portfolio_items = []
     total_base = cash_total = crypto_total = stock_total = 0.0
 
@@ -325,13 +343,11 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
 
         # Determine price in USD
         if asset.asset_class == "fiat":
-            rate = fx.get(sym, 1.0)
-            price_usd = 1.0 / rate if rate else 1.0
+            price_usd = fx.get(sym, 1.0)   # fx stores USD per 1 unit of sym
         elif asset.asset_class == "crypto":
             price_usd = crypto_prices.get(sym, 0.0)
         elif asset.asset_class in ("stock","etf"):
-            info = _fetch_stock_price(sym)
-            price_usd = info["price"] if info else 0.0
+            price_usd = stock_prices.get(sym, 0.0)
         else:
             price_usd = 0.0
 
@@ -401,6 +417,25 @@ def update_account(account_id: str, payload: AccountUpdate, db: Session = Depend
     if payload.base_currency is not None: item.base_currency = payload.base_currency.upper()
     db.commit(); db.refresh(item); return item
 
+@app.get("/accounts/{account_id}/holdings", response_model=HoldingList)
+def list_account_holdings(account_id: str, db: Session = Depends(get_db)):
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"items": db.query(models.Holding).filter(models.Holding.account_id == account_id).all()}
+
+@app.get("/accounts/{account_id}/transactions", response_model=TransactionEventList)
+def list_account_transactions(account_id: str, db: Session = Depends(get_db)):
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
+           .filter(models.TransactionLeg.account_id == account_id).distinct().all()]
+    items = (db.query(models.TransactionEvent)
+             .filter(models.TransactionEvent.id.in_(ids))
+             .order_by(models.TransactionEvent.date.desc()).all())
+    return {"items": items}
+
 @app.delete("/accounts/{account_id}")
 def delete_account(account_id: str, db: Session = Depends(get_db)):
     item = db.query(models.Account).filter(models.Account.id == account_id).first()
@@ -436,7 +471,7 @@ def list_holdings(db: Session = Depends(get_db)):
 
 # ── Transaction events ────────────────────────
 @app.get("/transaction-events", response_model=TransactionEventList)
-def list_transaction_events(account_id: str = None, db: Session = Depends(get_db)):
+def list_transaction_events(account_id: str = Query(None), db: Session = Depends(get_db)):
     if account_id:
         ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
                .filter(models.TransactionLeg.account_id == account_id).distinct().all()]
@@ -466,8 +501,15 @@ def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
                 models.Holding.asset_id == leg.asset_id).first()
             if holding:
                 new_qty = holding.quantity - leg.quantity
-                if new_qty <= 0: db.delete(holding)
-                else: holding.quantity = new_qty
+                if new_qty <= 0:
+                    db.delete(holding)
+                else:
+                    # Reverse the weighted average cost for buy legs
+                    if leg.quantity > 0 and leg.unit_price is not None:
+                        current_value = holding.quantity * holding.avg_cost
+                        removed_value = leg.quantity * leg.unit_price
+                        holding.avg_cost = (current_value - removed_value) / new_qty
+                    holding.quantity = new_qty
             db.delete(leg)
         db.flush(); db.delete(event); db.commit()
         return {"status": "ok"}
