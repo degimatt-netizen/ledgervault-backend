@@ -7,12 +7,25 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		34C5E60D2F5212290072DEA4 /* LedgerVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LedgerVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		34B092522F52EB4900CE8853 /* LedgerVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LedgerVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		34B092542F52EB5900CE8853 /* Exceptions for "LedgerVault" folder in "LedgerVault" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 34C5E60C2F5212290072DEA4 /* LedgerVault */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		34C5E60F2F5212290072DEA4 /* LedgerVault */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				34B092542F52EB5900CE8853 /* Exceptions for "LedgerVault" folder in "LedgerVault" target */,
+			);
 			path = LedgerVault;
 			sourceTree = "<group>";
 		};
@@ -33,16 +46,8 @@
 			isa = PBXGroup;
 			children = (
 				34C5E60F2F5212290072DEA4 /* LedgerVault */,
-				34C5E60E2F5212290072DEA4 /* Products */,
+				34B092522F52EB4900CE8853 /* LedgerVault.app */,
 			);
-			sourceTree = "<group>";
-		};
-		34C5E60E2F5212290072DEA4 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				34C5E60D2F5212290072DEA4 /* LedgerVault.app */,
-			);
-			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -67,7 +72,7 @@
 			packageProductDependencies = (
 			);
 			productName = LedgerVault;
-			productReference = 34C5E60D2F5212290072DEA4 /* LedgerVault.app */;
+			productReference = 34B092522F52EB4900CE8853 /* LedgerVault.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -95,7 +100,7 @@
 			mainGroup = 34C5E6042F5212280072DEA4;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 34C5E60E2F5212290072DEA4 /* Products */;
+			productRefGroup = 34C5E6042F5212280072DEA4;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -256,6 +261,7 @@
 				DEVELOPMENT_TEAM = C3L4U4GGGD;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LedgerVault/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +294,7 @@
 				DEVELOPMENT_TEAM = C3L4U4GGGD;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LedgerVault/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
