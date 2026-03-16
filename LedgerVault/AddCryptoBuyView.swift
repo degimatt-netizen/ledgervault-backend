@@ -8,6 +8,7 @@ struct AddCryptoBuyView: View {
     private enum Field { case amount, price }
 
     @State private var searchText = ""
+    @State private var selectedResult: APIService.CryptoSearchResult?
     @State private var selectedAsset: APIService.Asset?
     @State private var amountToDeduct: Double?
     @State private var purchasePricePerUnit: Double?
@@ -16,14 +17,12 @@ struct AddCryptoBuyView: View {
     @State private var note = ""
 
     @State private var accounts: [APIService.Account] = []
-    @State private var assets:   [APIService.Asset] = []
     @State private var isSaving = false
     @State private var isSearching = false
     @State private var errorMessage: String?
+    @State private var searchResults: [APIService.CryptoSearchResult] = []
     @State private var rates: APIService.RatesResponse?
-    @State private var searchResults: [APIService.Asset] = []
     @State private var lockToLivePrice = true
-    @State private var autoUpdateLivePrice = true
     @State private var isRefreshingPrice = false
     @State private var priceLastUpdated: Date?
     @State private var searchTask: Task<Void, Never>? = nil
@@ -31,78 +30,89 @@ struct AddCryptoBuyView: View {
     private let liveUpdateIntervalSeconds: TimeInterval = 15
 
     private var estimatedUnits: Double? {
-        guard let amountFunding = amountToDeduct, amountFunding > 0,
-              let unitPrice = purchasePricePerUnit, unitPrice > 0,
-              let asset = selectedAsset,
-              let funding = accounts.first(where: { $0.id == selectedDeductId })
-        else { return nil }
-        let quoteAmount = convert(amount: amountFunding, from: funding.base_currency, to: asset.quote_currency)
-        guard let quoteAmount else { return nil }
-        return quoteAmount / unitPrice
+        guard let amount = amountToDeduct, amount > 0,
+              let price = purchasePricePerUnit, price > 0,
+              let result = selectedResult,
+              let funding = accounts.first(where: { $0.id == selectedDeductId }) else { return nil }
+        let quoteAmount = convert(amount: amount, from: funding.base_currency, to: result.quote_currency)
+        guard let q = quoteAmount else { return nil }
+        return q / price
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                // ── Search ───────────────────────────────────────────────
+
+                // ── Search ────────────────────────────────────────────────
                 Section("Search Crypto") {
                     HStack {
                         Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                        TextField("BTC, ETH, SOL, DOGE...", text: $searchText)
+                        TextField("Symbol or name (BTC, Ethereum…)", text: $searchText)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
-                            .onChange(of: searchText) { _, newVal in
-                                selectedAsset = nil
-                                scheduleSearch(newVal)
-                            }
-                        if isSearching {
+                            .onChange(of: searchText) { _, new in triggerSearch(new) }
+                    }
+                    if isSearching {
+                        HStack {
                             ProgressView().scaleEffect(0.8)
+                            Text("Searching…").foregroundColor(.secondary).font(.caption)
                         }
                     }
                 }
 
-                // ── Search Results ───────────────────────────────────────
-                if !searchResults.isEmpty && selectedAsset == nil {
+                // ── Results ───────────────────────────────────────────────
+                if !searchResults.isEmpty && selectedResult == nil {
                     Section("Results") {
-                        ForEach(searchResults) { asset in
+                        ForEach(searchResults) { result in
                             Button {
-                                selectedAsset = asset
-                                searchText = asset.symbol
-                                searchResults = []
-                                focusedField = nil          // ✅ dismiss keyboard
-                                Task { await loadLivePrice(for: asset) }
+                                selectResult(result)
                             } label: {
-                                HStack {
+                                HStack(spacing: 12) {
+                                    // Coin icon placeholder
+                                    ZStack {
+                                        Circle().fill(Color.orange.opacity(0.15)).frame(width: 36, height: 36)
+                                        Text(String(result.symbol.prefix(2)))
+                                            .font(.caption.bold()).foregroundColor(.orange)
+                                    }
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(asset.symbol).font(.headline)
-                                        Text(asset.name).font(.caption).foregroundColor(.secondary)
+                                        Text(result.symbol).font(.headline).foregroundColor(.primary)
+                                        Text(result.name).font(.caption).foregroundColor(.secondary)
                                     }
                                     Spacer()
-                                    Text("CRYPTO")
-                                        .font(.caption2.weight(.semibold))
-                                        .padding(.horizontal, 7).padding(.vertical, 3)
-                                        .background(Color.orange.opacity(0.12))
-                                        .foregroundColor(.orange)
-                                        .cornerRadius(6)
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        if let price = result.price_usd {
+                                            Text("$\(price.formatted(.number.precision(.fractionLength(2))))")
+                                                .font(.subheadline.bold()).foregroundColor(.primary)
+                                        }
+                                        if let rank = result.market_cap_rank {
+                                            Text("Rank #\(rank)").font(.caption2).foregroundColor(.secondary)
+                                        }
+                                    }
                                 }
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
 
-                // ── Selected Asset ───────────────────────────────────────
-                if let selected = selectedAsset {
-                    Section("Selected Asset") {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(selected.symbol).font(.title2.bold())
-                                Text(selected.name).foregroundColor(.secondary)
+                // ── Selected asset ────────────────────────────────────────
+                if let result = selectedResult {
+                    Section {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle().fill(Color.orange.opacity(0.15)).frame(width: 44, height: 44)
+                                Text(String(result.symbol.prefix(2)))
+                                    .font(.subheadline.bold()).foregroundColor(.orange)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.symbol).font(.title3.bold())
+                                Text(result.name).font(.caption).foregroundColor(.secondary)
                             }
                             Spacer()
                             Button {
+                                selectedResult = nil
                                 selectedAsset = nil
                                 searchText = ""
+                                purchasePricePerUnit = nil
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundColor(.secondary)
@@ -110,53 +120,56 @@ struct AddCryptoBuyView: View {
                         }
 
                         HStack {
-                            Text("LIVE PRICE")
-                                .font(.caption.weight(.bold))
+                            Label("LIVE PRICE", systemImage: "circle.fill")
+                                .font(.caption.bold())
                                 .foregroundColor(.green)
+                                .labelStyle(.titleAndIcon)
                             Spacer()
-                            if let live = livePriceInQuoteCurrency(for: selected) {
-                                Text("$\(live.formatted(.number.precision(.fractionLength(2))))")
+                            if let price = result.price_usd {
+                                Text("$\(price.formatted(.number.precision(.fractionLength(4))))")
                                     .font(.title3.bold())
                             } else {
-                                Text("Loading...").foregroundColor(.secondary)
+                                Text("Loading…").foregroundColor(.secondary)
                             }
                         }
 
-                        if let priceLastUpdated {
-                            Text("Updated \(priceLastUpdated.formatted(date: .omitted, time: .shortened))")
+                        if let updated = priceLastUpdated {
+                            Text("Updated \(updated.formatted(date: .omitted, time: .shortened))")
                                 .font(.caption).foregroundColor(.secondary)
                         }
-                    }
+                    } header: { Text("Selected Asset") }
+                }
 
+                // ── Buy details ───────────────────────────────────────────
+                if selectedResult != nil {
                     Section("Buy Details") {
-                        TextField("Amount to Deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
+                        TextField("Amount to deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
                             .keyboardType(.decimalPad)
                             .focused($focusedField, equals: .amount)
 
-                        TextField("Price per Coin (USD)", value: $purchasePricePerUnit, format: .number.precision(.fractionLength(2)))
+                        TextField("Price per coin (quote currency)", value: $purchasePricePerUnit, format: .number.precision(.fractionLength(4)))
                             .keyboardType(.decimalPad)
                             .focused($focusedField, equals: .price)
                             .disabled(lockToLivePrice)
 
                         Toggle("Lock to live price", isOn: $lockToLivePrice)
-                        Toggle("Auto-refresh every 15s", isOn: $autoUpdateLivePrice)
 
                         HStack {
-                            Button(isRefreshingPrice ? "Refreshing..." : "Refresh Now") {
-                                Task { await refreshRatesAndMaybePrice(forceUpdatePrice: true) }
+                            Button(isRefreshingPrice ? "Refreshing…" : "Refresh Price") {
+                                Task { await refreshPrice() }
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(isRefreshingPrice)
                             Spacer()
-                            if let priceLastUpdated {
-                                Text(priceLastUpdated.formatted(date: .omitted, time: .shortened))
+                            if let updated = priceLastUpdated {
+                                Text(updated.formatted(date: .omitted, time: .shortened))
                                     .font(.caption).foregroundColor(.secondary)
                             }
                         }
 
                         if let units = estimatedUnits {
                             HStack {
-                                Text("Estimated Units")
+                                Text("Estimated units")
                                 Spacer()
                                 Text(units.formatted(.number.precision(.fractionLength(0...8))))
                                     .foregroundColor(.secondary)
@@ -175,20 +188,16 @@ struct AddCryptoBuyView: View {
                             }
                         }
 
-                        if let fxInfo = fxInfoLine {
-                            Text(fxInfo).font(.caption).foregroundColor(.secondary)
-                        }
+                        if let fxLine = fxInfoLine { Text(fxLine).font(.caption).foregroundColor(.secondary) }
                     }
 
                     Section("Note (optional)") {
-                        TextField("Any additional notes...", text: $note)
+                        TextField("Any notes…", text: $note)
                     }
                 }
 
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage).foregroundColor(.red).font(.caption)
-                    }
+                if let err = errorMessage {
+                    Section { Text(err).foregroundColor(.red) }
                 }
             }
             .navigationTitle("Buy Crypto")
@@ -196,180 +205,146 @@ struct AddCryptoBuyView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving..." : "Save") { Task { await save() } }
-                        .disabled(isSaving || selectedAsset == nil || amountToDeduct == nil || purchasePricePerUnit == nil || selectedPlatformId.isEmpty || selectedDeductId.isEmpty)
+                    Button(isSaving ? "Saving…" : "Save") { Task { await save() } }
+                        .disabled(isSaving || selectedResult == nil || amountToDeduct == nil || purchasePricePerUnit == nil || selectedPlatformId.isEmpty || selectedDeductId.isEmpty)
                 }
                 ToolbarItem(placement: .keyboard) {
                     HStack { Spacer(); Button("Done") { focusedField = nil }.font(.body.bold()) }
                 }
             }
-            .task { await loadData() }
+            .task { await loadAccounts() }
             .task { await startLivePriceLoop() }
             .onChange(of: lockToLivePrice) { _, newValue in
-                if newValue, let asset = selectedAsset { Task { await loadLivePrice(for: asset) } }
+                if newValue { Task { await refreshPrice() } }
             }
         }
     }
 
-    // MARK: - Live Search (debounced 400ms)
+    // MARK: - Search
 
-    private func scheduleSearch(_ query: String) {
+    private func triggerSearch(_ query: String) {
         searchTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard q.count >= 1 else { searchResults = []; return }
+        guard q.count >= 2 else { searchResults = []; return }
         searchTask = Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 400_000_000)   // 400ms debounce
             guard !Task.isCancelled else { return }
-            await performSearch(q)
-        }
-    }
-
-    private func performSearch(_ q: String) async {
-        isSearching = true
-        defer { isSearching = false }
-        do {
-            let results = try await APIService.shared.searchAssets(query: q)
-            searchResults = results.filter { $0.asset_class.lowercased() == "crypto" }
-        } catch {
-            searchResults = []
-        }
-    }
-
-    // MARK: - Load & Save
-
-    private func loadData() async {
-        do {
-            async let accs  = APIService.shared.fetchAccounts()
-            async let assts = APIService.shared.fetchAssets()
-            async let rts   = APIService.shared.fetchRates()
-            accounts = try await accs
-            assets   = try await assts
-            rates    = try? await rts
-            if let first = accounts.first(where: { ["bank","cash","stablecoin_wallet"].contains($0.account_type) }) {
-                selectedDeductId = first.id
+            await MainActor.run { isSearching = true }
+            do {
+                let results = try await APIService.shared.searchCrypto(query: q)
+                await MainActor.run { searchResults = results; isSearching = false }
+            } catch {
+                await MainActor.run { isSearching = false }
             }
-            if let first = accounts.first(where: { $0.account_type == "crypto_wallet" }) {
-                selectedPlatformId = first.id
-            }
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
-    private func save() async {
-        isSaving = true
-        defer { isSaving = false }
-        do {
-            guard let amountFunding = amountToDeduct, amountFunding > 0,
-                  let unitPrice = purchasePricePerUnit, unitPrice > 0,
-                  let asset = selectedAsset,
-                  let funding = accounts.first(where: { $0.id == selectedDeductId })
-            else { throw makeError("Missing required fields") }
-
-            guard let quoteAmount = convert(amount: amountFunding, from: funding.base_currency, to: asset.quote_currency) else {
-                throw makeError("FX rate missing for \(funding.base_currency) → \(asset.quote_currency)")
-            }
-
-            let quantity = quoteAmount / unitPrice
-            // Look up the fiat asset UUID for the deduct account's currency
-            let deductAssetId = assets.first(where: {
-                $0.symbol.uppercased() == funding.base_currency.uppercased()
-            })?.id
-
-            let legs: [APIService.TransactionLegCreate] = [
-                .init(account_id: selectedDeductId,   asset_id: deductAssetId, quantity: -amountFunding, unit_price: nil,       fee_flag: false),
-                .init(account_id: selectedPlatformId, asset_id: asset.id,      quantity:  quantity,      unit_price: unitPrice, fee_flag: false),
-            ]
-
-            _ = try await APIService.shared.createTransactionEvent(
-                eventType: "trade", category: nil,
-                description: "Bought \(asset.symbol)",
-                date: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day()),
-                note: note.isEmpty ? nil : note, legs: legs
-            )
-            onSaved(); dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
+    private func selectResult(_ result: APIService.CryptoSearchResult) {
+        selectedResult = result
+        searchText = result.symbol
+        searchResults = []
+        if lockToLivePrice, let price = result.price_usd {
+            purchasePricePerUnit = price
+            priceLastUpdated = Date()
         }
     }
 
-    // MARK: - Price Helpers
+    // MARK: - Price refresh
 
-    private func livePriceInQuoteCurrency(for asset: APIService.Asset) -> Double? {
-        guard let rates else { return nil }
-        guard let usdPrice = rates.prices[asset.symbol] else { return nil }
-        if asset.quote_currency.uppercased() == "USD" { return usdPrice }
-        guard let quoteToUsd = rates.fx_to_usd[asset.quote_currency.uppercased()], quoteToUsd > 0 else { return nil }
-        return usdPrice / quoteToUsd
-    }
-
-    private func convert(amount: Double, from: String, to: String) -> Double? {
-        let fromC = from.uppercased(); let toC = to.uppercased()
-        if fromC == toC { return amount }
-        guard let rates else { return nil }
-        let fx = rates.fx_to_usd
-        guard let fromToUsd = fx[fromC], let toToUsd = fx[toC], fromToUsd > 0, toToUsd > 0 else { return nil }
-        return amount * (fromToUsd / toToUsd)
-    }
-
-    private var fxInfoLine: String? {
-        guard let amountFunding = amountToDeduct, amountFunding > 0,
-              let asset = selectedAsset,
-              let funding = accounts.first(where: { $0.id == selectedDeductId }),
-              funding.base_currency.uppercased() != asset.quote_currency.uppercased(),
-              let quoteAmount = convert(amount: amountFunding, from: funding.base_currency, to: asset.quote_currency)
-        else { return nil }
-        return "FX: \(amountFunding.formatted(.number.precision(.fractionLength(2)))) \(funding.base_currency) ≈ \(quoteAmount.formatted(.number.precision(.fractionLength(2)))) \(asset.quote_currency)"
-    }
-
-    private func loadLivePrice(for asset: APIService.Asset) async {
+    private func refreshPrice() async {
+        guard !isRefreshingPrice, let result = selectedResult else { return }
         isRefreshingPrice = true
         defer { isRefreshingPrice = false }
         do {
-            let (priceUSD, fxMap) = try await APIService.shared.fetchSymbolPrice(symbol: asset.symbol)
-            if rates == nil {
-                rates = APIService.RatesResponse(base_reference: "USD",
-                                                  prices: [asset.symbol: priceUSD],
-                                                  fx_to_usd: fxMap)
-            } else {
-                var newPrices = rates!.prices
-                newPrices[asset.symbol.uppercased()] = priceUSD
-                rates = APIService.RatesResponse(base_reference: "USD",
-                                                  prices: newPrices,
-                                                  fx_to_usd: fxMap)
-            }
+            let newRates = try await APIService.shared.fetchRates()
+            rates = newRates
             priceLastUpdated = Date()
-            if priceUSD > 0 {
-                let live = livePriceInQuoteCurrency(for: asset)
-                if lockToLivePrice, let l = live { purchasePricePerUnit = l }
+            if let price = newRates.prices[result.symbol] {
+                if lockToLivePrice { purchasePricePerUnit = price }
+                // Update the result's price in place
+                if var updated = selectedResult {
+                    searchResults = []
+                }
             }
         } catch {}
-    }
-
-    private func refreshRatesAndMaybePrice(forceUpdatePrice: Bool) async {
-        guard !isRefreshingPrice else { return }
-        if let asset = selectedAsset {
-            await loadLivePrice(for: asset)
-        } else {
-            isRefreshingPrice = true
-            defer { isRefreshingPrice = false }
-            do {
-                let newRates = try await APIService.shared.fetchRates()
-                rates = newRates
-                priceLastUpdated = Date()
-            } catch {}
-        }
     }
 
     private func startLivePriceLoop() async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: UInt64(liveUpdateIntervalSeconds * 1_000_000_000))
-            guard autoUpdateLivePrice, selectedAsset != nil else { continue }
-            await refreshRatesAndMaybePrice(forceUpdatePrice: lockToLivePrice)
+            guard selectedResult != nil else { continue }
+            await refreshPrice()
         }
     }
 
-    private func makeError(_ msg: String) -> Error {
-        NSError(domain: "LedgerVault", code: 0, userInfo: [NSLocalizedDescriptionKey: msg])
+    // MARK: - Data
+
+    private func loadAccounts() async {
+        do {
+            accounts = try await APIService.shared.fetchAccounts()
+            rates = try? await APIService.shared.fetchRates()
+            if let first = accounts.first(where: { ["bank","cash","stablecoin_wallet"].contains($0.account_type) }) { selectedDeductId = first.id }
+            if let first = accounts.first(where: { $0.account_type == "crypto_wallet" }) { selectedPlatformId = first.id }
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    // MARK: - Save
+
+    private func save() async {
+        isSaving = true; defer { isSaving = false }
+        do {
+            guard let result = selectedResult,
+                  let amount = amountToDeduct, amount > 0,
+                  let price = purchasePricePerUnit, price > 0,
+                  let funding = accounts.first(where: { $0.id == selectedDeductId })
+            else { throw URLError(.badServerResponse) }
+
+            guard let quoteAmount = convert(amount: amount, from: funding.base_currency, to: result.quote_currency)
+            else { throw NSError(domain:"FX",code:0,userInfo:[NSLocalizedDescriptionKey:"FX rate missing. Try again."]) }
+
+            let quantity = quoteAmount / price
+
+            // Ensure asset exists in DB
+            let asset = try await APIService.shared.createAsset(
+                symbol: result.symbol,
+                name: result.name,
+                assetClass: result.asset_class,
+                quoteCurrency: result.quote_currency
+            )
+
+            let legs: [APIService.TransactionLegCreate] = [
+                .init(account_id: selectedDeductId, asset_id: "", quantity: -amount, unit_price: nil, fee_flag: false),
+                .init(account_id: selectedPlatformId, asset_id: asset.id, quantity: quantity, unit_price: price, fee_flag: false)
+            ]
+
+            _ = try await APIService.shared.createTransactionEvent(
+                eventType: "trade", category: nil,
+                description: "Bought \(result.symbol)",
+                date: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day()),
+                note: note.isEmpty ? nil : note, legs: legs)
+
+            onSaved(); dismiss()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    // MARK: - FX helpers
+
+    private func convert(amount: Double, from: String, to: String) -> Double? {
+        let f = from.uppercased(), t = to.uppercased()
+        if f == t { return amount }
+        guard let rates else { return nil }
+        let fx = rates.fx_to_usd
+        guard let fRate = fx[f], let tRate = fx[t], fRate > 0, tRate > 0 else { return nil }
+        return amount * (fRate / tRate)
+    }
+
+    private var fxInfoLine: String? {
+        guard let amount = amountToDeduct, amount > 0,
+              let result = selectedResult,
+              let funding = accounts.first(where: { $0.id == selectedDeductId }),
+              funding.base_currency.uppercased() != result.quote_currency.uppercased(),
+              let converted = convert(amount: amount, from: funding.base_currency, to: result.quote_currency)
+        else { return nil }
+        return "FX: \(amount.formatted(.number.precision(.fractionLength(2)))) \(funding.base_currency) ≈ \(converted.formatted(.number.precision(.fractionLength(2)))) \(result.quote_currency)"
     }
 }
