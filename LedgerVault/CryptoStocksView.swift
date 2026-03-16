@@ -4,7 +4,7 @@ struct CryptoStocksView: View {
     @State private var accounts: [APIService.Account] = []
     @State private var showAdd = false
     @State private var showAddCrypto = false
-    @State private var editingAccount: APIService.Account?
+    @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
 
     var cryptoWallets: [APIService.Account] {
@@ -17,7 +17,7 @@ struct CryptoStocksView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170))], spacing: 16) {
                     ForEach(cryptoWallets) { wallet in
                         Button {
-                            editingAccount = wallet
+                            selectedAccount = wallet
                         } label: {
                             VStack(alignment: .leading) {
                                 Image(systemName: "bitcoinsign.circle.fill")
@@ -36,7 +36,7 @@ struct CryptoStocksView: View {
                             .shadow(radius: 5)
                         }
                         .buttonStyle(.plain)
-                        .swipeActions {
+                        .contextMenu {
                             Button(role: .destructive) {
                                 Task { await deleteAccount(wallet) }
                             } label: {
@@ -65,8 +65,10 @@ struct CryptoStocksView: View {
             .sheet(isPresented: $showAddCrypto) {
                 AddCryptoBuyView(onSaved: { Task { await load() } })
             }
-            .sheet(item: $editingAccount) { account in
-                EditAccountView(account: account) { Task { await load() } }
+            .sheet(item: $selectedAccount) { account in
+                CryptoWalletDetailView(account: account, onDeleted: {
+                    Task { await load() }
+                })
             }
         }
     }
@@ -74,6 +76,7 @@ struct CryptoStocksView: View {
     private func load() async {
         do {
             accounts = try await APIService.shared.fetchAccounts()
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
