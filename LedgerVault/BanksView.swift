@@ -3,7 +3,7 @@ import SwiftUI
 struct BanksView: View {
     @State private var accounts: [APIService.Account] = []
     @State private var showAddAccount = false
-    @State private var editingAccount: APIService.Account?
+    @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
 
     var banks: [APIService.Account] {
@@ -14,21 +14,35 @@ struct BanksView: View {
         NavigationStack {
             List {
                 ForEach(banks) { account in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(account.name)
-                            .font(.headline)
-                        Text(account.base_currency)
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                    .swipeActions {
-                        Button {
-                            editingAccount = account
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
+                    Button {
+                        selectedAccount = account
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.blue.opacity(0.12))
+                                    .frame(width: 40, height: 40)
+                                Image(systemName: "building.columns.fill")
+                                    .foregroundColor(.blue)
+                                    .font(.system(size: 16))
+                            }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.name)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text(account.base_currency)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
-                        .tint(.blue)
-
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions {
                         Button(role: .destructive) {
                             Task { await deleteAccount(account) }
                         } label: {
@@ -51,10 +65,13 @@ struct BanksView: View {
             .sheet(isPresented: $showAddAccount) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "bank")
             }
-            .sheet(item: $editingAccount) { account in
-                EditAccountView(account: account) { Task { await load() } }
+            .sheet(item: $selectedAccount) { account in
+                BankDetailView(account: account, onDeleted: {
+                    Task { await load() }
+                })
+                .onDisappear { Task { await load() } }
             }
-            
+
             if let errorMessage {
                 Text(errorMessage)
                     .foregroundColor(.red)

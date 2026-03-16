@@ -3,32 +3,46 @@ import SwiftUI
 struct StablecoinsView: View {
     @State private var accounts: [APIService.Account] = []
     @State private var showAdd = false
-    @State private var editingAccount: APIService.Account?
+    @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
 
     var stableWallets: [APIService.Account] {
-        accounts.filter { $0.account_type == "cash" }
+        accounts.filter { ["cash", "stablecoin_wallet"].contains($0.account_type) }
     }
 
     var body: some View {
         NavigationStack {
             List {
                 ForEach(stableWallets) { wallet in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(wallet.name)
-                            .font(.headline)
-                        Text("Stablecoin Wallet")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                    .swipeActions {
-                        Button {
-                            editingAccount = wallet
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
+                    Button {
+                        selectedAccount = wallet
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.indigo.opacity(0.12))
+                                    .frame(width: 40, height: 40)
+                                Image(systemName: "link.circle.fill")
+                                    .foregroundColor(.indigo)
+                                    .font(.system(size: 16))
+                            }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(wallet.name)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text("Stablecoin Wallet · \(wallet.base_currency)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
-                        .tint(.blue)
-
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions {
                         Button(role: .destructive) {
                             Task { await deleteAccount(wallet) }
                         } label: {
@@ -49,10 +63,13 @@ struct StablecoinsView: View {
             .sheet(isPresented: $showAdd) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "cash")
             }
-            .sheet(item: $editingAccount) { account in
-                EditAccountView(account: account) { Task { await load() } }
+            .sheet(item: $selectedAccount) { account in
+                BankDetailView(account: account, onDeleted: {
+                    Task { await load() }
+                })
+                .onDisappear { Task { await load() } }
             }
-            
+
             if let errorMessage {
                 Text(errorMessage)
                     .foregroundColor(.red)

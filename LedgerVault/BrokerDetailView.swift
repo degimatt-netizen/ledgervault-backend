@@ -1,24 +1,39 @@
 import SwiftUI
 
-// Presented as a SHEET from StocksView. Has its own NavigationStack.
-struct BrokerDetailView: View {
+// Presented as a SHEET from BanksView and StablecoinsView.
+struct BankDetailView: View {
     let account: APIService.Account
     let onDeleted: () -> Void
 
     @AppStorage("baseCurrency") private var baseCurrency = "EUR"
     @Environment(\.dismiss) private var dismiss
 
-    @State private var items: [APIService.ValuationPortfolioItem] = []
+    @State private var balance: Double = 0
+    @State private var transactions: [APIService.TransactionEvent] = []
     @State private var isLoading = true
     @State private var showDeleteAlert = false
     @State private var showEdit = false
     @State private var errorMessage: String?
 
+    private var accountIcon: String {
+        switch account.account_type {
+        case "bank": return "building.columns.fill"
+        default: return "link.circle.fill"
+        }
+    }
+
+    private var accountColor: Color {
+        switch account.account_type {
+        case "bank": return .blue
+        default: return .indigo
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
                 if isLoading {
-                    ProgressView("Loading holdings…")
+                    ProgressView("Loading…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let err = errorMessage {
                     VStack(spacing: 12) {
@@ -29,41 +44,89 @@ struct BrokerDetailView: View {
                             .buttonStyle(.borderedProminent)
                     }
                     .padding()
-                } else if items.isEmpty {
-                    VStack(spacing: 16) {
-                        Spacer()
-                        Image(systemName: "chart.bar")
-                            .font(.system(size: 56))
-                            .foregroundColor(.green.opacity(0.35))
-                        Text("No Holdings Yet")
-                            .font(.title2.bold())
-                        Text("Use \"Buy Stock\" from the Stocks tab\nto add your first position.")
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
                 } else {
-                    List(items) { item in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.symbol).font(.headline)
-                                Text("\(item.quantity.formatted(.number.precision(.fractionLength(0...4)))) shares")
-                                    .font(.caption).foregroundColor(.secondary)
+                    ScrollView {
+                        VStack(spacing: 16) {
+
+                            // ── Balance card ──────────────────────────────
+                            VStack(spacing: 8) {
+                                HStack(spacing: 14) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(accountColor.opacity(0.15))
+                                            .frame(width: 52, height: 52)
+                                        Image(systemName: accountIcon)
+                                            .font(.title3)
+                                            .foregroundColor(accountColor)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(account.name).font(.title3.bold())
+                                        Text(account.account_type == "bank" ? "Bank Account" : "Stablecoin Wallet")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(account.base_currency)
+                                        .font(.caption.bold())
+                                        .padding(.horizontal, 10).padding(.vertical, 4)
+                                        .background(accountColor.opacity(0.12))
+                                        .foregroundColor(accountColor)
+                                        .clipShape(Capsule())
+                                }
+
+                                Divider()
+
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Current Balance")
+                                            .font(.caption).foregroundColor(.secondary)
+                                        Text(fmt(balance))
+                                            .font(.title2.bold())
+                                            .foregroundColor(accountColor)
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("Transactions")
+                                            .font(.caption).foregroundColor(.secondary)
+                                        Text("\(transactions.count)")
+                                            .font(.title2.bold())
+                                    }
+                                }
                             }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 4) {
-                                Text(item.value_in_base.formatted(.currency(code: baseCurrency)))
-                                    .font(.title3.bold())
-                                let pl = item.avg_cost > 0
-                                    ? ((item.price_usd - item.avg_cost) / item.avg_cost) * 100 : 0.0
-                                Text((pl >= 0 ? "+" : "") + pl.formatted(.number.precision(.fractionLength(1))) + "%")
-                                    .font(.caption.bold())
-                                    .foregroundColor(pl >= 0 ? .green : .red)
+                            .padding(16)
+                            .background(Color(.systemBackground))
+                            .cornerRadius(20)
+                            .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 3)
+
+                            // ── Transactions ──────────────────────────────
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Transactions")
+                                    .font(.headline)
+                                    .padding(.bottom, 12)
+
+                                if transactions.isEmpty {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "tray")
+                                            .font(.system(size: 40))
+                                            .foregroundColor(.secondary.opacity(0.4))
+                                        Text("No transactions yet")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 32)
+                                } else {
+                                    ForEach(Array(transactions.enumerated()), id: \.element.id) { idx, tx in
+                                        txRow(tx)
+                                        if idx < transactions.count - 1 {
+                                            Divider().padding(.leading, 54)
+                                        }
+                                    }
+                                }
                             }
+                            .padding(16)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(20)
                         }
-                        .padding(.vertical, 4)
+                        .padding(16)
                     }
                 }
             }
@@ -96,14 +159,49 @@ struct BrokerDetailView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This will permanently delete this broker account and all its holdings.")
+                Text("This will permanently delete this account and all its data.")
             }
             .sheet(isPresented: $showEdit) {
-                EditAccountView(account: account, onSaved: {})
+                EditAccountView(account: account, onSaved: {
+                    Task { await load() }
+                })
             }
         }
         .task { await load() }
         .refreshable { await load() }
+    }
+
+    @ViewBuilder
+    private func txRow(_ tx: APIService.TransactionEvent) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(eventColor(tx.event_type).opacity(0.15))
+                    .frame(width: 42, height: 42)
+                Image(systemName: eventIcon(tx.event_type))
+                    .foregroundColor(eventColor(tx.event_type))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tx.description ?? tx.event_type.capitalized)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(tx.event_type.capitalized)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(eventColor(tx.event_type).opacity(0.12))
+                        .foregroundColor(eventColor(tx.event_type))
+                        .cornerRadius(6)
+                    if let cat = tx.category {
+                        Text(cat).font(.caption).foregroundColor(.secondary)
+                    }
+                    Text("·").font(.caption2).foregroundColor(.secondary)
+                    Text(tx.date).font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
     }
 
     private func load() async {
@@ -111,10 +209,47 @@ struct BrokerDetailView: View {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let val = try await APIService.shared.fetchValuation(baseCurrency: baseCurrency)
-            items = val.portfolio.filter { $0.account_id == account.id }
+            async let valFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
+            async let txFetch  = APIService.shared.fetchTransactionEvents()
+
+            let (val, allTx) = try await (valFetch, txFetch)
+
+            // Balance = sum of portfolio holdings for this account
+            balance = val.portfolio
+                .filter { $0.account_id == account.id }
+                .reduce(0) { $0 + $1.value_in_base }
+
+            transactions = allTx
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func fmt(_ v: Double) -> String {
+        switch account.base_currency.uppercased() {
+        case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
+        case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
+        case "EUR": return "€\(v.formatted(.number.precision(.fractionLength(2))))"
+        default:    return "\(account.base_currency) \(v.formatted(.number.precision(.fractionLength(2))))"
+        }
+    }
+
+    private func eventIcon(_ t: String) -> String {
+        switch t.lowercased() {
+        case "income":   return "arrow.down.circle.fill"
+        case "expense":  return "arrow.up.circle.fill"
+        case "transfer": return "arrow.left.arrow.right.circle.fill"
+        case "trade":    return "chart.line.uptrend.xyaxis.circle.fill"
+        default:         return "circle.fill"
+        }
+    }
+
+    private func eventColor(_ t: String) -> Color {
+        switch t.lowercased() {
+        case "income":  return .green
+        case "expense": return .red
+        case "trade":   return .orange
+        default:        return .blue
         }
     }
 }
