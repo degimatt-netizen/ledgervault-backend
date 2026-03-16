@@ -19,6 +19,8 @@ struct AddTransactionView: View {
     @State private var showCategoryPicker = false
     @State private var showFromPicker = false
     @State private var showToPicker = false
+    @State private var customExpenseCategories: [CategoryItem] = CategoryItem.load(key: "customExpenseCats")
+    @State private var customIncomeCategories:  [CategoryItem] = CategoryItem.load(key: "customIncomeCats")
 
     let types = ["Expense", "Income", "Transfer"]
 
@@ -43,7 +45,10 @@ struct AddTransactionView: View {
     ]
 
     var currentCategories: [(String, String)] {
-        type == "Income" ? incomeCategories : expenseCategories
+        let custom = type == "Income"
+            ? customIncomeCategories.map { ($0.name, $0.icon) }
+            : customExpenseCategories.map { ($0.name, $0.icon) }
+        return (type == "Income" ? incomeCategories : expenseCategories) + custom
     }
 
     var categoryIcon: String {
@@ -175,7 +180,7 @@ struct AddTransactionView: View {
                                 row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
                                     HStack(spacing: 4) {
                                         Text("To:").foregroundColor(.secondary)
-                                        Text("💰 \(toAccount?.name ?? "Select account")")
+                                        Text("\(toAccount?.name ?? "Select account")")
                                             .foregroundColor(.primary).bold()
                                         Spacer()
                                         Image(systemName: "chevron.right")
@@ -188,7 +193,7 @@ struct AddTransactionView: View {
                                 row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
                                     HStack(spacing: 4) {
                                         Text("From:").foregroundColor(.secondary)
-                                        Text("💰 \(fromAccount?.name ?? "Select account")")
+                                        Text("\(fromAccount?.name ?? "Select account")")
                                             .foregroundColor(.primary).bold()
                                         Spacer()
                                         Image(systemName: "chevron.right")
@@ -201,7 +206,7 @@ struct AddTransactionView: View {
                                 row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
                                     HStack(spacing: 4) {
                                         Text("From:").foregroundColor(.secondary)
-                                        Text("💰 \(fromAccount?.name ?? "Select")")
+                                        Text("\(fromAccount?.name ?? "Select")")
                                             .foregroundColor(.primary).bold()
                                         Spacer()
                                         Image(systemName: "chevron.right")
@@ -214,7 +219,7 @@ struct AddTransactionView: View {
                                 row(icon: "wallet.pass.fill", iconBg: Color.green.opacity(0.2), iconColor: .green) {
                                     HStack(spacing: 4) {
                                         Text("To:").foregroundColor(.secondary)
-                                        Text("💰 \(toAccount?.name ?? "Select")")
+                                        Text("\(toAccount?.name ?? "Select")")
                                             .foregroundColor(.primary).bold()
                                         Spacer()
                                         Image(systemName: "chevron.right")
@@ -277,35 +282,14 @@ struct AddTransactionView: View {
             if let first = currentCategories.first { category = first.0 }
         }
         .sheet(isPresented: $showCategoryPicker) {
-            NavigationStack {
-                List(currentCategories, id: \.0) { cat in
-                    Button {
-                        category = cat.0
-                        showCategoryPicker = false
-                    } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: cat.1)
-                                .frame(width: 32, height: 32)
-                                .background(Color.gray.opacity(0.15))
-                                .clipShape(Circle())
-                                .foregroundColor(.primary)
-                            Text(cat.0).foregroundColor(.primary)
-                            Spacer()
-                            if category == cat.0 {
-                                Image(systemName: "checkmark").foregroundColor(.blue)
-                            }
-                        }
-                    }
-                }
-                .navigationTitle("Category")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { showCategoryPicker = false }
-                    }
-                }
-            }
-            .presentationDetents([.medium])
+            CategoryPickerView(
+                baseCategories: type == "Income" ? incomeCategories : expenseCategories,
+                selected: $category,
+                customExpenseCategories: $customExpenseCategories,
+                customIncomeCategories: $customIncomeCategories,
+                type: type
+            ) { showCategoryPicker = false }
+            .presentationDetents([.large])
         }
         .sheet(isPresented: $showFromPicker) {
             accountPickerSheet(title: "From Account", selectedId: $fromAccountId) {
@@ -437,5 +421,162 @@ struct RoundedCorner: Shape {
         let path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
                                 cornerRadii: CGSize(width: radius, height: radius))
         return Path(path.cgPath)
+    }
+}
+
+// ── CategoryPickerView ────────────────────────────────────────────────────────
+struct CategoryItem: Codable, Equatable {
+    let name: String
+    let icon: String
+
+    static func load(key: String) -> [CategoryItem] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([CategoryItem].self, from: data)) ?? []
+    }
+
+    static func save(_ items: [CategoryItem], key: String) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(items), forKey: key)
+    }
+}
+
+struct CategoryPickerView: View {
+    let baseCategories: [(String, String)]
+    @Binding var selected: String
+    @Binding var customExpenseCategories: [CategoryItem]
+    @Binding var customIncomeCategories: [CategoryItem]
+    let type: String
+    let onDone: () -> Void
+
+    @State private var showAddCategory = false
+    @State private var newCategoryName = ""
+    @State private var newCategoryIcon = "tag.fill"
+
+    let availableIcons = [
+        "tag.fill", "star.fill", "heart.fill", "house.fill", "car.fill",
+        "airplane", "fork.knife", "cart.fill", "bag.fill", "gift.fill",
+        "bolt.fill", "tv.fill", "gamecontroller.fill", "music.note",
+        "book.fill", "figure.run", "pawprint.fill", "leaf.fill",
+        "hammer.fill", "wrench.fill", "creditcard.fill", "banknote.fill",
+        "chart.line.uptrend.xyaxis", "laptopcomputer", "phone.fill"
+    ]
+
+    private var allCategories: [(String, String)] {
+        let custom = type == "Income"
+            ? customIncomeCategories.map { ($0.name, $0.icon) }
+            : customExpenseCategories.map { ($0.name, $0.icon) }
+        return baseCategories + custom
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(allCategories, id: \.0) { cat in
+                        Button {
+                            selected = cat.0
+                            onDone()
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: cat.1)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color.gray.opacity(0.15))
+                                    .clipShape(Circle())
+                                    .foregroundColor(.primary)
+                                Text(cat.0).foregroundColor(.primary)
+                                Spacer()
+                                if selected == cat.0 {
+                                    Image(systemName: "checkmark").foregroundColor(.blue)
+                                }
+                            }
+                        }
+                        .swipeActions {
+                                let isCustom = (type == "Income" ? customIncomeCategories : customExpenseCategories).contains(where: { $0.name == cat.0 })
+                            if isCustom {
+                                Button(role: .destructive) {
+                                    if type == "Income" {
+                                        customIncomeCategories.removeAll { $0.name == cat.0 }
+                                        CategoryItem.save(customIncomeCategories, key: "customIncomeCats")
+                                    } else {
+                                        customExpenseCategories.removeAll { $0.name == cat.0 }
+                                        CategoryItem.save(customExpenseCategories, key: "customExpenseCats")
+                                    }
+                                } label: { Label("Delete", systemImage: "trash") }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button {
+                        showAddCategory = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "plus.circle.fill")
+                                .frame(width: 32, height: 32)
+                                .foregroundColor(.blue)
+                            Text("Add Custom Category").foregroundColor(.blue)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Category")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onDone() }
+                }
+            }
+            .sheet(isPresented: $showAddCategory) {
+                NavigationStack {
+                    Form {
+                        Section("Category Name") {
+                            TextField("e.g. Gym, Subscriptions…", text: $newCategoryName)
+                        }
+                        Section("Icon") {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
+                                ForEach(availableIcons, id: \.self) { icon in
+                                    Button {
+                                        newCategoryIcon = icon
+                                    } label: {
+                                        Image(systemName: icon)
+                                            .font(.title3)
+                                            .frame(width: 44, height: 44)
+                                            .background(newCategoryIcon == icon ? Color.blue.opacity(0.15) : Color.gray.opacity(0.1))
+                                            .foregroundColor(newCategoryIcon == icon ? .blue : .primary)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .navigationTitle("New Category")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showAddCategory = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Add") {
+                                guard !newCategoryName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                                let newCat = CategoryItem(name: newCategoryName.trimmingCharacters(in: .whitespaces), icon: newCategoryIcon)
+                                if type == "Income" {
+                                    customIncomeCategories.append(newCat)
+                                    CategoryItem.save(customIncomeCategories, key: "customIncomeCats")
+                                } else {
+                                    customExpenseCategories.append(newCat)
+                                    CategoryItem.save(customExpenseCategories, key: "customExpenseCats")
+                                }
+                                newCategoryName = ""
+                                newCategoryIcon = "tag.fill"
+                                showAddCategory = false
+                            }
+                            .disabled(newCategoryName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
+                }
+                .presentationDetents([.medium])
+            }
+        }
     }
 }

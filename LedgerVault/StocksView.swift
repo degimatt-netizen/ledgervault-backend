@@ -114,31 +114,35 @@ struct StocksView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170))], spacing: 16) {
-                    ForEach(brokers) { broker in
-                        Button { selectedAccount = broker } label: {
-                            VStack(alignment: .leading) {
+            List {
+                ForEach(brokers) { broker in
+                    Button {
+                        selectedAccount = broker
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle().fill(Color.green.opacity(0.12)).frame(width: 40, height: 40)
                                 Image(systemName: "chart.bar.fill")
-                                    .font(.title2).foregroundColor(.green)
-                                Text(broker.name).font(.headline)
-                                Text("Broker").font(.caption).foregroundColor(.secondary)
+                                    .foregroundColor(.green).font(.system(size: 16))
                             }
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(.systemBackground))
-                            .cornerRadius(20)
-                            .shadow(radius: 5)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button(role: .destructive) { Task { await deleteAccount(broker) } } label: {
-                                Label("Delete", systemImage: "trash")
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(broker.name).font(.headline).foregroundColor(.primary)
+                                Text("Broker · \(broker.base_currency)")
+                                    .font(.caption).foregroundColor(.secondary)
                             }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption).foregroundColor(.secondary)
                         }
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            Task { await deleteAccount(broker) }
+                        } label: { Label("Delete", systemImage: "trash") }
                     }
                 }
-                .padding()
             }
             .navigationTitle("Stocks")
             .toolbar {
