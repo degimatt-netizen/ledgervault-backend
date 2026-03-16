@@ -125,7 +125,16 @@ def _fetch_stock_price(symbol: str) -> dict | None:
         price  = float(meta.get("regularMarketPrice", 0))
         prev   = float(meta.get("chartPreviousClose", price) or price)
         chg    = ((price - prev) / prev * 100) if prev else 0.0
-        exch   = meta.get("exchangeName", meta.get("fullExchangeName", ""))
+        # Map exchange codes to friendly names
+        exch_code = meta.get("exchangeName", "")
+        exch_full = meta.get("fullExchangeName", exch_code)
+        exchange_map = {
+            "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ",
+            "NYQ": "NYSE", "ASE": "NYSE American",
+            "PCX": "NYSE Arca", "BTS": "BATS",
+            "NasdaqGS": "NASDAQ", "NasdaqGM": "NASDAQ", "NasdaqCM": "NASDAQ",
+        }
+        exch = exchange_map.get(exch_code, exch_full or exch_code)
         name   = meta.get("shortName", sym)
         mstate = meta.get("marketState", "CLOSED")   # REGULAR / PRE / POST / CLOSED
         result = {
