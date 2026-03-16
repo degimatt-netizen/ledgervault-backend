@@ -301,7 +301,7 @@ struct AddAlertView: View {
     @State private var targetPrice: Double?
     @State private var condition   = "above"
     @State private var isSearching = false
-    @State private var searchResults: [APIService.Asset] = []
+    @State private var searchResults: [(symbol: String, name: String)] = []
     @State private var searchTask: Task<Void, Never>?
 
     private var currentPrice: Double? { rates?.prices[selectedSym.uppercased()] }
@@ -322,7 +322,7 @@ struct AddAlertView: View {
 
                 if !searchResults.isEmpty && selectedSym.isEmpty {
                     Section("Results") {
-                        ForEach(searchResults.prefix(6)) { asset in
+                        ForEach(Array(searchResults.prefix(6).enumerated()), id: \.offset) { _, asset in
                             Button {
                                 selectedSym  = asset.symbol
                                 selectedName = asset.name
@@ -413,16 +413,32 @@ struct AddAlertView: View {
     private func scheduleSearch(_ query: String) {
         selectedSym = ""; selectedName = ""
         searchTask?.cancel()
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard q.count >= 1 else { searchResults = []; return }
         searchTask = Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
-            isSearching = true
-            defer { isSearching = false }
-            if let results = try? await APIService.shared.searchAssets(query: q) {
-                searchResults = results
+            await MainActor.run { isSearching = true }
+            // Search from rates prices (contains all crypto + stocks)
+            var hits: [(symbol: String, name: String)] = []
+            if let r = rates {
+                hits = r.prices.keys
+                    .filter { $0.contains(q) }
+                    .sorted()
+                    .prefix(10)
+                    .map { (symbol: $0, name: $0) }
             }
+            // Also try live search for crypto and stocks
+            async let cryptoSearch = try? APIService.shared.searchCrypto(query: q)
+            async let stockSearch  = try? APIService.shared.searchStocks(query: q)
+            let (cryptos, stocks) = await (cryptoSearch, stockSearch)
+            var combined = hits
+            if let c = cryptos { combined += c.prefix(5).map { (symbol: $0.symbol, name: $0.name) } }
+            if let s = stocks  { combined += s.prefix(5).map { (symbol: $0.symbol, name: $0.name) } }
+            // Deduplicate
+            var seen = Set<String>()
+            let deduped = combined.filter { seen.insert($0.symbol).inserted }
+            await MainActor.run { searchResults = deduped; isSearching = false }
         }
     }
 }
