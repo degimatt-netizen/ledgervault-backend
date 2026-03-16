@@ -11,7 +11,6 @@ struct AddTransactionView: View {
     @State private var category = "Miscellaneous"
     @State private var note = ""
     @State private var date = Date()
-    @State private var excludeFromBudget = false
     @State private var fromAccountId = ""
     @State private var toAccountId = ""
     @State private var accounts: [APIService.Account] = []
@@ -68,7 +67,7 @@ struct AddTransactionView: View {
         switch currency {
         case "USD": return "$"
         case "GBP": return "£"
-        case "CHF": return "CHF"
+        case "CHF": return "CHF "
         default: return "€"
         }
     }
@@ -88,11 +87,10 @@ struct AddTransactionView: View {
             Color(UIColor.systemGroupedBackground).ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Header
+
+                // ── Header ──────────────────────────────────────────────
                 HStack {
-                    Button {
-                        dismiss()
-                    } label: {
+                    Button { dismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.title3.bold())
                             .foregroundColor(.primary)
@@ -101,16 +99,14 @@ struct AddTransactionView: View {
                             .clipShape(Circle())
                     }
                     Spacer()
-                    Text("New transaction")
-                        .font(.headline)
+                    Text("New transaction").font(.headline)
                     Spacer()
-                    // Balance the X button
                     Color.clear.frame(width: 40, height: 40)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
 
-                // Big amount
+                // ── Big amount ───────────────────────────────────────────
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(currencySymbol)
                         .font(.system(size: 42, weight: .bold))
@@ -121,17 +117,14 @@ struct AddTransactionView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
-                .onTapGesture { showAmountEntry() }
 
-                // Type selector pills
+                // ── Type pills ───────────────────────────────────────────
                 HStack(spacing: 8) {
                     ForEach(types, id: \.self) { t in
                         Button {
                             withAnimation(.spring(response: 0.3)) {
                                 type = t
-                                if let first = currentCategories.first {
-                                    category = first.0
-                                }
+                                if let first = currentCategories.first { category = first.0 }
                             }
                         } label: {
                             Text(t.uppercased())
@@ -148,144 +141,105 @@ struct AddTransactionView: View {
 
                 Divider()
 
-                // Rows
+                // ── Rows ─────────────────────────────────────────────────
                 ScrollView {
                     VStack(spacing: 0) {
 
                         // Category
-                        Button {
-                            showCategoryPicker = true
-                        } label: {
-                            rowContent {
-                                Image(systemName: categoryIcon)
-                                    .frame(width: 32, height: 32)
-                                    .background(Color.gray.opacity(0.2))
-                                    .clipShape(Circle())
-                                    .foregroundColor(.primary)
-                                Text("Category: ")
-                                    .foregroundColor(.secondary)
-                                + Text(category)
-                                    .foregroundColor(.primary)
-                                    .bold()
+                        Button { showCategoryPicker = true } label: {
+                            row(icon: categoryIcon, iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
+                                HStack(spacing: 4) {
+                                    Text("Category:").foregroundColor(.secondary)
+                                    Text(category).foregroundColor(.primary).bold()
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
 
-                        Divider().padding(.leading, 60)
+                        rowDivider()
 
                         // Description
-                        rowContent {
-                            Image(systemName: "text.alignleft")
-                                .frame(width: 32, height: 32)
-                                .background(Color.gray.opacity(0.2))
-                                .clipShape(Circle())
-                                .foregroundColor(.primary)
+                        row(icon: "text.alignleft", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
                             TextField("Description (optional)", text: $description)
                                 .foregroundColor(.primary)
                         }
 
-                        Divider().padding(.leading, 60)
+                        rowDivider()
 
-                        // From / To account
+                        // Account rows
                         if type == "Income" {
                             Button { showToPicker = true } label: {
-                                rowContent {
-                                    Image(systemName: "wallet.pass.fill")
-                                        .frame(width: 32, height: 32)
-                                        .background(Color.blue.opacity(0.2))
-                                        .clipShape(Circle())
-                                        .foregroundColor(.blue)
-                                    (Text("To: ").foregroundColor(.secondary) +
-                                     Text("💰 \(toAccount?.name ?? "Select account")").foregroundColor(.primary).bold())
+                                row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                                    HStack(spacing: 4) {
+                                        Text("To:").foregroundColor(.secondary)
+                                        Text("💰 \(toAccount?.name ?? "Select account")")
+                                            .foregroundColor(.primary).bold()
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
                                 }
                             }
                         } else if type == "Expense" {
                             Button { showFromPicker = true } label: {
-                                rowContent {
-                                    Image(systemName: "wallet.pass.fill")
-                                        .frame(width: 32, height: 32)
-                                        .background(Color.blue.opacity(0.2))
-                                        .clipShape(Circle())
-                                        .foregroundColor(.blue)
-                                    HStack {
-                                        (Text("From: ").foregroundColor(.secondary) +
-                                         Text("💰 \(fromAccount?.name ?? "Select account")").foregroundColor(.primary).bold())
+                                row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                                    HStack(spacing: 4) {
+                                        Text("From:").foregroundColor(.secondary)
+                                        Text("💰 \(fromAccount?.name ?? "Select account")")
+                                            .foregroundColor(.primary).bold()
                                         Spacer()
-                                        Image(systemName: "arrow.left.arrow.right")
-                                            .foregroundColor(.secondary)
-                                            .font(.caption)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption).foregroundColor(.secondary)
                                     }
                                 }
                             }
                         } else {
                             Button { showFromPicker = true } label: {
-                                rowContent {
-                                    Image(systemName: "wallet.pass.fill")
-                                        .frame(width: 32, height: 32)
-                                        .background(Color.blue.opacity(0.2))
-                                        .clipShape(Circle())
-                                        .foregroundColor(.blue)
-                                    (Text("From: ").foregroundColor(.secondary) +
-                                     Text("💰 \(fromAccount?.name ?? "Select")").foregroundColor(.primary).bold())
+                                row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                                    HStack(spacing: 4) {
+                                        Text("From:").foregroundColor(.secondary)
+                                        Text("💰 \(fromAccount?.name ?? "Select")")
+                                            .foregroundColor(.primary).bold()
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
                                 }
                             }
-                            Divider().padding(.leading, 60)
+                            rowDivider()
                             Button { showToPicker = true } label: {
-                                rowContent {
-                                    Image(systemName: "wallet.pass.fill")
-                                        .frame(width: 32, height: 32)
-                                        .background(Color.green.opacity(0.2))
-                                        .clipShape(Circle())
-                                        .foregroundColor(.green)
-                                    (Text("To: ").foregroundColor(.secondary) +
-                                     Text("💰 \(toAccount?.name ?? "Select")").foregroundColor(.primary).bold())
+                                row(icon: "wallet.pass.fill", iconBg: Color.green.opacity(0.2), iconColor: .green) {
+                                    HStack(spacing: 4) {
+                                        Text("To:").foregroundColor(.secondary)
+                                        Text("💰 \(toAccount?.name ?? "Select")")
+                                            .foregroundColor(.primary).bold()
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
                                 }
                             }
                         }
 
-                        Divider().padding(.leading, 60)
+                        rowDivider()
 
                         // Note
-                        rowContent {
-                            Image(systemName: "note.text")
-                                .frame(width: 32, height: 32)
-                                .background(Color.gray.opacity(0.2))
-                                .clipShape(Circle())
-                                .foregroundColor(.primary)
+                        row(icon: "note.text", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
                             TextField("Note", text: $note)
                                 .foregroundColor(.primary)
                         }
 
-                        Divider().padding(.leading, 60)
+                        rowDivider()
 
                         // Date
-                        rowContent {
-                            Image(systemName: "calendar")
-                                .frame(width: 32, height: 32)
-                                .background(Color.gray.opacity(0.2))
-                                .clipShape(Circle())
-                                .foregroundColor(.primary)
+                        row(icon: "calendar", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
                             HStack {
                                 DatePicker("", selection: $date, displayedComponents: .date)
                                     .labelsHidden()
                                 Spacer()
-                            }
-                        }
-
-                        Divider().padding(.leading, 60)
-
-                        // Exclude from budget
-                        rowContent {
-                            Image(systemName: "circle.lefthalf.filled")
-                                .frame(width: 32, height: 32)
-                                .background(Color.gray.opacity(0.2))
-                                .clipShape(Circle())
-                                .foregroundColor(.primary)
-                            HStack {
-                                Text("Exclude from budget")
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                Toggle("", isOn: $excludeFromBudget)
-                                    .labelsHidden()
                             }
                         }
 
@@ -294,21 +248,21 @@ struct AddTransactionView: View {
                                 .foregroundColor(.red)
                                 .font(.caption)
                                 .padding()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 20)
                         }
 
                         Color.clear.frame(height: 100)
                     }
                 }
 
-                // Save button
-                Button {
-                    Task { await save() }
-                } label: {
+                // ── Save button ──────────────────────────────────────────
+                Button { Task { await save() } } label: {
                     Text(isSaving ? "Saving…" : "SAVE")
                         .font(.headline.bold())
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 18)
-                        .background(canSave ? Color.white : Color.white.opacity(0.4))
+                        .background(canSave ? Color.white : Color.white.opacity(0.3))
                         .foregroundColor(canSave ? .black : .gray)
                         .clipShape(Capsule())
                 }
@@ -320,11 +274,8 @@ struct AddTransactionView: View {
         }
         .task { await loadAccounts() }
         .onChange(of: type) { _, _ in
-            if let first = currentCategories.first {
-                category = first.0
-            }
+            if let first = currentCategories.first { category = first.0 }
         }
-        // Category picker sheet
         .sheet(isPresented: $showCategoryPicker) {
             NavigationStack {
                 List(currentCategories, id: \.0) { cat in
@@ -338,12 +289,10 @@ struct AddTransactionView: View {
                                 .background(Color.gray.opacity(0.15))
                                 .clipShape(Circle())
                                 .foregroundColor(.primary)
-                            Text(cat.0)
-                                .foregroundColor(.primary)
+                            Text(cat.0).foregroundColor(.primary)
                             Spacer()
                             if category == cat.0 {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
+                                Image(systemName: "checkmark").foregroundColor(.blue)
                             }
                         }
                     }
@@ -358,13 +307,11 @@ struct AddTransactionView: View {
             }
             .presentationDetents([.medium])
         }
-        // From account picker
         .sheet(isPresented: $showFromPicker) {
             accountPickerSheet(title: "From Account", selectedId: $fromAccountId) {
                 showFromPicker = false
             }
         }
-        // To account picker
         .sheet(isPresented: $showToPicker) {
             accountPickerSheet(title: "To Account", selectedId: $toAccountId) {
                 showToPicker = false
@@ -372,18 +319,41 @@ struct AddTransactionView: View {
         }
     }
 
+    // ── Reusable row builder ─────────────────────────────────────────────────
     @ViewBuilder
-    private func rowContent<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    private func row<Content: View>(
+        icon: String,
+        iconBg: Color,
+        iconColor: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(iconColor)
+                .frame(width: 32, height: 32)
+                .background(iconBg)
+                .clipShape(Circle())
             content()
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(UIColor.systemGroupedBackground))
     }
 
     @ViewBuilder
-    private func accountPickerSheet(title: String, selectedId: Binding<String>, onDone: @escaping () -> Void) -> some View {
+    private func rowDivider() -> some View {
+        Divider().padding(.leading, 66)
+    }
+
+    // ── Account picker sheet ─────────────────────────────────────────────────
+    @ViewBuilder
+    private func accountPickerSheet(
+        title: String,
+        selectedId: Binding<String>,
+        onDone: @escaping () -> Void
+    ) -> some View {
         NavigationStack {
             List(allAccounts) { acc in
                 Button {
@@ -413,10 +383,7 @@ struct AddTransactionView: View {
         .presentationDetents([.medium])
     }
 
-    private func showAmountEntry() {
-        // Amount is entered via keyboard — just focus handled by tapping the amount area
-    }
-
+    // ── Data ─────────────────────────────────────────────────────────────────
     private func loadAccounts() async {
         do {
             accounts = try await APIService.shared.fetchAccounts()
@@ -424,9 +391,7 @@ struct AddTransactionView: View {
                 fromAccountId = first.id
                 toAccountId = first.id
             }
-            if let first = currentCategories.first {
-                category = first.0
-            }
+            if let first = currentCategories.first { category = first.0 }
         } catch {}
     }
 
@@ -435,7 +400,6 @@ struct AddTransactionView: View {
         isSaving = true
         errorMessage = nil
         defer { isSaving = false }
-
         do {
             let legs: [APIService.TransactionLegCreate]
             switch type {
@@ -450,7 +414,6 @@ struct AddTransactionView: View {
                 ]
             default: legs = []
             }
-
             _ = try await APIService.shared.createTransactionEvent(
                 eventType: type.lowercased(),
                 category: category.isEmpty ? nil : category,
@@ -464,71 +427,6 @@ struct AddTransactionView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-    }
-}
-
-// MARK: - Numpad overlay for amount entry
-extension AddTransactionView {
-    var amountEntryOverlay: some View {
-        VStack {
-            Spacer()
-            VStack(spacing: 0) {
-                // Display
-                HStack {
-                    Text(currencySymbol + (amountString.isEmpty ? "0" : amountString))
-                        .font(.system(size: 36, weight: .bold))
-                        .padding()
-                    Spacer()
-                    Button {
-                        if !amountString.isEmpty {
-                            amountString.removeLast()
-                            amount = Double(amountString)
-                        }
-                    } label: {
-                        Image(systemName: "delete.left")
-                            .font(.title2)
-                            .padding()
-                    }
-                }
-
-                // Numpad grid
-                let keys = ["1","2","3","4","5","6","7","8","9",".","0","⌫"]
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 0) {
-                    ForEach(keys, id: \.self) { key in
-                        Button {
-                            handleKey(key)
-                        } label: {
-                            Text(key)
-                                .font(.title.bold())
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 70)
-                                .foregroundColor(.primary)
-                        }
-                    }
-                }
-            }
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(20, corners: [.topLeft, .topRight])
-        }
-        .ignoresSafeArea()
-    }
-
-    private func handleKey(_ key: String) {
-        switch key {
-        case "⌫":
-            if !amountString.isEmpty { amountString.removeLast() }
-        case ".":
-            if !amountString.contains(".") { amountString += "." }
-        default:
-            if amountString.count < 10 { amountString += key }
-        }
-        amount = Double(amountString)
-    }
-}
-
-extension View {
-    func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
-        clipShape(RoundedCorner(radius: radius, corners: corners))
     }
 }
 
