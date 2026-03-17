@@ -58,6 +58,9 @@ def _fetch_live_fx() -> dict:
         with httpx.Client(timeout=8.0) as c:
             r = c.get(FX_PROVIDER_URL); r.raise_for_status()
             rates = r.json().get("rates", {})
+        # open.er-api.com returns "currency per USD" (e.g. EUR=0.87 means 1 USD = 0.87 EUR).
+        # We store as "USD per currency unit" (e.g. EUR=1.149 means 1 EUR = $1.149),
+        # matching the FALLBACK_FX convention and convert_usd_to_base (which divides by rate).
         fx = {"USD": 1.0}
         for k, v in rates.items():
             try:
