@@ -1046,7 +1046,7 @@ def auth_register(request: Request, payload: RegisterRequest, db: Session = Depe
     code = _gen_otp()
     user = models.User(
         id=str(uuid4()), email=email,
-        password_hash=pwd_context.hash(payload.password),
+        password_hash=pwd_context.hash(payload.password[:72]),
         name=payload.name.strip() or None,
         is_verified=False,
         verify_code=code, verify_expires=_otp_expires(),
@@ -1102,7 +1102,7 @@ def auth_login(request: Request, payload: LoginRequest, db: Session = Depends(ge
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user or not user.password_hash:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not pwd_context.verify(payload.password, user.password_hash):
+    if not pwd_context.verify(payload.password[:72], user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_verified:
         # Re-send verification code
@@ -1145,7 +1145,7 @@ def auth_reset_password(request: Request, payload: ResetPasswordRequest, db: Ses
         raise HTTPException(status_code=404, detail="User not found")
     if user.reset_code != payload.code or not _otp_valid(user.reset_expires):
         raise HTTPException(status_code=400, detail="Invalid or expired code")
-    user.password_hash = pwd_context.hash(payload.new_password)
+    user.password_hash = pwd_context.hash(payload.new_password[:72])
     user.reset_code = None
     user.reset_expires = None
     user.is_verified = True   # reset also implicitly verifies
