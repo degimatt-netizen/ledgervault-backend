@@ -1656,12 +1656,14 @@ def bank_auth_url():
     # offline_access → get a refresh token so we can re-auth silently later
     scope        = urllib.parse.quote("info accounts balance transactions offline_access")
     redirect_uri = urllib.parse.quote(TRUELAYER_REDIRECT_URI, safe="")
+    providers    = urllib.parse.quote("uk-ob-all uk-oauth-all uk-mock")
     url = (
         f"{TRUELAYER_AUTH_URL}/"
         f"?response_type=code"
         f"&client_id={TRUELAYER_CLIENT_ID}"
         f"&scope={scope}"
         f"&redirect_uri={redirect_uri}"
+        f"&providers={providers}"
         f"&state={state}"
         f"&nonce={state}"
         f"&enable_mock=true"
