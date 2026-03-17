@@ -1534,17 +1534,21 @@ def _tl_fresh_token(conn: models.BankConnection, db: Session) -> str:
 def bank_auth_url():
     """Generate a TrueLayer OAuth URL for the iOS app to open."""
     import secrets
-    state  = secrets.token_urlsafe(16)
-    params = {
-        "response_type": "code",
-        "client_id":     TRUELAYER_CLIENT_ID,
-        "scope":         "info accounts balance transactions",
-        "redirect_uri":  TRUELAYER_REDIRECT_URI,
-        "state":         state,
-        "enable_mock":   "true",
-        "providers":     "uk-ob-all uk-oauth-all",
-    }
-    url = f"{TRUELAYER_AUTH_URL}/?{urllib.parse.urlencode(params)}"
+    state = secrets.token_urlsafe(16)
+    # Use quote (not urlencode) so spaces encode as %20 — TrueLayer requires this
+    # offline_access → get a refresh token so we can re-auth silently later
+    scope        = urllib.parse.quote("info accounts balance transactions offline_access")
+    redirect_uri = urllib.parse.quote(TRUELAYER_REDIRECT_URI, safe="")
+    url = (
+        f"{TRUELAYER_AUTH_URL}/"
+        f"?response_type=code"
+        f"&client_id={TRUELAYER_CLIENT_ID}"
+        f"&scope={scope}"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={state}"
+        f"&nonce={state}"
+        f"&enable_mock=true"
+    )
     return {"auth_url": url, "state": state}
 
 
