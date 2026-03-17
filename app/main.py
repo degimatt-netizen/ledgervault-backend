@@ -1144,6 +1144,123 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
         ],
     }
 
+# ── Portfolio History ─────────────────────────
+# Returns daily total portfolio value for the past N days (uses current holdings × historical prices)
+_hist_cache: dict = {"ts": 0, "key": "", "data": None}
+HIST_CACHE_TTL = 3600  # 1 hour
+
+@app.get("/portfolio/history")
+def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = Depends(get_db)):
+    cache_key = f"{days}:{base_currency.upper()}"
+    if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < HIST_CACHE_TTL:
+        return _hist_cache["data"]
+
+    from datetime import date as date_type
+    today = date_type.today()
+    dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+
+    holdings = db.query(models.Holding).filter(models.Holding.quantity > 0.000001).all()
+    assets   = {a.id: a for a in db.query(models.Asset).all()}
+
+    try: fx = _fetch_live_fx()
+    except: fx = FALLBACK_FX
+
+    # -- Build price_history: {symbol: {date_str: price_usd}} --
+    price_history: dict[str, dict[str, float]] = {}
+
+    crypto_syms = list({assets[h.asset_id].symbol.upper()
+                        for h in holdings
+                        if h.asset_id in assets and assets[h.asset_id].asset_class == "crypto"})
+    stock_syms  = list({assets[h.asset_id].symbol.upper()
+                        for h in holdings
+                        if h.asset_id in assets
+                        and assets[h.asset_id].asset_class in ("stock", "etf")})
+
+    # Crypto history via CoinGecko
+    if crypto_syms:
+        try:
+            markets_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&per_page=250&page=1"
+            with httpx.Client(timeout=10.0) as c:
+                r = c.get(markets_url); r.raise_for_status()
+            sym_to_id = {coin["symbol"].upper(): coin["id"] for coin in r.json()}
+            for sym in crypto_syms:
+                cg_id = sym_to_id.get(sym)
+                if not cg_id:
+                    continue
+                try:
+                    hist_url = (f"https://api.coingecko.com/api/v3/coins/{cg_id}"
+                                f"/market_chart?vs_currency=usd&days={days}&interval=daily")
+                    with httpx.Client(timeout=10.0) as c:
+                        r = c.get(hist_url); r.raise_for_status()
+                    price_history[sym] = {}
+                    for ts_ms, price in r.json().get("prices", []):
+                        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date().isoformat()
+                        price_history[sym][d] = float(price)
+                except Exception as e:
+                    logger.warning(f"CoinGecko history failed for {sym}: {e}")
+        except Exception as e:
+            logger.warning(f"CoinGecko markets for history failed: {e}")
+
+    # Stock history via Yahoo Finance
+    def _fetch_stock_history(sym: str) -> tuple[str, dict[str, float]]:
+        yf_range = f"{min(days, 365)}d"
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+               f"?interval=1d&range={yf_range}")
+        try:
+            with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
+                r = c.get(url); r.raise_for_status()
+            result = r.json()["chart"]["result"][0]
+            timestamps = result.get("timestamp", [])
+            closes = result["indicators"]["quote"][0].get("close", [])
+            hist = {}
+            for ts, close in zip(timestamps, closes):
+                if close is not None:
+                    d = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+                    hist[d] = float(close)
+            return sym, hist
+        except Exception as e:
+            logger.warning(f"Yahoo history failed for {sym}: {e}")
+            return sym, {}
+
+    if stock_syms:
+        with ThreadPoolExecutor(max_workers=min(len(stock_syms), 8)) as pool:
+            for sym, hist in pool.map(_fetch_stock_history, stock_syms):
+                if hist:
+                    price_history[sym] = hist
+
+    # -- Compute daily totals --
+    def _get_price(sym: str, date_str: str) -> float:
+        hist = price_history.get(sym)
+        if not hist:
+            return 0.0
+        if date_str in hist:
+            return hist[date_str]
+        # Fall back to most-recent available price before this date
+        past = sorted(d for d in hist if d <= date_str)
+        return hist[past[-1]] if past else 0.0
+
+    points = []
+    for date_str in dates:
+        total = 0.0
+        for holding in holdings:
+            asset = assets.get(holding.asset_id)
+            if not asset or holding.quantity <= 0.000001:
+                continue
+            sym = asset.symbol.upper()
+            if asset.asset_class == "fiat":
+                price_usd = fx.get(sym, 1.0)
+            elif asset.asset_class in ("crypto", "stock", "etf"):
+                price_usd = _get_price(sym, date_str)
+            else:
+                price_usd = 0.0
+            value_usd = holding.quantity * price_usd
+            total += convert_usd_to_base(value_usd, base_currency, fx)
+        points.append({"date": date_str, "total": round(total, 2)})
+
+    result = {"base_currency": base_currency.upper(), "days": days, "points": points}
+    _hist_cache.update({"ts": time.time(), "key": cache_key, "data": result})
+    return result
+
 # ── Accounts ──────────────────────────────────
 @app.get("/accounts", response_model=AccountList)
 def list_accounts(db: Session = Depends(get_db)):
