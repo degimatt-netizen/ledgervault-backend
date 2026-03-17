@@ -1,5 +1,5 @@
 from uuid import uuid4
-from fastapi import FastAPI, Depends, HTTPException, Query, Header
+from fastapi import FastAPI, Depends, HTTPException, Query, Header, Request
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -8,6 +8,10 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import jwt as pyjwt
 from passlib.context import CryptContext
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from cryptography.fernet import Fernet, InvalidToken
 
 from app.db import engine, SessionLocal, Base
 from app import models
@@ -28,6 +32,11 @@ from app.schemas import (
 app = FastAPI(title="LedgerVault API", version="4.3.0")
 models.Base.metadata.create_all(bind=engine)
 logger = logging.getLogger("ledgervault")
+
+# ── Rate limiter ────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Startup migration: add user_id to accounts if missing ──────────────────
 from sqlalchemy import text as _sql_text
@@ -56,6 +65,30 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM    = os.getenv("RESEND_FROM", "LedgerVault <noreply@ledgervault.app>")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# ── Encryption at rest ──────────────────────────────────────────────────────
+_ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
+_fernet: Optional[Fernet] = None
+if _ENCRYPTION_KEY:
+    try:
+        _fernet = Fernet(_ENCRYPTION_KEY.encode())
+    except Exception:
+        logger.warning("Invalid ENCRYPTION_KEY — sensitive data will NOT be encrypted at rest")
+
+def _encrypt(text: str) -> str:
+    """Encrypt a string. Returns plaintext unchanged if no key is configured."""
+    if not _fernet or not text:
+        return text
+    return _fernet.encrypt(text.encode()).decode()
+
+def _decrypt(text: str) -> str:
+    """Decrypt a Fernet token. Falls back to returning as-is for legacy plaintext data."""
+    if not _fernet or not text:
+        return text
+    try:
+        return _fernet.decrypt(text.encode()).decode()
+    except (InvalidToken, Exception):
+        return text  # already plaintext (pre-encryption legacy row)
 
 def _create_token(user_id: str) -> str:
     payload = {
@@ -1004,7 +1037,8 @@ def _advance_date(date_str: str, frequency: str) -> str:
 # ─────────────────────────────────────────────
 
 @app.post("/auth/register", response_model=AuthResponse)
-def auth_register(payload: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def auth_register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     existing = db.query(models.User).filter(models.User.email == email).first()
     if existing:
@@ -1026,7 +1060,8 @@ def auth_register(payload: RegisterRequest, db: Session = Depends(get_db)):
                         message="Check your email for a 6-digit verification code.")
 
 @app.post("/auth/verify-email", response_model=AuthResponse)
-def auth_verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def auth_verify_email(request: Request, payload: VerifyEmailRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
@@ -1042,7 +1077,8 @@ def auth_verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)
                         user_id=user.id, email=user.email, name=user.name)
 
 @app.post("/auth/resend-code", response_model=AuthResponse)
-def auth_resend_code(payload: ResendCodeRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+def auth_resend_code(request: Request, payload: ResendCodeRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
@@ -1060,7 +1096,8 @@ def auth_resend_code(payload: ResendCodeRequest, db: Session = Depends(get_db)):
                         message="A new code has been sent to your email.")
 
 @app.post("/auth/login", response_model=AuthResponse)
-def auth_login(payload: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def auth_login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user or not user.password_hash:
@@ -1083,7 +1120,8 @@ def auth_login(payload: LoginRequest, db: Session = Depends(get_db)):
                         user_id=user.id, email=user.email, name=user.name)
 
 @app.post("/auth/forgot-password", response_model=AuthResponse)
-def auth_forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+def auth_forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     # Always return success to not leak whether email exists
@@ -1099,7 +1137,8 @@ def auth_forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(g
                         message="If that email is registered, a reset code has been sent.")
 
 @app.post("/auth/reset-password", response_model=AuthResponse)
-def auth_reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def auth_reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
@@ -1116,7 +1155,8 @@ def auth_reset_password(payload: ResetPasswordRequest, db: Session = Depends(get
                         user_id=user.id, email=user.email, name=user.name)
 
 @app.post("/auth/social", response_model=AuthResponse)
-def auth_social(payload: SocialAuthRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def auth_social(request: Request, payload: SocialAuthRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
@@ -1722,7 +1762,8 @@ def list_exchange_connections(db: Session = Depends(get_db)):
     items = db.query(models.ExchangeConnection).all()
     result = []
     for c in items:
-        masked = ("*" * (len(c.api_key) - 4) + c.api_key[-4:]) if len(c.api_key) >= 4 else "****"
+        raw_key = _decrypt(c.api_key)
+        masked = ("*" * (len(raw_key) - 4) + raw_key[-4:]) if len(raw_key) >= 4 else "****"
         result.append(ExchangeConnectionOut(
             id=c.id, exchange=c.exchange, name=c.name,
             api_key_masked=masked, account_id=c.account_id,
@@ -1735,12 +1776,13 @@ def list_exchange_connections(db: Session = Depends(get_db)):
 def create_exchange_connection(payload: ExchangeConnectionCreate, db: Session = Depends(get_db)):
     conn = models.ExchangeConnection(
         id=str(uuid4()), exchange=payload.exchange, name=payload.name,
-        api_key=payload.api_key, api_secret=payload.api_secret,
-        passphrase=payload.passphrase, account_id=payload.account_id,
-        status="active",
+        api_key=_encrypt(payload.api_key), api_secret=_encrypt(payload.api_secret),
+        passphrase=_encrypt(payload.passphrase) if payload.passphrase else None,
+        account_id=payload.account_id, status="active",
     )
     db.add(conn); db.commit(); db.refresh(conn)
-    masked = ("*" * (len(conn.api_key) - 4) + conn.api_key[-4:]) if len(conn.api_key) >= 4 else "****"
+    raw_key = _decrypt(conn.api_key)
+    masked = ("*" * (len(raw_key) - 4) + raw_key[-4:]) if len(raw_key) >= 4 else "****"
     return ExchangeConnectionOut(
         id=conn.id, exchange=conn.exchange, name=conn.name,
         api_key_masked=masked, account_id=conn.account_id,
@@ -1763,6 +1805,12 @@ def sync_exchange_connection(connection_id: str, db: Session = Depends(get_db)):
         models.ExchangeConnection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
+
+    # Decrypt credentials before passing to sync functions
+    conn.api_key    = _decrypt(conn.api_key)
+    conn.api_secret = _decrypt(conn.api_secret)
+    if conn.passphrase:
+        conn.passphrase = _decrypt(conn.passphrase)
 
     sync_fn = SYNC_FUNCTIONS.get(conn.exchange)
     if not sync_fn:
@@ -1864,7 +1912,10 @@ def execute_recurring_transaction(rt_id: str, db: Session = Depends(get_db)):
 
 # ── Seed ──────────────────────────────────────
 @app.post("/seed")
-def seed_data(db: Session = Depends(get_db)):
+def seed_data(admin_key: str = Query(...), db: Session = Depends(get_db)):
+    expected = os.getenv("ADMIN_KEY", "")
+    if not expected or admin_key != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
     seeds = [
         ("EUR","Euro","fiat","EUR"),("USD","US Dollar","fiat","USD"),
         ("GBP","British Pound","fiat","GBP"),("CHF","Swiss Franc","fiat","CHF"),
@@ -1915,25 +1966,29 @@ def _tl_conn_out(c: models.BankConnection) -> dict:
 
 def _tl_fresh_token(conn: models.BankConnection, db: Session) -> str:
     """Return a valid access token, refreshing via refresh_token if needed."""
-    if not conn.refresh_token:
-        return conn.access_token
+    raw_access  = _decrypt(conn.access_token)
+    raw_refresh = _decrypt(conn.refresh_token) if conn.refresh_token else None
+    if not raw_refresh:
+        return raw_access
     try:
         with httpx.Client(timeout=10) as c:
             r = c.post(f"{TRUELAYER_AUTH_URL}/connect/token", data={
                 "grant_type":    "refresh_token",
                 "client_id":     TRUELAYER_CLIENT_ID,
                 "client_secret": TRUELAYER_CLIENT_SECRET,
-                "refresh_token": conn.refresh_token,
+                "refresh_token": raw_refresh,
             })
             if r.status_code == 200:
                 tokens = r.json()
-                conn.access_token  = tokens["access_token"]
-                conn.refresh_token = tokens.get("refresh_token", conn.refresh_token)
+                new_access  = tokens["access_token"]
+                new_refresh = tokens.get("refresh_token", raw_refresh)
+                conn.access_token  = _encrypt(new_access)
+                conn.refresh_token = _encrypt(new_refresh)
                 db.commit()
-                return conn.access_token
+                return new_access
     except Exception:
         pass
-    return conn.access_token
+    return raw_access
 
 
 @app.get("/bank-connections/auth-url", response_model=BankAuthUrlResponse)
@@ -1997,8 +2052,8 @@ def bank_callback(code: str = Query(...), db: Session = Depends(get_db)):
         existing = db.query(models.BankConnection).filter_by(truelayer_account_id=tl_id).first()
         if existing:
             # Refresh tokens for existing connection
-            existing.access_token  = access_token
-            existing.refresh_token = refresh_token
+            existing.access_token  = _encrypt(access_token)
+            existing.refresh_token = _encrypt(refresh_token)
             existing.status        = "active"
             created.append(existing)
             continue
@@ -2011,8 +2066,8 @@ def bank_callback(code: str = Query(...), db: Session = Depends(get_db)):
             account_type=tl_acct.get("account_type", "TRANSACTION"),
             currency=tl_acct.get("currency", "GBP"),
             truelayer_account_id=tl_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
+            access_token=_encrypt(access_token),
+            refresh_token=_encrypt(refresh_token),
             status="active",
         )
         db.add(conn)

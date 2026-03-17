@@ -6,3 +6,5 @@ pydantic
 httpx
 PyJWT
 passlib[bcrypt]
+slowapi
+cryptography
