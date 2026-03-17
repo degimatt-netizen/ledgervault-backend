@@ -6,6 +6,7 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=True, index=True)  # null = guest / legacy
     name = Column(String, nullable=False)
     account_type = Column(String, nullable=False)   # bank, exchange, broker, crypto_wallet, cash
     base_currency = Column(String, nullable=False)

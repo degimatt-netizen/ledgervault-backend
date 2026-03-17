@@ -1,5 +1,6 @@
 from uuid import uuid4
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Header
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import time, os, httpx, logging, hmac, hashlib, base64, urllib.parse
@@ -20,9 +21,20 @@ from app.schemas import (
     BankConnectionOut, BankConnectionList, BankAuthUrlResponse, BankCallbackResponse,
 )
 
-app = FastAPI(title="LedgerVault API", version="4.2.0")
+app = FastAPI(title="LedgerVault API", version="4.3.0")
 models.Base.metadata.create_all(bind=engine)
 logger = logging.getLogger("ledgervault")
+
+# ── Startup migration: add user_id to accounts if missing ──────────────────
+from sqlalchemy import text as _sql_text
+with engine.connect() as _conn:
+    try:
+        _conn.execute(_sql_text("ALTER TABLE accounts ADD COLUMN user_id VARCHAR"))
+        _conn.execute(_sql_text("CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)"))
+        _conn.commit()
+        logger.info("Migration: added user_id column to accounts")
+    except Exception:
+        pass  # column already exists
 
 app.add_middleware(
     CORSMiddleware,
@@ -1058,14 +1070,21 @@ def get_crypto_quote(symbol: str):
 
 # ── Valuation ─────────────────────────────────
 @app.get("/valuation")
-def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
+def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
+              x_user_id: Optional[str] = Header(None)):
     try: fx = _fetch_live_fx()
     except: fx = FALLBACK_FX
 
     crypto_prices = _fetch_crypto_prices()
-    holdings  = db.query(models.Holding).all()
+    acct_q = db.query(models.Account)
+    if x_user_id:
+        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    else:
+        acct_q = acct_q.filter(models.Account.user_id == None)
+    accounts  = {a.id: a for a in acct_q.all()}
+    holdings  = db.query(models.Holding).filter(
+        models.Holding.account_id.in_(accounts.keys())).all()
     assets    = {a.id: a for a in db.query(models.Asset).all()}
-    accounts  = {a.id: a for a in db.query(models.Account).all()}
 
     stock_symbols = {
         assets[h.asset_id].symbol.upper()
@@ -1124,8 +1143,11 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db)):
         elif asset.asset_class == "crypto":        crypto_total += value_base
         elif asset.asset_class in ("stock","etf"): stock_total  += value_base
 
+    user_leg_event_ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
+        .filter(models.TransactionLeg.account_id.in_(accounts.keys())).distinct().all()]
     recent_events = (
         db.query(models.TransactionEvent)
+        .filter(models.TransactionEvent.id.in_(user_leg_event_ids))
         .order_by(models.TransactionEvent.date.desc())
         .all()[:10]
     )
@@ -1150,8 +1172,9 @@ _hist_cache: dict = {"ts": 0, "key": "", "data": None}
 HIST_CACHE_TTL = 3600  # 1 hour
 
 @app.get("/portfolio/history")
-def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = Depends(get_db)):
-    cache_key = f"{days}:{base_currency.upper()}"
+def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = Depends(get_db),
+                      x_user_id: Optional[str] = Header(None)):
+    cache_key = f"{days}:{base_currency.upper()}:{x_user_id or ''}"
     if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < HIST_CACHE_TTL:
         return _hist_cache["data"]
 
@@ -1159,7 +1182,16 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
     today = date_type.today()
     dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
 
-    holdings = db.query(models.Holding).filter(models.Holding.quantity > 0.000001).all()
+    acct_q = db.query(models.Account)
+    if x_user_id:
+        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    else:
+        acct_q = acct_q.filter(models.Account.user_id == None)
+    user_account_ids = {a.id for a in acct_q.all()}
+
+    holdings = db.query(models.Holding).filter(
+        models.Holding.quantity > 0.000001,
+        models.Holding.account_id.in_(user_account_ids)).all()
     assets   = {a.id: a for a in db.query(models.Asset).all()}
 
     try: fx = _fetch_live_fx()
@@ -1263,14 +1295,21 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
 
 # ── Accounts ──────────────────────────────────
 @app.get("/accounts", response_model=AccountList)
-def list_accounts(db: Session = Depends(get_db)):
-    return {"items": db.query(models.Account).all()}
+def list_accounts(db: Session = Depends(get_db), x_user_id: Optional[str] = Header(None)):
+    q = db.query(models.Account)
+    if x_user_id:
+        q = q.filter(models.Account.user_id == x_user_id)
+    else:
+        q = q.filter(models.Account.user_id == None)
+    return {"items": q.all()}
 
 @app.post("/accounts", response_model=AccountOut)
-def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
+def create_account(payload: AccountCreate, db: Session = Depends(get_db),
+                   x_user_id: Optional[str] = Header(None)):
     item = models.Account(id=str(uuid4()), name=payload.name,
                           account_type=payload.account_type,
-                          base_currency=payload.base_currency.upper())
+                          base_currency=payload.base_currency.upper(),
+                          user_id=x_user_id)
     db.add(item); db.commit(); db.refresh(item); return item
 
 @app.put("/accounts/{account_id}", response_model=AccountOut)
@@ -1331,26 +1370,45 @@ def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):
 
 # ── Holdings ──────────────────────────────────
 @app.get("/holdings", response_model=HoldingList)
-def list_holdings(db: Session = Depends(get_db)):
-    return {"items": db.query(models.Holding).all()}
+def list_holdings(db: Session = Depends(get_db), x_user_id: Optional[str] = Header(None)):
+    acct_q = db.query(models.Account)
+    if x_user_id:
+        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    else:
+        acct_q = acct_q.filter(models.Account.user_id == None)
+    user_account_ids = [a.id for a in acct_q.all()]
+    return {"items": db.query(models.Holding).filter(
+        models.Holding.account_id.in_(user_account_ids)).all()}
 
 # ── Transaction events ────────────────────────
 @app.get("/transaction-events", response_model=TransactionEventList)
-def list_transaction_events(account_id: str = Query(None), db: Session = Depends(get_db)):
-    if account_id:
-        ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
-               .filter(models.TransactionLeg.account_id == account_id).distinct().all()]
-        items = (db.query(models.TransactionEvent)
-                 .filter(models.TransactionEvent.id.in_(ids))
-                 .order_by(models.TransactionEvent.date.desc()).all())
+def list_transaction_events(account_id: str = Query(None), db: Session = Depends(get_db),
+                             x_user_id: Optional[str] = Header(None)):
+    acct_q = db.query(models.Account)
+    if x_user_id:
+        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
     else:
-        items = (db.query(models.TransactionEvent)
-                 .order_by(models.TransactionEvent.date.desc()).all())
+        acct_q = acct_q.filter(models.Account.user_id == None)
+    user_account_ids = {a.id for a in acct_q.all()}
+
+    filter_ids = [account_id] if account_id and account_id in user_account_ids else list(user_account_ids)
+    ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
+           .filter(models.TransactionLeg.account_id.in_(filter_ids)).distinct().all()]
+    items = (db.query(models.TransactionEvent)
+             .filter(models.TransactionEvent.id.in_(ids))
+             .order_by(models.TransactionEvent.date.desc()).all())
     return {"items": items}
 
 @app.get("/transaction-legs", response_model=TransactionLegList)
-def list_transaction_legs(db: Session = Depends(get_db)):
-    return {"items": db.query(models.TransactionLeg).all()}
+def list_transaction_legs(db: Session = Depends(get_db), x_user_id: Optional[str] = Header(None)):
+    acct_q = db.query(models.Account)
+    if x_user_id:
+        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    else:
+        acct_q = acct_q.filter(models.Account.user_id == None)
+    user_account_ids = [a.id for a in acct_q.all()]
+    return {"items": db.query(models.TransactionLeg).filter(
+        models.TransactionLeg.account_id.in_(user_account_ids)).all()}
 
 @app.delete("/transaction-events/{event_id}")
 def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
