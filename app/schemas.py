@@ -5,6 +5,8 @@ from typing import List, Literal, Optional
 AccountType = Literal["bank", "exchange", "broker", "crypto_wallet", "cash"]
 AssetClass = Literal["fiat", "crypto", "stock", "etf", "commodity", "custom"]
 EventType = Literal["income", "expense", "transfer", "conversion", "trade"]
+ExchangeType = Literal["binance", "kraken", "coinbase", "bybit", "kucoin", "okx"]
+FrequencyType = Literal["daily", "weekly", "monthly", "quarterly"]
 
 
 # -------------------------
@@ -128,3 +130,107 @@ class TransactionEventOut(BaseModel):
 class TransactionEventList(BaseModel):
     items: List[TransactionEventOut]
 
+
+# -------------------------
+# Exchange Connections
+# -------------------------
+
+class ExchangeConnectionCreate(BaseModel):
+    exchange: ExchangeType
+    name: str
+    api_key: str
+    api_secret: str
+    passphrase: Optional[str] = None
+    account_id: Optional[str] = None
+
+
+class ExchangeConnectionOut(BaseModel):
+    id: str
+    exchange: str
+    name: str
+    api_key_masked: str          # only last 4 chars shown
+    account_id: Optional[str] = None
+    last_synced: Optional[str] = None
+    status: str
+    status_message: Optional[str] = None
+
+
+class ExchangeConnectionList(BaseModel):
+    items: List[ExchangeConnectionOut]
+
+
+class SyncResult(BaseModel):
+    imported: int
+    skipped: int
+    errors: List[str]
+    status: str
+
+
+# -------------------------
+# Recurring Transactions
+# -------------------------
+
+class RecurringTransactionCreate(BaseModel):
+    name: str
+    event_type: EventType
+    category: Optional[str] = None
+    description: Optional[str] = None
+    note: Optional[str] = None
+
+    from_account_id: str
+    from_asset_id: Optional[str] = None
+    from_quantity: float
+
+    to_account_id: Optional[str] = None
+    to_asset_id: Optional[str] = None
+    to_quantity: Optional[float] = None
+
+    unit_price: Optional[float] = None
+
+    frequency: FrequencyType
+    start_date: str
+    next_run_date: str
+
+    enabled: bool = True
+
+
+class RecurringTransactionUpdate(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    next_run_date: Optional[str] = None
+    frequency: Optional[FrequencyType] = None
+    from_quantity: Optional[float] = None
+    to_quantity: Optional[float] = None
+    unit_price: Optional[float] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    note: Optional[str] = None
+
+
+class RecurringTransactionOut(BaseModel):
+    id: str
+    name: str
+    event_type: str
+    category: Optional[str] = None
+    description: Optional[str] = None
+    note: Optional[str] = None
+
+    from_account_id: str
+    from_asset_id: Optional[str] = None
+    from_quantity: float
+
+    to_account_id: Optional[str] = None
+    to_asset_id: Optional[str] = None
+    to_quantity: Optional[float] = None
+
+    unit_price: Optional[float] = None
+
+    frequency: str
+    start_date: str
+    last_run_date: Optional[str] = None
+    next_run_date: str
+    enabled: bool
+
+
+class RecurringTransactionList(BaseModel):
+    items: List[RecurringTransactionOut]
