@@ -169,6 +169,20 @@ final class APIService {
         let recent_activity: [ValuationRecentActivity]
     }
 
+    // MARK: - Portfolio History
+
+    struct PortfolioHistoryPoint: Codable, Identifiable {
+        let date: String
+        let total: Double
+        var id: String { date }
+    }
+
+    struct PortfolioHistoryResponse: Codable {
+        let base_currency: String
+        let days: Int
+        let points: [PortfolioHistoryPoint]
+    }
+
     // MARK: - Rates
 
     struct RatesResponse: Codable {
@@ -388,6 +402,17 @@ final class APIService {
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(ValuationResponse.self, from: data)
+    }
+
+    func fetchPortfolioHistory(days: Int = 30, baseCurrency: String) async throws -> PortfolioHistoryResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("portfolio/history"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "days", value: "\(days)"),
+            URLQueryItem(name: "base_currency", value: baseCurrency)
+        ]
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(PortfolioHistoryResponse.self, from: data)
     }
 
     func fetchRates() async throws -> RatesResponse {

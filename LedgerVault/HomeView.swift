@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct HomeView: View {
     @AppStorage("baseCurrency") private var baseCurrency = "EUR"
@@ -9,6 +10,8 @@ struct HomeView: View {
     @State private var legs: [APIService.TransactionLeg] = []
     @State private var cryptoImages: [String: String] = [:]
     @State private var fxRates: [String: Double] = [:]
+    @State private var portfolioHistory: APIService.PortfolioHistoryResponse?
+    @State private var historyDays = 30
     @State private var isLoading = false
     @State private var lastUpdated: Date?
     @State private var errorMessage: String?
@@ -63,6 +66,9 @@ struct HomeView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     netWorthHero
+                    if let history = portfolioHistory, history.points.count > 1 {
+                        performanceChart(history)
+                    }
                     accountGrid
                     if !investmentPositions.isEmpty { topHoldingsSection }
                     recentActivitySection
@@ -235,6 +241,97 @@ struct HomeView: View {
          (stablecoins, .teal, "Stable"),
          (stocks, .green, "Stocks"),
          (crypto, .orange, "Crypto")]
+    }
+
+    // MARK: - Performance Chart
+
+    @ViewBuilder
+    private func performanceChart(_ history: APIService.PortfolioHistoryResponse) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Header
+            HStack {
+                Text("Performance")
+                    .font(.headline)
+                Spacer()
+                // Period picker
+                HStack(spacing: 4) {
+                    ForEach([7, 30, 90], id: \.self) { d in
+                        Button {
+                            historyDays = d
+                            Task {
+                                portfolioHistory = try? await APIService.shared.fetchPortfolioHistory(
+                                    days: d, baseCurrency: baseCurrency
+                                )
+                            }
+                        } label: {
+                            Text(d == 7 ? "1W" : d == 30 ? "1M" : "3M")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(historyDays == d ? Color.primary : Color(.systemGray5))
+                                .foregroundColor(historyDays == d ? Color(.systemBackground) : .primary)
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
+            }
+
+            // Compute change
+            let first = history.points.first(where: { $0.total > 0 })?.total ?? 0
+            let last  = history.points.last?.total ?? 0
+            let change = last - first
+            let changePct = first > 0 ? (change / first) * 100 : 0
+            let isUp = change >= 0
+
+            HStack(spacing: 6) {
+                Text(fmt(last))
+                    .font(.subheadline.bold())
+                HStack(spacing: 3) {
+                    Image(systemName: isUp ? "arrow.up.right" : "arrow.down.right")
+                        .font(.caption2)
+                    Text("\(isUp ? "+" : "")\(changePct.formatted(.number.precision(.fractionLength(2))))%")
+                        .font(.caption.bold())
+                }
+                .foregroundColor(isUp ? .green : .red)
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background((isUp ? Color.green : Color.red).opacity(0.1))
+                .clipShape(Capsule())
+            }
+
+            // Line chart
+            let points = history.points.filter { $0.total > 0 }
+            if !points.isEmpty {
+                Chart {
+                    ForEach(Array(points.enumerated()), id: \.element.id) { idx, point in
+                        LineMark(
+                            x: .value("Date", idx),
+                            y: .value("Value", point.total)
+                        )
+                        .foregroundStyle(isUp ? Color.green : Color.red)
+                        .interpolationMethod(.catmullRom)
+
+                        AreaMark(
+                            x: .value("Date", idx),
+                            y: .value("Value", point.total)
+                        )
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [(isUp ? Color.green : Color.red).opacity(0.18),
+                                         (isUp ? Color.green : Color.red).opacity(0.01)],
+                                startPoint: .top, endPoint: .bottom
+                            )
+                        )
+                        .interpolationMethod(.catmullRom)
+                    }
+                }
+                .chartXAxis(.hidden)
+                .chartYAxis(.hidden)
+                .chartYScale(domain: .automatic(includesZero: false))
+                .frame(height: 80)
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(20)
     }
 
     // MARK: - Account Grid
@@ -572,6 +669,12 @@ struct HomeView: View {
             await loadCryptoImages(for: cryptoSymbols)
         } catch {
             errorMessage = error.localizedDescription
+        }
+        // Load portfolio history in background (non-blocking — can be slow)
+        Task {
+            portfolioHistory = try? await APIService.shared.fetchPortfolioHistory(
+                days: historyDays, baseCurrency: baseCurrency
+            )
         }
     }
 
