@@ -16,7 +16,8 @@ struct AddTransactionView: View {
     @State private var accounts: [APIService.Account] = []
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @FocusState private var amountFocused: Bool
+    private enum FocusField { case amount, description, note }
+    @FocusState private var focusedField: FocusField?
     @State private var showCategoryPicker = false
     @State private var showFromPicker = false
     @State private var showToPicker = false
@@ -133,7 +134,7 @@ struct AddTransactionView: View {
                     // Hidden text field captures keyboard input
                     TextField("", text: $amountString)
                         .keyboardType(.decimalPad)
-                        .focused($amountFocused)
+                        .focused($focusedField, equals: .amount)
                         .opacity(0)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .onChange(of: amountString) { _, newValue in
@@ -153,7 +154,7 @@ struct AddTransactionView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
-                .onTapGesture { amountFocused = true }
+                .onTapGesture { focusedField = .amount }
 
                 // ── Type pills ───────────────────────────────────────────
                 HStack(spacing: 8) {
@@ -180,6 +181,10 @@ struct AddTransactionView: View {
 
                 // ── Rows ─────────────────────────────────────────────────
                 ScrollView {
+                    // Dismiss keyboard on tap of blank area
+                    Color.clear.frame(height: 0)
+                        .contentShape(Rectangle())
+                        .onTapGesture { focusedField = nil }
                     VStack(spacing: 0) {
 
                         // Category
@@ -202,6 +207,9 @@ struct AddTransactionView: View {
                         row(icon: "text.alignleft", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
                             TextField("Description (optional)", text: $description)
                                 .foregroundColor(.primary)
+                                .focused($focusedField, equals: .description)
+                                .submitLabel(.done)
+                                .onSubmit { focusedField = nil }
                         }
 
                         rowDivider()
@@ -267,6 +275,9 @@ struct AddTransactionView: View {
                         row(icon: "note.text", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
                             TextField("Note", text: $note)
                                 .foregroundColor(.primary)
+                                .focused($focusedField, equals: .note)
+                                .submitLabel(.done)
+                                .onSubmit { focusedField = nil }
                         }
 
                         rowDivider()
@@ -292,6 +303,7 @@ struct AddTransactionView: View {
                         Color.clear.frame(height: 100)
                     }
                 }
+                .scrollDismissesKeyboard(.interactively)
 
                 // ── Save button ──────────────────────────────────────────
                 Button { Task { await save() } } label: {
@@ -310,7 +322,14 @@ struct AddTransactionView: View {
             }
         }
         .task { await loadAccounts() }
-        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { amountFocused = true } }
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { focusedField = .amount } }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { focusedField = nil }
+                    .font(.body.bold())
+            }
+        }
         .onChange(of: type) { _, _ in
             if let first = currentCategories.first { category = first.0 }
         }

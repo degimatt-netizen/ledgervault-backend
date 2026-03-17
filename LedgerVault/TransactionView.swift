@@ -17,28 +17,20 @@ struct TransactionDetailView: View {
         legs.filter { $0.event_id == tx.id && $0.fee_flag != "true" }
     }
 
-    private var isTrade: Bool { tx.event_type.lowercased() == "trade" }
-    private var isIncome: Bool { tx.event_type.lowercased() == "income" }
-    private var isExpense: Bool { tx.event_type.lowercased() == "expense" }
+    private var isTrade:    Bool { tx.event_type.lowercased() == "trade" }
+    private var isIncome:   Bool { tx.event_type.lowercased() == "income" }
+    private var isExpense:  Bool { tx.event_type.lowercased() == "expense" }
+    private var isTransfer: Bool { tx.event_type.lowercased() == "transfer" }
 
-    private var tradeAssetLeg: APIService.TransactionLeg? {
-        txLegs.first(where: { $0.quantity > 0 })
-    }
-    private var tradeFiatLeg: APIService.TransactionLeg? {
-        txLegs.first(where: { $0.quantity < 0 })
-    }
+    private var tradeAssetLeg: APIService.TransactionLeg? { txLegs.first(where: { $0.quantity > 0 }) }
+    private var tradeFiatLeg:  APIService.TransactionLeg? { txLegs.first(where: { $0.quantity < 0 }) }
     private var tradeAsset: APIService.Asset? {
         guard let id = tradeAssetLeg?.asset_id else { return nil }
         return assets.first(where: { $0.id == id })
     }
-    private var isStock: Bool {
-        ["stock", "etf"].contains(tradeAsset?.asset_class.lowercased() ?? "")
-    }
-    private var isCrypto: Bool {
-        tradeAsset?.asset_class.lowercased() == "crypto"
-    }
+    private var isStock:  Bool { ["stock","etf"].contains(tradeAsset?.asset_class.lowercased() ?? "") }
+    private var isCrypto: Bool { tradeAsset?.asset_class.lowercased() == "crypto" }
 
-    // Primary leg for amount display
     private var primaryLeg: APIService.TransactionLeg? {
         if isTrade { return tradeFiatLeg ?? txLegs.first }
         return txLegs.first(where: { $0.quantity > 0 }) ?? txLegs.first
@@ -47,71 +39,58 @@ struct TransactionDetailView: View {
     private var primaryAccount: APIService.Account? {
         accounts.first(where: { $0.id == primaryLeg?.account_id })
     }
-    private func currencySymbol(for currency: String) -> String {
+
+    private func sym(_ currency: String) -> String {
         switch currency.uppercased() {
-        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF "
-        case "JPY": return "¥"; case "CAD": return "C$"; case "AUD": return "A$"
-        case "PLN": return "zł "; case "SEK": return "kr "; case "NOK": return "kr "
-        case "CZK": return "Kč "; default: return "€"
+        case "USD": return "$";    case "GBP": return "£";   case "CHF": return "CHF "
+        case "JPY": return "¥";    case "CAD": return "C$";  case "AUD": return "A$"
+        case "PLN": return "zł ";  case "SEK": return "kr "; case "NOK": return "kr "
+        case "CZK": return "Kč ";  default: return "€"
         }
     }
 
+    private var amtPrefix: String {
+        isExpense || isTrade ? "−" : isIncome ? "+" : ""
+    }
     private var amtColor: Color {
-        isIncome ? .green : isExpense ? .red : .primary
+        isIncome ? .green : isExpense ? .red : isTrade ? .orange : .blue
     }
 
-    private func formatPrice(_ price: Double) -> String {
-        if price < 0.01 { return "$\(price.formatted(.number.precision(.fractionLength(6))))" }
-        if price < 1    { return "$\(price.formatted(.number.precision(.fractionLength(4))))" }
-        return "$\(price.formatted(.number.precision(.fractionLength(2))))"
+    private func formatPrice(_ p: Double) -> String {
+        if p < 0.01 { return "$\(p.formatted(.number.precision(.fractionLength(6))))" }
+        if p < 1    { return "$\(p.formatted(.number.precision(.fractionLength(4))))" }
+        return "$\(p.formatted(.number.precision(.fractionLength(2))))"
     }
 
-    @ViewBuilder
-    private func legRow(_ leg: APIService.TransactionLeg) -> some View {
-        let legAccount = accounts.first(where: { $0.id == leg.account_id })
-        let legAsset: APIService.Asset? = {
-            guard let aid = leg.asset_id, !aid.isEmpty else { return nil }
-            return assets.first(where: { $0.id == aid })
-        }()
-        let sym        = legAsset == nil ? currencySymbol(for: legAccount?.base_currency ?? "USD") : ""
-        let assetLabel = legAsset.map { " \($0.symbol)" } ?? ""
-        let sign       = leg.quantity >= 0 ? "+" : ""
-
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(legAccount?.name ?? "Unknown").font(.subheadline)
-                if let asset = legAsset {
-                    Text(asset.name).font(.caption).foregroundColor(.secondary)
-                }
-            }
-            Spacer()
-            Text("\(sign)\(sym)\(abs(leg.quantity).formatted(.number.precision(.fractionLength(0...8))))\(assetLabel)")
-                .font(.subheadline.bold())
-                .foregroundColor(leg.quantity >= 0 ? .green : .red)
-        }
+    // ── Date formatting ───────────────────────────────────────────────────────
+    private var formattedDate: String {
+        let parser = DateFormatter(); parser.dateFormat = "yyyy-MM-dd"
+        guard let d = parser.date(from: tx.date) else { return tx.date }
+        let fmt = DateFormatter(); fmt.dateStyle = .long; fmt.timeStyle = .none
+        return fmt.string(from: d)
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                // ── Hero section ──────────────────────────────────────────
-                Section {
-                    VStack(spacing: 12) {
+            ScrollView {
+                VStack(spacing: 14) {
+
+                    // ── Hero card ─────────────────────────────────────────
+                    VStack(spacing: 16) {
                         // Icon
                         ZStack {
                             Circle()
-                                .fill(eventColor(tx.event_type).opacity(0.15))
-                                .frame(width: 70, height: 70)
+                                .fill(amtColor.opacity(0.12))
+                                .frame(width: 80, height: 80)
                             if let asset = tradeAsset, isStock {
                                 AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(asset.symbol)?format=jpg")) { phase in
                                     switch phase {
                                     case .success(let img):
                                         img.resizable().scaledToFill()
-                                            .frame(width: 54, height: 54).clipShape(Circle())
+                                            .frame(width: 60, height: 60).clipShape(Circle())
                                     default:
                                         Image(systemName: eventIcon(tx.event_type))
-                                            .foregroundColor(eventColor(tx.event_type))
-                                            .font(.system(size: 30))
+                                            .font(.system(size: 32)).foregroundColor(amtColor)
                                     }
                                 }
                             } else if let asset = tradeAsset, isCrypto,
@@ -121,101 +100,126 @@ struct TransactionDetailView: View {
                                     switch phase {
                                     case .success(let img):
                                         img.resizable().scaledToFit()
-                                            .frame(width: 54, height: 54).clipShape(Circle())
+                                            .frame(width: 60, height: 60).clipShape(Circle())
                                     default:
                                         Image(systemName: eventIcon(tx.event_type))
-                                            .foregroundColor(eventColor(tx.event_type))
-                                            .font(.system(size: 30))
+                                            .font(.system(size: 32)).foregroundColor(amtColor)
                                     }
                                 }
                             } else {
                                 Image(systemName: eventIcon(tx.event_type))
-                                    .foregroundColor(eventColor(tx.event_type))
-                                    .font(.system(size: 30))
+                                    .font(.system(size: 32)).foregroundColor(amtColor)
                             }
                         }
 
-                        // Description + amount
-                        VStack(spacing: 4) {
+                        VStack(spacing: 6) {
+                            // Type badge
+                            Text(tx.event_type.uppercased())
+                                .font(.caption2.bold())
+                                .tracking(1)
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(amtColor.opacity(0.12))
+                                .foregroundColor(amtColor)
+                                .clipShape(Capsule())
+
+                            // Description
                             Text(tx.description ?? tx.event_type.capitalized)
                                 .font(.title3.bold())
                                 .multilineTextAlignment(.center)
 
+                            // Trade quantity line
                             if isTrade, let asset = tradeAsset, let leg = tradeAssetLeg {
                                 Text("+\(abs(leg.quantity).formatted(.number.precision(.fractionLength(0...8)))) \(asset.symbol)")
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
                             }
 
+                            // Amount
                             if primaryAmount > 0 {
-                                Text("\(isExpense || isTrade ? "-" : isIncome ? "+" : "")\(currencySymbol(for: primaryAccount?.base_currency ?? "EUR"))\(primaryAmount.formatted(.number.precision(.fractionLength(2))))")
-                                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                                Text("\(amtPrefix)\(sym(primaryAccount?.base_currency ?? "EUR"))\(primaryAmount.formatted(.number.precision(.fractionLength(2))))")
+                                    .font(.system(size: 36, weight: .bold, design: .rounded))
                                     .foregroundColor(amtColor)
                             }
-                        }
 
-                        // Type badge
-                        Text(tx.event_type.capitalized)
-                            .font(.caption.bold())
-                            .padding(.horizontal, 12).padding(.vertical, 5)
-                            .background(eventColor(tx.event_type).opacity(0.12))
-                            .foregroundColor(eventColor(tx.event_type))
-                            .clipShape(Capsule())
+                            // Date below amount
+                            Text(formattedDate)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                }
-                .listRowBackground(Color(.secondarySystemGroupedBackground))
+                    .padding(24)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(20)
 
-                // ── Details ───────────────────────────────────────────────
-                Section("Details") {
-                    LabeledContent("Date", value: tx.date)
+                    // ── Details card ──────────────────────────────────────
+                    VStack(spacing: 0) {
+                        detailRow(label: "Type", value: tx.event_type.capitalized, icon: "tag.fill", color: amtColor)
+                        if let cat = tx.category, !cat.isEmpty {
+                            Divider().padding(.leading, 52)
+                            detailRow(label: "Category", value: cat, icon: "folder.fill", color: .secondary)
+                        }
+                        if let account = primaryAccount {
+                            Divider().padding(.leading, 52)
+                            detailRow(label: "Account", value: account.name, icon: "creditcard.fill", color: .blue)
+                        }
+                        if isTrade, let leg = tradeAssetLeg, let price = leg.unit_price, price > 0,
+                           let asset = tradeAsset {
+                            Divider().padding(.leading, 52)
+                            detailRow(label: "Price per \(asset.symbol)", value: formatPrice(price), icon: "chart.line.uptrend.xyaxis", color: .orange)
+                        }
+                        if let note = tx.note, !note.isEmpty {
+                            Divider().padding(.leading, 52)
+                            detailRow(label: "Note", value: note, icon: "note.text", color: .secondary)
+                        }
+                        if !tx.source.isEmpty {
+                            Divider().padding(.leading, 52)
+                            detailRow(label: "Source", value: tx.source, icon: "doc.text.fill", color: .secondary)
+                        }
+                    }
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(16)
 
-                    if let cat = tx.category, !cat.isEmpty {
-                        LabeledContent("Category", value: cat)
+                    // ── Movements card ────────────────────────────────────
+                    if !txLegs.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Movements")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 14)
+                                .padding(.bottom, 8)
+
+                            ForEach(Array(txLegs.enumerated()), id: \.element.id) { idx, leg in
+                                if idx > 0 { Divider().padding(.leading, 52) }
+                                legRow(leg)
+                            }
+                            .padding(.bottom, 4)
+                        }
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(16)
                     }
 
-                    if let account = primaryAccount {
-                        LabeledContent("Account", value: account.name)
-                    }
-
-                    if isTrade, let leg = tradeAssetLeg, let price = leg.unit_price, price > 0,
-                       let asset = tradeAsset {
-                        LabeledContent("Price per \(asset.symbol)", value: formatPrice(price))
-                    }
-
-                    if let note = tx.note, !note.isEmpty {
-                        LabeledContent("Note", value: note)
-                    }
-
-                    if !tx.source.isEmpty {
-                        LabeledContent("Source", value: tx.source)
-                    }
-                }
-
-                // ── Legs breakdown ────────────────────────────────────────
-                if !txLegs.isEmpty {
-                    Section("Movements") {
-                        ForEach(txLegs) { leg in legRow(leg) }
-                    }
-                }
-
-                // ── Delete ────────────────────────────────────────────────
-                Section {
+                    // ── Delete button ─────────────────────────────────────
                     Button(role: .destructive) {
                         showDeleteAlert = true
                     } label: {
-                        HStack {
-                            Spacer()
-                            Label(isDeleting ? "Deleting…" : "Delete Transaction",
-                                  systemImage: "trash")
-                            Spacer()
+                        HStack(spacing: 10) {
+                            Image(systemName: "trash")
+                            Text(isDeleting ? "Deleting…" : "Delete Transaction")
+                                .font(.subheadline.weight(.semibold))
                         }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(Color.red.opacity(0.1))
+                        .foregroundColor(.red)
+                        .cornerRadius(16)
                     }
                     .disabled(isDeleting)
                 }
+                .padding(16)
             }
-            .listStyle(.insetGrouped)
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Transaction")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -237,6 +241,64 @@ struct TransactionDetailView: View {
                 Text("This will permanently delete \"\(tx.description ?? tx.event_type)\" and all its legs.")
             }
         }
+    }
+
+    // ── Detail row helper ─────────────────────────────────────────────────────
+    @ViewBuilder
+    private func detailRow(label: String, value: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(color)
+                .frame(width: 32, height: 32)
+                .background(color.opacity(0.1))
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.caption).foregroundColor(.secondary)
+                Text(value).font(.subheadline)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    // ── Leg row helper ────────────────────────────────────────────────────────
+    @ViewBuilder
+    private func legRow(_ leg: APIService.TransactionLeg) -> some View {
+        let legAccount = accounts.first(where: { $0.id == leg.account_id })
+        let legAsset: APIService.Asset? = {
+            guard let aid = leg.asset_id, !aid.isEmpty else { return nil }
+            return assets.first(where: { $0.id == aid })
+        }()
+        let currency   = legAccount?.base_currency ?? "EUR"
+        let symStr     = legAsset == nil ? sym(currency) : ""
+        let assetLabel = legAsset.map { " \($0.symbol)" } ?? ""
+        let sign       = leg.quantity >= 0 ? "+" : "−"
+        let rowColor: Color = leg.quantity >= 0 ? .green : .red
+
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(rowColor.opacity(0.10))
+                    .frame(width: 32, height: 32)
+                Image(systemName: leg.quantity >= 0 ? "arrow.down" : "arrow.up")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(rowColor)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(legAccount?.name ?? "Unknown").font(.subheadline)
+                if let asset = legAsset {
+                    Text(asset.name).font(.caption).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+            Text("\(sign)\(symStr)\(abs(leg.quantity).formatted(.number.precision(.fractionLength(0...8))))\(assetLabel)")
+                .font(.subheadline.bold())
+                .foregroundColor(rowColor)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     private func eventIcon(_ t: String) -> String {
@@ -346,43 +408,47 @@ struct TransactionsView: View {
                 }
 
                 // ── Income / Expense summary strip ─────────────────────────────
-                if totalIncome > 0 || totalExpenses > 0 {
+                if filterType == "All" || filterType == "Income" || filterType == "Expense" {
                     HStack(spacing: 0) {
-                        if totalIncome > 0 {
-                            HStack(spacing: 8) {
-                                ZStack {
-                                    Circle().fill(Color.green.opacity(0.12)).frame(width: 32, height: 32)
-                                    Image(systemName: "arrow.down.circle.fill")
-                                        .foregroundColor(.green).font(.system(size: 14))
-                                }
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text("Income").font(.caption2).foregroundColor(.secondary)
-                                    Text("+\(baseCurrencySymbol)\(totalIncome.formatted(.number.precision(.fractionLength(2))))")
-                                        .font(.caption.bold()).foregroundColor(.green)
-                                }
+                        // Income column
+                        HStack(spacing: 8) {
+                            ZStack {
+                                Circle().fill(Color.green.opacity(0.12)).frame(width: 32, height: 32)
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .foregroundColor(.green).font(.system(size: 14))
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 16)
-                        }
-                        if totalIncome > 0 && totalExpenses > 0 {
-                            Divider().frame(height: 32)
-                        }
-                        if totalExpenses > 0 {
-                            HStack(spacing: 8) {
-                                ZStack {
-                                    Circle().fill(Color.red.opacity(0.12)).frame(width: 32, height: 32)
-                                    Image(systemName: "arrow.up.circle.fill")
-                                        .foregroundColor(.red).font(.system(size: 14))
-                                }
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text("Expenses").font(.caption2).foregroundColor(.secondary)
-                                    Text("-\(baseCurrencySymbol)\(totalExpenses.formatted(.number.precision(.fractionLength(2))))")
-                                        .font(.caption.bold()).foregroundColor(.red)
-                                }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Income").font(.caption2).foregroundColor(.secondary)
+                                Text(totalIncome > 0
+                                     ? "+\(baseCurrencySymbol)\(totalIncome.formatted(.number.precision(.fractionLength(2))))"
+                                     : "—")
+                                    .font(.caption.bold())
+                                    .foregroundColor(totalIncome > 0 ? .green : .secondary)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, totalIncome > 0 ? 12 : 16)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 16)
+
+                        Divider().frame(height: 32)
+
+                        // Expenses column
+                        HStack(spacing: 8) {
+                            ZStack {
+                                Circle().fill(Color.red.opacity(0.12)).frame(width: 32, height: 32)
+                                Image(systemName: "arrow.up.circle.fill")
+                                    .foregroundColor(.red).font(.system(size: 14))
+                            }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Expenses").font(.caption2).foregroundColor(.secondary)
+                                Text(totalExpenses > 0
+                                     ? "-\(baseCurrencySymbol)\(totalExpenses.formatted(.number.precision(.fractionLength(2))))"
+                                     : "—")
+                                    .font(.caption.bold())
+                                    .foregroundColor(totalExpenses > 0 ? .red : .secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 12)
                     }
                     .padding(.vertical, 10)
                     .background(Color(.secondarySystemGroupedBackground))

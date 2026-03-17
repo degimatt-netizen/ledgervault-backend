@@ -88,7 +88,7 @@ struct ProfileView: View {
     @AppStorage("profile_dob")       private var dobStr    = ""
     @AppStorage("profile_country_id")private var countryId = "MT"
     @AppStorage("profile_dial_id")   private var dialId    = "MT"
-    @AppStorage("profile_currency")  private var currency  = "EUR"
+    @AppStorage("baseCurrency")      private var currency  = "EUR"
 
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var showSavedBanner = false
