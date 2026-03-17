@@ -101,9 +101,21 @@ final class APIService {
 
     struct TransactionEventList: Codable { let items: [TransactionEvent] }
 
+    struct TransactionLeg: Codable, Identifiable {
+        let id: String
+        let event_id: String
+        let account_id: String
+        let asset_id: String?
+        let quantity: Double
+        let unit_price: Double?
+        let fee_flag: String   // "true" or "false"
+    }
+
+    struct TransactionLegList: Codable { let items: [TransactionLeg] }
+
     struct TransactionLegCreate: Codable {
         let account_id: String
-        let asset_id: String
+        let asset_id: String?   // nil → backend auto-creates fiat asset
         let quantity: Double
         let unit_price: Double?
         let fee_flag: Bool
@@ -163,6 +175,87 @@ final class APIService {
         let base_reference: String
         let prices: [String: Double]
         let fx_to_usd: [String: Double]
+    }
+
+    // MARK: - Exchange Connections
+
+    struct ExchangeConnectionResponse: Codable, Identifiable {
+        let id:             String
+        let exchange:       String
+        let name:           String
+        let api_key_masked: String
+        let account_id:     String?
+        let last_synced:    String?
+        let status:         String
+        let status_message: String?
+    }
+
+    struct ExchangeConnectionListResponse: Codable { let items: [ExchangeConnectionResponse] }
+
+    struct ExchangeConnectionCreateRequest: Codable {
+        let exchange:    String
+        let name:        String
+        let api_key:     String
+        let api_secret:  String
+        let passphrase:  String?
+        let account_id:  String?
+    }
+
+    struct SyncResultResponse: Codable {
+        let imported: Int
+        let skipped:  Int
+        let errors:   [String]
+        let status:   String
+    }
+
+    // MARK: - Recurring Transactions
+
+    struct RecurringTransactionResponse: Codable, Identifiable {
+        let id:             String
+        let name:           String
+        let event_type:     String
+        let category:       String?
+        let description:    String?
+        let note:           String?
+        let from_account_id: String
+        let from_asset_id:  String?
+        let from_quantity:  Double
+        let to_account_id:  String?
+        let to_asset_id:    String?
+        let to_quantity:    Double?
+        let unit_price:     Double?
+        let frequency:      String
+        let start_date:     String
+        let last_run_date:  String?
+        let next_run_date:  String
+        let enabled:        Bool
+    }
+
+    struct RecurringTransactionListResponse: Codable { let items: [RecurringTransactionResponse] }
+
+    struct RecurringTransactionCreateRequest: Codable {
+        let name:           String
+        let event_type:     String
+        let category:       String?
+        let description:    String?
+        let note:           String?
+        let from_account_id: String
+        let from_asset_id:  String?
+        let from_quantity:  Double
+        let to_account_id:  String?
+        let to_asset_id:    String?
+        let to_quantity:    Double?
+        let unit_price:     Double?
+        let frequency:      String
+        let start_date:     String
+        let next_run_date:  String
+        let enabled:        Bool
+    }
+
+    struct ExecuteRecurringResponse: Codable {
+        let status:        String
+        let event_id:      String
+        let next_run_date: String
     }
 
     // MARK: - Accounts API
@@ -254,13 +347,21 @@ final class APIService {
 
     // MARK: - Transactions API
 
+    func fetchTransactionLegs() async throws -> [TransactionLeg] {
+        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("transaction-legs"))
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(TransactionLegList.self, from: data).items
+    }
+
     func fetchTransactionEvents() async throws -> [TransactionEvent] {
         let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("transaction-events"))
         try validate(response: response, data: data)
         return try JSONDecoder().decode(TransactionEventList.self, from: data).items
     }
 
-    func createTransactionEvent(eventType: String, category: String?, description: String?, date: String, note: String?, legs: [TransactionLegCreate]) async throws -> TransactionEvent {
+    func createTransactionEvent(eventType: String, category: String?, description: String?,
+                                date: String, note: String?,
+                                legs: [TransactionLegCreate]) async throws -> TransactionEvent {
         var request = URLRequest(url: baseURL.appendingPathComponent("transaction-events"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -293,6 +394,180 @@ final class APIService {
         let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("rates"))
         try validate(response: response, data: data)
         return try JSONDecoder().decode(RatesResponse.self, from: data)
+    }
+
+    // MARK: - Reset API
+
+    func clearTransactions() async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("reset/transactions"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    func fullReset() async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("reset"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    // MARK: - Exchange Connections API
+
+    func fetchExchangeConnections() async throws -> [ExchangeConnectionResponse] {
+        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("exchange-connections"))
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ExchangeConnectionListResponse.self, from: data).items
+    }
+
+    func createExchangeConnection(exchange: String, name: String, apiKey: String,
+                                  apiSecret: String, passphrase: String?,
+                                  accountID: String?) async throws -> ExchangeConnectionResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("exchange-connections"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ExchangeConnectionCreateRequest(
+            exchange: exchange, name: name, api_key: apiKey,
+            api_secret: apiSecret, passphrase: passphrase, account_id: accountID))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ExchangeConnectionResponse.self, from: data)
+    }
+
+    func deleteExchangeConnection(id: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("exchange-connections/\(id)"))
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    func syncExchangeConnection(id: String) async throws -> SyncResultResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("exchange-connections/\(id)/sync"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    // MARK: - Recurring Transactions API
+
+    func fetchRecurringTransactions() async throws -> [RecurringTransactionResponse] {
+        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("recurring-transactions"))
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(RecurringTransactionListResponse.self, from: data).items
+    }
+
+    func createRecurringTransaction(name: String, eventType: String, category: String?,
+                                    description: String?, note: String?,
+                                    fromAccountID: String, fromAssetID: String?,
+                                    fromQuantity: Double, toAccountID: String?,
+                                    frequency: String, startDate: String,
+                                    nextRunDate: String) async throws -> RecurringTransactionResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("recurring-transactions"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(RecurringTransactionCreateRequest(
+            name: name, event_type: eventType, category: category,
+            description: description, note: note,
+            from_account_id: fromAccountID, from_asset_id: fromAssetID,
+            from_quantity: fromQuantity,
+            to_account_id: toAccountID, to_asset_id: nil, to_quantity: nil,
+            unit_price: nil,
+            frequency: frequency, start_date: startDate, next_run_date: nextRunDate,
+            enabled: true))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(RecurringTransactionResponse.self, from: data)
+    }
+
+    func executeRecurringTransaction(id: String) async throws -> ExecuteRecurringResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("recurring-transactions/\(id)/execute"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ExecuteRecurringResponse.self, from: data)
+    }
+
+    func deleteRecurringTransaction(id: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("recurring-transactions/\(id)"))
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    // MARK: - Bank Connections (TrueLayer Open Banking)
+
+    struct BankConnectionResponse: Codable, Identifiable {
+        let id:                   String
+        let provider_id:          String
+        let provider_name:        String
+        let account_display_name: String
+        let account_type:         String?
+        let currency:             String?
+        let truelayer_account_id: String
+        let ledger_account_id:    String?
+        let last_synced:          String?
+        let status:               String
+        let status_message:       String?
+    }
+
+    struct BankConnectionListResponse: Codable { let items: [BankConnectionResponse] }
+
+    struct BankAuthUrlResponse: Codable { let auth_url: String; let state: String }
+
+    struct BankCallbackResponse: Codable { let items: [BankConnectionResponse] }
+
+    func getBankAuthURL() async throws -> String {
+        let (data, response) = try await URLSession.shared.data(
+            from: baseURL.appendingPathComponent("bank-connections/auth-url"))
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(BankAuthUrlResponse.self, from: data).auth_url
+    }
+
+    func completeBankAuth(code: String) async throws -> [BankConnectionResponse] {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("bank-connections/callback"),
+            resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "code", value: code)]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(BankCallbackResponse.self, from: data).items
+    }
+
+    func fetchBankConnections() async throws -> [BankConnectionResponse] {
+        let (data, response) = try await URLSession.shared.data(
+            from: baseURL.appendingPathComponent("bank-connections"))
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(BankConnectionListResponse.self, from: data).items
+    }
+
+    func deleteBankConnection(id: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("bank-connections/\(id)"))
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+    }
+
+    func linkBankToAccount(connID: String, accountID: String) async throws -> BankConnectionResponse {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("bank-connections/\(connID)/link"),
+            resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "account_id", value: accountID)]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "PUT"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(BankConnectionResponse.self, from: data)
+    }
+
+    func syncBankConnection(id: String) async throws -> SyncResultResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("bank-connections/\(id)/sync"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
     }
 
     // MARK: - Error Handling

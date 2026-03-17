@@ -101,6 +101,9 @@ class AlertsManager: ObservableObject {
     }
 
     private func sendNotification(_ alert: PriceAlert, currentPrice: Double) {
+        // Respect the user's notification preference from Settings
+        guard UserDefaults.standard.object(forKey: "notifPriceAlerts") as? Bool != false else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "🔔 Price Alert: \(alert.symbol)"
         content.body  = "\(alert.symbol) is \(alert.condition == "above" ? "above" : "below") \(String(format: "$%.2f", alert.targetPrice)). Current: \(String(format: "$%.2f", currentPrice))"

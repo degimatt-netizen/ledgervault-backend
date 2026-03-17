@@ -16,6 +16,7 @@ struct AddTransactionView: View {
     @State private var accounts: [APIService.Account] = []
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @FocusState private var amountFocused: Bool
     @State private var showCategoryPicker = false
     @State private var showFromPicker = false
     @State private var showToPicker = false
@@ -68,12 +69,17 @@ struct AddTransactionView: View {
     }
 
     private var currencySymbol: String {
-        let currency = fromAccount?.base_currency ?? toAccount?.base_currency ?? "EUR"
-        switch currency {
+        // Use the relevant account depending on transaction type
+        let currency: String
+        switch type {
+        case "Income":   currency = toAccount?.base_currency   ?? "EUR"
+        default:         currency = fromAccount?.base_currency ?? "EUR"
+        }
+        switch currency.uppercased() {
         case "USD": return "$"
         case "GBP": return "£"
         case "CHF": return "CHF "
-        default: return "€"
+        default:    return "€"
         }
     }
 
@@ -112,16 +118,42 @@ struct AddTransactionView: View {
                 .padding(.top, 20)
 
                 // ── Big amount ───────────────────────────────────────────
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(currencySymbol)
-                        .font(.system(size: 42, weight: .bold))
-                    Text(amountString.isEmpty ? "0" : amountString)
-                        .font(.system(size: 64, weight: .bold))
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
+                ZStack {
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(currencySymbol)
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Text(amountString.isEmpty ? "0" : amountString)
+                            .font(.system(size: 58, weight: .bold))
+                            .minimumScaleFactor(0.4)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    // Hidden text field captures keyboard input
+                    TextField("", text: $amountString)
+                        .keyboardType(.decimalPad)
+                        .focused($amountFocused)
+                        .opacity(0)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .onChange(of: amountString) { _, newValue in
+                            // Allow only valid decimal: one dot, digits only
+                            var filtered = newValue.filter { $0.isNumber || $0 == "." }
+                            let dots = filtered.filter { $0 == "." }.count
+                            if dots > 1 {
+                                var seenDot = false
+                                filtered = String(filtered.filter { ch in
+                                    if ch == "." { if seenDot { return false }; seenDot = true }
+                                    return true
+                                })
+                            }
+                            if filtered != newValue { amountString = filtered }
+                            amount = Double(filtered)
+                        }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
+                .onTapGesture { amountFocused = true }
 
                 // ── Type pills ───────────────────────────────────────────
                 HStack(spacing: 8) {
@@ -278,6 +310,7 @@ struct AddTransactionView: View {
             }
         }
         .task { await loadAccounts() }
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { amountFocused = true } }
         .onChange(of: type) { _, _ in
             if let first = currentCategories.first { category = first.0 }
         }
@@ -388,13 +421,13 @@ struct AddTransactionView: View {
             let legs: [APIService.TransactionLegCreate]
             switch type {
             case "Income":
-                legs = [.init(account_id: toAccountId, asset_id: "", quantity: amount, unit_price: amount, fee_flag: false)]
+                legs = [.init(account_id: toAccountId, asset_id: nil, quantity: amount, unit_price: 1.0, fee_flag: false)]
             case "Expense":
-                legs = [.init(account_id: fromAccountId, asset_id: "", quantity: -amount, unit_price: amount, fee_flag: false)]
+                legs = [.init(account_id: fromAccountId, asset_id: nil, quantity: -amount, unit_price: 1.0, fee_flag: false)]
             case "Transfer":
                 legs = [
-                    .init(account_id: fromAccountId, asset_id: "", quantity: -amount, unit_price: amount, fee_flag: false),
-                    .init(account_id: toAccountId, asset_id: "", quantity: amount, unit_price: amount, fee_flag: false)
+                    .init(account_id: fromAccountId, asset_id: nil, quantity: -amount, unit_price: 1.0, fee_flag: false),
+                    .init(account_id: toAccountId,   asset_id: nil, quantity:  amount, unit_price: 1.0, fee_flag: false)
                 ]
             default: legs = []
             }

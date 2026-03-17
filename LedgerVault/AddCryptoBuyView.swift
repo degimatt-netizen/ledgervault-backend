@@ -26,8 +26,10 @@ struct AddCryptoBuyView: View {
     @State private var isRefreshingPrice = false
     @State private var priceLastUpdated: Date?
     @State private var searchTask: Task<Void, Never>? = nil
+    @State private var accountBalances: [String: Double] = [:]   // account_id -> native balance
 
     private let liveUpdateIntervalSeconds: TimeInterval = 15
+    private let fiatAccountTypes = ["bank", "cash", "stablecoin_wallet", "exchange"]
 
     private var estimatedUnits: Double? {
         guard let amount = amountToDeduct, amount > 0,
@@ -68,11 +70,25 @@ struct AddCryptoBuyView: View {
                                 selectResult(result)
                             } label: {
                                 HStack(spacing: 12) {
-                                    // Coin icon placeholder
+                                    // Coin icon — real thumb if available (use small for better quality)
                                     ZStack {
                                         Circle().fill(Color.orange.opacity(0.15)).frame(width: 36, height: 36)
-                                        Text(String(result.symbol.prefix(2)))
-                                            .font(.caption.bold()).foregroundColor(.orange)
+                                        if let rawThumb = result.thumb,
+                                           let url = URL(string: rawThumb.replacingOccurrences(of: "/thumb/", with: "/small/")) {
+                                            AsyncImage(url: url) { phase in
+                                                switch phase {
+                                                case .success(let img):
+                                                    img.resizable().scaledToFit()
+                                                        .frame(width: 28, height: 28).clipShape(Circle())
+                                                default:
+                                                    Text(String(result.symbol.prefix(2)))
+                                                        .font(.caption.bold()).foregroundColor(.orange)
+                                                }
+                                            }
+                                        } else {
+                                            Text(String(result.symbol.prefix(2)))
+                                                .font(.caption.bold()).foregroundColor(.orange)
+                                        }
                                     }
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(result.symbol).font(.headline).foregroundColor(.primary)
@@ -100,8 +116,22 @@ struct AddCryptoBuyView: View {
                         HStack(spacing: 14) {
                             ZStack {
                                 Circle().fill(Color.orange.opacity(0.15)).frame(width: 44, height: 44)
-                                Text(String(result.symbol.prefix(2)))
-                                    .font(.subheadline.bold()).foregroundColor(.orange)
+                                if let rawThumb = result.thumb,
+                                   let url = URL(string: rawThumb.replacingOccurrences(of: "/thumb/", with: "/small/")) {
+                                    AsyncImage(url: url) { phase in
+                                        switch phase {
+                                        case .success(let img):
+                                            img.resizable().scaledToFit()
+                                                .frame(width: 36, height: 36).clipShape(Circle())
+                                        default:
+                                            Text(String(result.symbol.prefix(2)))
+                                                .font(.subheadline.bold()).foregroundColor(.orange)
+                                        }
+                                    }
+                                } else {
+                                    Text(String(result.symbol.prefix(2)))
+                                        .font(.subheadline.bold()).foregroundColor(.orange)
+                                }
                             }
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(result.symbol).font(.title3.bold())
@@ -143,9 +173,14 @@ struct AddCryptoBuyView: View {
                 // ── Buy details ───────────────────────────────────────────
                 if selectedResult != nil {
                     Section("Buy Details") {
-                        TextField("Amount to deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
-                            .keyboardType(.decimalPad)
-                            .focused($focusedField, equals: .amount)
+                        HStack(spacing: 4) {
+                            Text(deductCurrencySymbol)
+                                .foregroundColor(.secondary)
+                                .font(.body)
+                            TextField("Amount to deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
+                                .keyboardType(.decimalPad)
+                                .focused($focusedField, equals: .amount)
+                        }
 
                         TextField("Price per coin (quote currency)", value: $purchasePricePerUnit, format: .number.precision(.fractionLength(4)))
                             .keyboardType(.decimalPad)
@@ -183,8 +218,9 @@ struct AddCryptoBuyView: View {
                         }
 
                         Picker("Deduct from", selection: $selectedDeductId) {
-                            ForEach(accounts.filter { ["bank","cash","stablecoin_wallet"].contains($0.account_type) }) { acc in
-                                Text("\(acc.name) (\(acc.base_currency))").tag(acc.id)
+                            ForEach(accounts.filter { fiatAccountTypes.contains($0.account_type) }) { acc in
+                                let bal = accountBalances[acc.id] ?? 0
+                                Text("\(acc.name) — \(bal.formatted(.number.precision(.fractionLength(2)))) \(acc.base_currency)").tag(acc.id)
                             }
                         }
 
@@ -200,6 +236,7 @@ struct AddCryptoBuyView: View {
                     Section { Text(err).foregroundColor(.red) }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Buy Crypto")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -261,10 +298,7 @@ struct AddCryptoBuyView: View {
             priceLastUpdated = Date()
             if let price = newRates.prices[result.symbol] {
                 if lockToLivePrice { purchasePricePerUnit = price }
-                // Update the result's price in place
-                if var updated = selectedResult {
-                    searchResults = []
-                }
+                if selectedResult != nil { searchResults = [] }
             }
         } catch {}
     }
@@ -281,9 +315,21 @@ struct AddCryptoBuyView: View {
 
     private func loadAccounts() async {
         do {
-            accounts = try await APIService.shared.fetchAccounts()
-            rates = try? await APIService.shared.fetchRates()
-            if let first = accounts.first(where: { ["bank","cash","stablecoin_wallet"].contains($0.account_type) }) { selectedDeductId = first.id }
+            async let accFetch  = APIService.shared.fetchAccounts()
+            async let rateFetch = APIService.shared.fetchRates()
+            async let legFetch  = APIService.shared.fetchTransactionLegs()
+            let (fetchedAccounts, fetchedRates, allLegs) = try await (accFetch, rateFetch, legFetch)
+
+            accounts = fetchedAccounts
+            rates    = fetchedRates
+
+            // Compute fiat balances from transaction legs
+            for acc in accounts where fiatAccountTypes.contains(acc.account_type) {
+                let bal = allLegs.filter { $0.account_id == acc.id }.reduce(0.0) { $0 + $1.quantity }
+                accountBalances[acc.id] = bal
+            }
+
+            if let first = accounts.first(where: { fiatAccountTypes.contains($0.account_type) }) { selectedDeductId = first.id }
             if let first = accounts.first(where: { $0.account_type == "crypto_wallet" }) { selectedPlatformId = first.id }
         } catch { errorMessage = error.localizedDescription }
     }
@@ -327,6 +373,16 @@ struct AddCryptoBuyView: View {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    // MARK: - Currency helpers
+
+    private var deductCurrencySymbol: String {
+        guard let acc = accounts.first(where: { $0.id == selectedDeductId }) else { return "€" }
+        switch acc.base_currency.uppercased() {
+        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF"
+        default: return "€"
+        }
+    }
+
     // MARK: - FX helpers
 
     private func convert(amount: Double, from: String, to: String) -> Double? {
@@ -335,6 +391,9 @@ struct AddCryptoBuyView: View {
         guard let rates else { return nil }
         let fx = rates.fx_to_usd
         guard let fRate = fx[f], let tRate = fx[t], fRate > 0, tRate > 0 else { return nil }
+        // fx_to_usd stores "USD per currency unit" (e.g. fx["EUR"] ≈ 1.15 means 1 EUR = $1.15).
+        // To convert A→B: multiply by fRate to get USD, divide by tRate to get target currency.
+        // e.g. EUR→USD: 100 * (1.15 / 1.0) = $115; USD→EUR: 100 * (1.0 / 1.15) ≈ €87
         return amount * (fRate / tRate)
     }
 
