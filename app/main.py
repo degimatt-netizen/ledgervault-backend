@@ -17,9 +17,10 @@ from app.schemas import (
     ExchangeConnectionCreate, ExchangeConnectionOut, ExchangeConnectionList, SyncResult,
     RecurringTransactionCreate, RecurringTransactionUpdate,
     RecurringTransactionOut, RecurringTransactionList,
+    BankConnectionOut, BankConnectionList, BankAuthUrlResponse, BankCallbackResponse,
 )
 
-app = FastAPI(title="LedgerVault API", version="4.1.0")
+app = FastAPI(title="LedgerVault API", version="4.2.0")
 models.Base.metadata.create_all(bind=engine)
 logger = logging.getLogger("ledgervault")
 
@@ -1477,3 +1478,254 @@ def seed_data(db: Session = Depends(get_db)):
                                 asset_class=cls, quote_currency=quote))
     db.commit()
     return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TrueLayer Open Banking
+# ─────────────────────────────────────────────────────────────────────────────
+
+TRUELAYER_CLIENT_ID     = os.getenv("TRUELAYER_CLIENT_ID",     "sandbox-ledgervault-0a1cb9")
+TRUELAYER_CLIENT_SECRET = os.getenv("TRUELAYER_CLIENT_SECRET", "c6f044fb-1437-467c-9635-710518ac8957")
+TRUELAYER_REDIRECT_URI  = os.getenv("TRUELAYER_REDIRECT_URI",  "ledgervault://truelayer/callback")
+TRUELAYER_AUTH_URL      = "https://auth.truelayer-sandbox.com"
+TRUELAYER_API_URL       = "https://api.truelayer-sandbox.com"
+
+
+def _tl_conn_out(c: models.BankConnection) -> dict:
+    return {
+        "id": c.id,
+        "provider_id": c.provider_id,
+        "provider_name": c.provider_name,
+        "account_display_name": c.account_display_name,
+        "account_type": c.account_type,
+        "currency": c.currency,
+        "truelayer_account_id": c.truelayer_account_id,
+        "ledger_account_id": c.ledger_account_id,
+        "last_synced": c.last_synced,
+        "status": c.status,
+        "status_message": c.status_message,
+    }
+
+
+def _tl_fresh_token(conn: models.BankConnection, db: Session) -> str:
+    """Return a valid access token, refreshing via refresh_token if needed."""
+    if not conn.refresh_token:
+        return conn.access_token
+    try:
+        with httpx.Client(timeout=10) as c:
+            r = c.post(f"{TRUELAYER_AUTH_URL}/connect/token", data={
+                "grant_type":    "refresh_token",
+                "client_id":     TRUELAYER_CLIENT_ID,
+                "client_secret": TRUELAYER_CLIENT_SECRET,
+                "refresh_token": conn.refresh_token,
+            })
+            if r.status_code == 200:
+                tokens = r.json()
+                conn.access_token  = tokens["access_token"]
+                conn.refresh_token = tokens.get("refresh_token", conn.refresh_token)
+                db.commit()
+                return conn.access_token
+    except Exception:
+        pass
+    return conn.access_token
+
+
+@app.get("/bank-connections/auth-url", response_model=BankAuthUrlResponse)
+def bank_auth_url():
+    """Generate a TrueLayer OAuth URL for the iOS app to open."""
+    import secrets
+    state  = secrets.token_urlsafe(16)
+    params = {
+        "response_type": "code",
+        "client_id":     TRUELAYER_CLIENT_ID,
+        "scope":         "info accounts balance transactions",
+        "redirect_uri":  TRUELAYER_REDIRECT_URI,
+        "state":         state,
+        "enable_mock":   "true",
+        "providers":     "uk-ob-all uk-oauth-all",
+    }
+    url = f"{TRUELAYER_AUTH_URL}/?{urllib.parse.urlencode(params)}"
+    return {"auth_url": url, "state": state}
+
+
+@app.post("/bank-connections/callback", response_model=BankCallbackResponse)
+def bank_callback(code: str = Query(...), db: Session = Depends(get_db)):
+    """Exchange OAuth code for tokens; fetch & persist TrueLayer accounts."""
+    # 1. Exchange code for tokens
+    with httpx.Client(timeout=10) as c:
+        r = c.post(f"{TRUELAYER_AUTH_URL}/connect/token", data={
+            "grant_type":    "authorization_code",
+            "client_id":     TRUELAYER_CLIENT_ID,
+            "client_secret": TRUELAYER_CLIENT_SECRET,
+            "redirect_uri":  TRUELAYER_REDIRECT_URI,
+            "code":          code,
+        })
+        if r.status_code != 200:
+            raise HTTPException(400, f"Token exchange failed: {r.text[:200]}")
+        tokens        = r.json()
+        access_token  = tokens["access_token"]
+        refresh_token = tokens.get("refresh_token", "")
+
+    # 2. Fetch accounts from TrueLayer
+    with httpx.Client(timeout=10) as c:
+        r = c.get(f"{TRUELAYER_API_URL}/data/v1/accounts",
+                  headers={"Authorization": f"Bearer {access_token}"})
+        if r.status_code != 200:
+            raise HTTPException(400, f"Failed to fetch accounts: {r.text[:200]}")
+        tl_accounts = r.json().get("results", [])
+
+    # 3. Create/update BankConnection rows (one per TrueLayer account)
+    created = []
+    for tl_acct in tl_accounts:
+        tl_id         = tl_acct["account_id"]
+        provider      = tl_acct.get("provider", {})
+        provider_id   = provider.get("provider_id", "unknown")
+        provider_name = provider.get("display_name", "Bank")
+
+        existing = db.query(models.BankConnection).filter_by(truelayer_account_id=tl_id).first()
+        if existing:
+            # Refresh tokens for existing connection
+            existing.access_token  = access_token
+            existing.refresh_token = refresh_token
+            existing.status        = "active"
+            created.append(existing)
+            continue
+
+        conn = models.BankConnection(
+            id=str(uuid4()),
+            provider_id=provider_id,
+            provider_name=provider_name,
+            account_display_name=tl_acct.get("display_name", "Account"),
+            account_type=tl_acct.get("account_type", "TRANSACTION"),
+            currency=tl_acct.get("currency", "GBP"),
+            truelayer_account_id=tl_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            status="active",
+        )
+        db.add(conn)
+        created.append(conn)
+
+    db.commit()
+    return {"items": [_tl_conn_out(c) for c in created]}
+
+
+@app.get("/bank-connections", response_model=BankConnectionList)
+def list_bank_connections(db: Session = Depends(get_db)):
+    conns = db.query(models.BankConnection).all()
+    return {"items": [_tl_conn_out(c) for c in conns]}
+
+
+@app.delete("/bank-connections/{conn_id}")
+def delete_bank_connection(conn_id: str, db: Session = Depends(get_db)):
+    conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
+    if not conn:
+        raise HTTPException(404, "Bank connection not found")
+    db.delete(conn)
+    db.commit()
+    return {"ok": True}
+
+
+@app.put("/bank-connections/{conn_id}/link", response_model=BankConnectionOut)
+def link_bank_to_account(conn_id: str, account_id: str = Query(...),
+                         db: Session = Depends(get_db)):
+    """Link a TrueLayer bank connection to a LedgerVault account for syncing."""
+    conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
+    if not conn:
+        raise HTTPException(404, "Bank connection not found")
+    conn.ledger_account_id = account_id
+    db.commit()
+    return _tl_conn_out(conn)
+
+
+@app.post("/bank-connections/{conn_id}/sync", response_model=SyncResult)
+def sync_bank_connection(conn_id: str, db: Session = Depends(get_db)):
+    """Import the last 90 days of transactions from TrueLayer."""
+    conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
+    if not conn:
+        raise HTTPException(404, "Bank connection not found")
+    if not conn.ledger_account_id:
+        raise HTTPException(400, "Link a LedgerVault account to this connection first.")
+
+    access_token = _tl_fresh_token(conn, db)
+    from_date    = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    imported = 0; skipped = 0; errors = []
+
+    try:
+        with httpx.Client(timeout=20) as c:
+            r = c.get(
+                f"{TRUELAYER_API_URL}/data/v1/accounts/{conn.truelayer_account_id}/transactions",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"from": from_date},
+            )
+            if r.status_code != 200:
+                conn.status         = "error"
+                conn.status_message = f"TrueLayer {r.status_code}: {r.text[:120]}"
+                db.commit()
+                raise HTTPException(400, conn.status_message)
+            transactions = r.json().get("results", [])
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.status = "error"; conn.status_message = str(e)[:120]
+        db.commit()
+        raise HTTPException(500, str(e))
+
+    # Ensure a fiat Asset row exists for this currency
+    currency   = conn.currency or "GBP"
+    fiat_asset = db.query(models.Asset).filter_by(symbol=currency).first()
+    if not fiat_asset:
+        fiat_asset = models.Asset(
+            id=str(uuid4()), symbol=currency, name=currency,
+            asset_class="fiat", quote_currency="USD")
+        db.add(fiat_asset)
+        db.flush()
+
+    for tx in transactions:
+        tl_tx_id    = tx.get("transaction_id", "")
+        external_id = f"truelayer:{conn.id}:{tl_tx_id}"
+
+        if db.query(models.TransactionEvent).filter_by(external_id=external_id).first():
+            skipped += 1
+            continue
+
+        amount      = float(tx.get("amount", 0))
+        description = (tx.get("description") or tx.get("merchant_name") or "Bank Transaction")
+        tx_date     = (tx.get("timestamp") or tx.get("normalised_provider_transaction_id", ""))[:10]
+        if not tx_date:
+            tx_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        classifications = tx.get("transaction_classification") or []
+        category = classifications[0] if classifications else None
+
+        if amount == 0:
+            skipped += 1
+            continue
+
+        event_type = "income" if amount > 0 else "expense"
+        try:
+            event = models.TransactionEvent(
+                id=str(uuid4()), event_type=event_type,
+                description=description[:200], category=category,
+                date=tx_date, source="truelayer", external_id=external_id,
+            )
+            db.add(event)
+            db.flush()
+
+            leg = models.TransactionLeg(
+                id=str(uuid4()), event_id=event.id,
+                account_id=conn.ledger_account_id,
+                asset_id=fiat_asset.id,
+                quantity=abs(amount),
+                unit_price=1.0, fee_flag="false",
+            )
+            db.add(leg)
+            imported += 1
+        except Exception as e:
+            errors.append(str(e)[:80])
+
+    conn.last_synced    = datetime.now(timezone.utc).isoformat()
+    conn.status         = "active"
+    conn.status_message = None
+    db.commit()
+    return {"imported": imported, "skipped": skipped, "errors": errors, "status": "ok"}
