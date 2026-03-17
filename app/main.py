@@ -1654,9 +1654,9 @@ def bank_auth_url():
     state = secrets.token_urlsafe(16)
     # Use quote (not urlencode) so spaces encode as %20 — TrueLayer requires this
     # offline_access → get a refresh token so we can re-auth silently later
-    scope        = urllib.parse.quote("info accounts balance transactions offline_access")
+    scope        = urllib.parse.quote("info accounts balance cards transactions direct_debits standing_orders offline_access")
     redirect_uri = urllib.parse.quote(TRUELAYER_REDIRECT_URI, safe="")
-    providers    = urllib.parse.quote("uk-ob-all uk-oauth-all uk-mock")
+    providers    = urllib.parse.quote("uk-cs-mock uk-ob-all uk-oauth-all")
     url = (
         f"{TRUELAYER_AUTH_URL}/"
         f"?response_type=code"
