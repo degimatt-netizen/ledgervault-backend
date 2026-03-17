@@ -1160,14 +1160,19 @@ def root():
     return {"status": "ok", "message": "LedgerVault API v4.1 — exchange sync enabled"}
 
 @app.post("/reset")
-def reset_database():
+def reset_database(admin_key: str = Query(...)):
+    expected = os.getenv("ADMIN_KEY", "")
+    if not expected or admin_key != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     return {"status": "ok"}
 
 @app.post("/reset/transactions")
-def reset_transactions(db: Session = Depends(get_db)):
-    """Delete all transactions, legs, and holdings (keep accounts/assets)."""
+def reset_transactions(admin_key: str = Query(...), db: Session = Depends(get_db)):
+    expected = os.getenv("ADMIN_KEY", "")
+    if not expected or admin_key != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
     db.query(models.TransactionLeg).delete()
     db.query(models.TransactionEvent).delete()
     db.query(models.Holding).delete()
