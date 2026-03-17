@@ -4,19 +4,34 @@ import SwiftUI
 struct BankDetailView: View {
     let account: APIService.Account
     let onDeleted: () -> Void
+    var displayCurrency: String = ""   // "" = use account's native currency
 
     @AppStorage("baseCurrency") private var baseCurrency = "EUR"
     @Environment(\.dismiss) private var dismiss
 
+    @State private var liveAccount: APIService.Account
     @State private var balance: Double = 0
     @State private var transactions: [APIService.TransactionEvent] = []
+    @State private var legs: [APIService.TransactionLeg] = []
+    @State private var fxRates: [String: Double] = [:]
     @State private var isLoading = true
     @State private var showDeleteAlert = false
     @State private var showEdit = false
     @State private var errorMessage: String?
 
-    private var accountColor: Color { account.account_type == "bank" ? .blue : .indigo }
-    private var accountIcon: String  { account.account_type == "bank" ? "building.columns.fill" : "link.circle.fill" }
+    init(account: APIService.Account, onDeleted: @escaping () -> Void, displayCurrency: String = "") {
+        self.account = account
+        self.onDeleted = onDeleted
+        self.displayCurrency = displayCurrency
+        _liveAccount = State(initialValue: account)
+    }
+
+    private var effectiveCurrency: String {
+        displayCurrency.isEmpty ? liveAccount.base_currency : displayCurrency
+    }
+
+    private var accountColor: Color { liveAccount.account_type == "bank" ? .blue : .indigo }
+    private var accountIcon: String  { liveAccount.account_type == "bank" ? "building.columns.fill" : "link.circle.fill" }
 
     var body: some View {
         NavigationStack {
@@ -24,71 +39,71 @@ struct BankDetailView: View {
                 if isLoading {
                     ProgressView("Loading…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        VStack(spacing: 16) {
-                            // Balance card
-                            VStack(spacing: 12) {
-                                HStack(spacing: 14) {
-                                    ZStack {
-                                        Circle().fill(accountColor.opacity(0.15)).frame(width: 52, height: 52)
-                                        Image(systemName: accountIcon).font(.title3).foregroundColor(accountColor)
-                                    }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(account.name).font(.title3.bold())
-                                        Text(account.account_type == "bank" ? "Bank Account" : "Stablecoin Wallet")
-                                            .font(.caption).foregroundColor(.secondary)
+                    List {
+                        // ── Summary card ──────────────────────────────────
+                        Section {
+                            VStack(spacing: 14) {
+                                VStack(spacing: 2) {
+                                    Text("Balance")
+                                        .font(.caption).foregroundColor(.secondary)
+                                    Text(fmt(balance))
+                                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                                        .foregroundColor(balance >= 0 ? .primary : .red)
+                                }
+                                HStack(spacing: 0) {
+                                    Spacer()
+                                    VStack(spacing: 2) {
+                                        Text("Inflow")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                        let inflow = legs.filter { $0.account_id == liveAccount.id && $0.quantity > 0 && $0.fee_flag != "true" }.reduce(0) { $0 + $1.quantity }
+                                        Text(fmt(inflow))
+                                            .font(.subheadline.bold()).foregroundColor(.green)
                                     }
                                     Spacer()
-                                    Text(account.base_currency)
-                                        .font(.caption.bold())
-                                        .padding(.horizontal, 10).padding(.vertical, 4)
-                                        .background(accountColor.opacity(0.12))
-                                        .foregroundColor(accountColor)
-                                        .clipShape(Capsule())
-                                }
-                                Divider()
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Balance").font(.caption).foregroundColor(.secondary)
-                                        Text(fmt(balance)).font(.title2.bold()).foregroundColor(accountColor)
+                                    Divider().frame(height: 36)
+                                    Spacer()
+                                    VStack(spacing: 2) {
+                                        Text("Outflow")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                        let outflow = abs(legs.filter { $0.account_id == liveAccount.id && $0.quantity < 0 && $0.fee_flag != "true" }.reduce(0) { $0 + $1.quantity })
+                                        Text(fmt(outflow))
+                                            .font(.subheadline.bold()).foregroundColor(.red)
                                     }
                                     Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text("Transactions").font(.caption).foregroundColor(.secondary)
-                                        Text("\(transactions.count)").font(.title2.bold())
+                                    Divider().frame(height: 36)
+                                    Spacer()
+                                    VStack(spacing: 2) {
+                                        Text("Transactions")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                        Text("\(transactions.count)")
+                                            .font(.subheadline.bold())
                                     }
+                                    Spacer()
                                 }
                             }
-                            .padding(16)
-                            .background(Color(.systemBackground))
-                            .cornerRadius(20)
-                            .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 3)
-
-                            // Transactions
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text("Transactions").font(.headline).padding(.bottom, 12)
-                                if transactions.isEmpty {
-                                    VStack(spacing: 12) {
-                                        Image(systemName: "tray").font(.system(size: 40)).foregroundColor(.secondary.opacity(0.4))
-                                        Text("No transactions yet").foregroundColor(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity).padding(.vertical, 32)
-                                } else {
-                                    ForEach(Array(transactions.enumerated()), id: \.element.id) { idx, tx in
-                                        txRow(tx)
-                                        if idx < transactions.count - 1 { Divider().padding(.leading, 54) }
-                                    }
-                                }
-                            }
-                            .padding(16)
-                            .background(Color(.systemGray6))
-                            .cornerRadius(20)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
                         }
-                        .padding(16)
+                        .listRowBackground(Color(.secondarySystemGroupedBackground))
+
+                        // ── Transaction history ───────────────────────────
+                        Section("Transactions") {
+                            if transactions.isEmpty {
+                                VStack(spacing: 12) {
+                                    Image(systemName: "tray")
+                                        .font(.system(size: 38)).foregroundColor(.secondary.opacity(0.35))
+                                    Text("No transactions yet").foregroundColor(.secondary)
+                                }
+                                .frame(maxWidth: .infinity).padding(.vertical, 28)
+                            } else {
+                                ForEach(transactions) { tx in txRow(tx) }
+                            }
+                        }
                     }
+                    .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle(account.name)
+            .navigationTitle(liveAccount.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
@@ -101,13 +116,17 @@ struct BankDetailView: View {
                     }
                 }
             }
-            .alert("Delete \(account.name)?", isPresented: $showDeleteAlert) {
+            .alert("Delete \(liveAccount.name)?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     Task { try? await APIService.shared.deleteAccount(id: account.id); onDeleted(); dismiss() }
                 }
                 Button("Cancel", role: .cancel) {}
-            } message: { Text("This will permanently delete this account.") }
-            .sheet(isPresented: $showEdit) { EditAccountView(account: account, onSaved: { Task { await load() } }) }
+            } message: { Text("This will permanently delete this account and all its transactions.") }
+            .sheet(isPresented: $showEdit) {
+                EditAccountView(account: liveAccount, onSaved: {
+                    Task { await load() }
+                })
+            }
         }
         .task { await load() }
         .refreshable { await load() }
@@ -115,68 +134,115 @@ struct BankDetailView: View {
 
     @ViewBuilder
     private func txRow(_ tx: APIService.TransactionEvent) -> some View {
+        let amt = txAmount(tx)
+        let isIncome  = tx.event_type.lowercased() == "income"
+        let isExpense = tx.event_type.lowercased() == "expense"
         HStack(spacing: 12) {
             ZStack {
-                Circle().fill(eventColor(tx.event_type).opacity(0.15)).frame(width: 42, height: 42)
-                Image(systemName: eventIcon(tx.event_type)).foregroundColor(eventColor(tx.event_type))
+                Circle()
+                    .fill(eventColor(tx.event_type).opacity(0.13))
+                    .frame(width: 44, height: 44)
+                Image(systemName: eventIcon(tx.event_type))
+                    .foregroundColor(eventColor(tx.event_type))
+                    .font(.system(size: 18))
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tx.description ?? tx.event_type.capitalized).font(.subheadline.weight(.semibold)).lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(tx.description ?? tx.event_type.capitalized)
+                    .font(.subheadline.weight(.semibold)).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(tx.event_type.capitalized)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(eventColor(tx.event_type).opacity(0.12))
-                        .foregroundColor(eventColor(tx.event_type))
-                        .cornerRadius(6)
-                    if let cat = tx.category { Text(cat).font(.caption).foregroundColor(.secondary) }
-                    Text("·").font(.caption2).foregroundColor(.secondary)
+                    if let cat = tx.category, !cat.isEmpty {
+                        Text(cat)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(eventColor(tx.event_type).opacity(0.10))
+                            .foregroundColor(eventColor(tx.event_type))
+                            .clipShape(Capsule())
+                    }
                     Text(tx.date).font(.caption2).foregroundColor(.secondary)
                 }
             }
             Spacer()
+            if amt > 0 {
+                Text("\(isIncome ? "+" : isExpense ? "-" : "")\(fmt(amt))")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(isIncome ? .green : isExpense ? .red : .primary)
+            }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 
     private func load() async {
         isLoading = true; defer { isLoading = false }
         do {
-            async let valFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
-            async let txFetch  = APIService.shared.fetchTransactionEvents()
-            let (val, allTx) = try await (valFetch, txFetch)
-            balance      = val.portfolio.filter { $0.account_id == account.id }.reduce(0) { $0 + $1.value_in_base }
+            let allAccounts = try await APIService.shared.fetchAccounts()
+            if let updated = allAccounts.first(where: { $0.id == account.id }) { liveAccount = updated }
+
+            async let txFetch    = APIService.shared.fetchTransactionEvents()
+            async let legsFetch  = APIService.shared.fetchTransactionLegs()
+            async let ratesFetch = APIService.shared.fetchRates()
+            let (allTx, allLegs, rates) = try await (txFetch, legsFetch, ratesFetch)
+
+            var merged: [String: Double] = [:]
+            for (k, v) in rates.fx_to_usd { merged[k.uppercased()] = v }
+            for (k, v) in rates.prices    { merged[k.uppercased()] = v }
+            fxRates = merged
+
+            let accountLegs = allLegs.filter { $0.account_id == liveAccount.id }
+            balance = accountLegs.reduce(0) { $0 + $1.quantity }
+            let accountEventIds = Set(accountLegs.map { $0.event_id })
             transactions = allTx
+                .filter { accountEventIds.contains($0.id) }
+                .sorted { $0.date > $1.date }
+            legs = allLegs
         } catch { errorMessage = error.localizedDescription }
     }
 
+    private func txAmount(_ tx: APIService.TransactionEvent) -> Double {
+        abs(legs.first { $0.event_id == tx.id && $0.account_id == liveAccount.id && $0.fee_flag != "true" }?.quantity ?? 0)
+    }
+
+    private func toDisplay(_ amount: Double) -> Double {
+        let native  = liveAccount.base_currency.uppercased()
+        let display = effectiveCurrency.uppercased()
+        guard native != display else { return amount }
+        let usdPerNative  = fxRates[native]  ?? 1.0
+        let usdPerDisplay = fxRates[display] ?? 1.0
+        guard usdPerDisplay > 0 else { return amount }
+        return (amount * usdPerNative) / usdPerDisplay
+    }
+
     private func fmt(_ v: Double) -> String {
-        switch account.base_currency.uppercased() {
-        case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
-        case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
-        default:    return "€\(v.formatted(.number.precision(.fractionLength(2))))"
+        let converted = toDisplay(v)
+        switch effectiveCurrency.uppercased() {
+        case "USD": return "$\(converted.formatted(.number.precision(.fractionLength(2))))"
+        case "GBP": return "£\(converted.formatted(.number.precision(.fractionLength(2))))"
+        case "EUR": return "€\(converted.formatted(.number.precision(.fractionLength(2))))"
+        default:    return "\(effectiveCurrency) \(converted.formatted(.number.precision(.fractionLength(2))))"
         }
     }
     private func eventIcon(_ t: String) -> String {
         switch t.lowercased() {
-        case "income": return "arrow.down.circle.fill"
-        case "expense": return "arrow.up.circle.fill"
+        case "income":   return "arrow.down.circle.fill"
+        case "expense":  return "arrow.up.circle.fill"
         case "transfer": return "arrow.left.arrow.right.circle.fill"
-        default: return "circle.fill"
+        default:         return "circle.fill"
         }
     }
     private func eventColor(_ t: String) -> Color {
         switch t.lowercased() {
-        case "income": return .green
+        case "income":  return .green
         case "expense": return .red
-        default: return .blue
+        default:        return .blue
         }
     }
 }
 
 // ── BanksView ─────────────────────────────────────────────────────────────────
 struct BanksView: View {
+    @AppStorage("baseCurrency") private var baseCurrency = "EUR"
     @State private var accounts: [APIService.Account] = []
+    @State private var legs: [APIService.TransactionLeg] = []
+    @State private var fxRates: [String: Double] = [:]
     @State private var showAddAccount = false
     @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
@@ -185,31 +251,90 @@ struct BanksView: View {
         accounts.filter { $0.account_type == "bank" }
     }
 
+    // Net balance of an account in baseCurrency
+    private func accountBalance(for account: APIService.Account) -> Double {
+        let native = account.base_currency.uppercased()
+        let base   = baseCurrency.uppercased()
+        let nativeBalance = legs
+            .filter { $0.account_id == account.id }
+            .reduce(0.0) { $0 + $1.quantity }
+        guard native != base else { return nativeBalance }
+        let usdPerNative = fxRates[native] ?? 1.0
+        let usdPerBase   = fxRates[base]   ?? 1.0
+        guard usdPerBase > 0 else { return nativeBalance }
+        return (nativeBalance * usdPerNative) / usdPerBase
+    }
+
+    private func txCount(for account: APIService.Account) -> Int {
+        Set(legs.filter { $0.account_id == account.id }.map { $0.event_id }).count
+    }
+
+    private func fmtBalance(_ v: Double) -> String {
+        switch baseCurrency.uppercased() {
+        case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
+        case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
+        default:    return "€\(v.formatted(.number.precision(.fractionLength(2))))"
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(banks) { account in
-                    Button {
-                        selectedAccount = account
-                    } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                Circle().fill(Color.blue.opacity(0.12)).frame(width: 40, height: 40)
-                                Image(systemName: "building.columns.fill").foregroundColor(.blue).font(.system(size: 16))
-                            }
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(account.name).font(.headline).foregroundColor(.primary)
-                                Text(account.base_currency).font(.caption).foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundColor(.secondary)
-                        }
-                        .padding(.vertical, 4)
+            Group {
+                if banks.isEmpty {
+                    VStack(spacing: 16) {
+                        Spacer()
+                        Image(systemName: "building.columns")
+                            .font(.system(size: 60)).foregroundColor(.blue.opacity(0.3))
+                        Text("No Bank Accounts").font(.title2.bold())
+                        Text("Add a bank account to track your cash and transactions.")
+                            .multilineTextAlignment(.center).foregroundColor(.secondary)
+                            .padding(.horizontal, 32)
+                        Button("Add Bank Account") { showAddAccount = true }
+                            .buttonStyle(.borderedProminent).tint(.blue)
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
-                    .swipeActions {
-                        Button(role: .destructive) { Task { await deleteAccount(account) } } label: {
-                            Label("Delete", systemImage: "trash")
+                } else {
+                    List {
+                        ForEach(banks) { account in
+                            Button { selectedAccount = account } label: {
+                                HStack(spacing: 14) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(Color.blue.opacity(0.12))
+                                            .frame(width: 50, height: 50)
+                                        Image(systemName: "building.columns.fill")
+                                            .foregroundColor(.blue)
+                                            .font(.system(size: 22))
+                                    }
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(account.name)
+                                            .font(.headline).foregroundColor(.primary)
+                                        Text("Bank · \(account.base_currency)")
+                                            .font(.caption).foregroundColor(.secondary)
+                                        let count = txCount(for: account)
+                                        if count > 0 {
+                                            Text("\(count) transaction\(count == 1 ? "" : "s")")
+                                                .font(.caption2).foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 4) {
+                                        let bal = accountBalance(for: account)
+                                        Text(fmtBalance(bal))
+                                            .font(.subheadline.bold())
+                                            .foregroundColor(bal >= 0 ? .primary : .red)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions {
+                                Button(role: .destructive) {
+                                    Task { await deleteAccount(account) }
+                                } label: { Label("Delete", systemImage: "trash") }
+                            }
                         }
                     }
                 }
@@ -223,6 +348,7 @@ struct BanksView: View {
                 }
             }
             .task { await load() }
+            .refreshable { await load() }
             .sheet(isPresented: $showAddAccount) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "bank")
             }
@@ -234,8 +360,19 @@ struct BanksView: View {
     }
 
     private func load() async {
-        do { accounts = try await APIService.shared.fetchAccounts(); errorMessage = nil }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            async let accFetch  = APIService.shared.fetchAccounts()
+            async let legsFetch = APIService.shared.fetchTransactionLegs()
+            async let fxFetch   = APIService.shared.fetchRates()
+            let (accs, ls, rates) = try await (accFetch, legsFetch, fxFetch)
+            accounts = accs
+            legs     = ls
+            var merged: [String: Double] = [:]
+            for (k, v) in rates.fx_to_usd { merged[k.uppercased()] = v }
+            for (k, v) in rates.prices    { merged[k.uppercased()] = v }
+            fxRates = merged
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
     }
 
     private func deleteAccount(_ account: APIService.Account) async {
