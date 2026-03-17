@@ -332,14 +332,59 @@ struct TransactionsView: View {
     @State private var showAdd = false
     @State private var selectedTx: APIService.TransactionEvent?
     @State private var errorMessage: String?
-    @State private var filterType = "All"
+    @State private var filterType   = "All"
+    @State private var filterPeriod = "All"
 
     let filters = ["All", "Income", "Expense", "Transfer", "Trade"]
+    let periods: [(label: String, key: String)] = [
+        ("All time", "All"),
+        ("Today",    "Today"),
+        ("This week", "Week"),
+        ("This month", "Month"),
+        ("Last month", "LastMonth"),
+        ("This year",  "Year")
+    ]
+
+    // ── Period date range helper ───────────────────────────────────────────────
+    private func parseTxDate(_ str: String) -> Date? {
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.date(from: str)
+    }
+
+    private var periodStart: Date? {
+        let cal = Calendar.current; let now = Date()
+        switch filterPeriod {
+        case "Today":     return cal.startOfDay(for: now)
+        case "Week":      return cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))
+        case "Month":     return cal.date(from: cal.dateComponents([.year, .month], from: now))
+        case "LastMonth":
+            let start = cal.date(from: cal.dateComponents([.year, .month], from: now))!
+            return cal.date(byAdding: .month, value: -1, to: start)
+        case "Year":      return cal.date(from: cal.dateComponents([.year], from: now))
+        default:          return nil
+        }
+    }
+    private var periodEnd: Date? {
+        let cal = Calendar.current; let now = Date()
+        guard filterPeriod == "LastMonth" else { return nil }
+        return cal.date(from: cal.dateComponents([.year, .month], from: now))
+    }
 
     var filtered: [APIService.TransactionEvent] {
-        filterType == "All" ? transactions : transactions.filter {
-            $0.event_type.lowercased() == filterType.lowercased()
+        var base = transactions
+        // Apply period filter
+        if let start = periodStart {
+            base = base.filter {
+                guard let d = parseTxDate($0.date) else { return false }
+                if let end = periodEnd { return d >= start && d < end }
+                return d >= start
+            }
         }
+        // Apply type filter
+        if filterType != "All" {
+            base = base.filter { $0.event_type.lowercased() == filterType.lowercased() }
+        }
+        return base
     }
 
     // ── Date grouping ──────────────────────────────────────────────────────────
@@ -386,12 +431,12 @@ struct TransactionsView: View {
         NavigationStack {
             VStack(spacing: 0) {
 
-                // ── Filter pills with count badges ─────────────────────────────
+                // ── Type filter pills ──────────────────────────────────────────
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(filters, id: \.self) { f in
-                            let count = f == "All" ? transactions.count
-                                : transactions.filter { $0.event_type.lowercased() == f.lowercased() }.count
+                            let count = f == "All" ? filtered.count
+                                : filtered.filter { $0.event_type.lowercased() == f.lowercased() }.count
                             Button {
                                 withAnimation(.spring(duration: 0.2)) { filterType = f }
                             } label: {
@@ -414,7 +459,37 @@ struct TransactionsView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 6)
+                }
+
+                // ── Period filter pills ────────────────────────────────────────
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(periods, id: \.key) { period in
+                            Button {
+                                withAnimation(.spring(duration: 0.2)) { filterPeriod = period.key }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if period.key != "All" {
+                                        Image(systemName: "calendar")
+                                            .font(.caption2.bold())
+                                    }
+                                    Text(period.label).font(.caption.weight(.semibold))
+                                }
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(filterPeriod == period.key
+                                            ? Color.blue.opacity(0.15)
+                                            : Color(.systemGray6))
+                                .foregroundColor(filterPeriod == period.key ? .blue : .secondary)
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .stroke(filterPeriod == period.key ? Color.blue.opacity(0.4) : Color.clear, lineWidth: 1)
+                                )
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.bottom, 10)
                 }
 
                 // ── Income / Expense summary strip ─────────────────────────────
