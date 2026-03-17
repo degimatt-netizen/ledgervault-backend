@@ -121,15 +121,28 @@ struct HomeView: View {
         profileName.split(separator: " ").first.map(String.init) ?? "there"
     }
 
+    private var avatarImage: UIImage? {
+        guard let data = UserDefaults.standard.data(forKey: "profile_avatar") else { return nil }
+        return UIImage(data: data)
+    }
+
     @ViewBuilder
     private var profileAvatar: some View {
-        ZStack {
-            Circle()
-                .fill(LinearGradient(colors: [.blue, .purple],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+        if let img = avatarImage {
+            Image(uiImage: img)
+                .resizable().scaledToFill()
                 .frame(width: 34, height: 34)
-            Text(firstName.prefix(1).uppercased())
-                .font(.subheadline.bold()).foregroundColor(.white)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+        } else {
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [.blue, .purple],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 34, height: 34)
+                Text(firstName.prefix(1).uppercased())
+                    .font(.subheadline.bold()).foregroundColor(.white)
+            }
         }
     }
 
