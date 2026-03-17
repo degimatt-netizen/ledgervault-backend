@@ -8,7 +8,6 @@ struct SettingsView: View {
     @AppStorage("isSignedIn")         private var isSignedIn         = false
     @AppStorage("notifPriceAlerts")   private var notifPriceAlerts   = true
     @AppStorage("notifWeeklySummary") private var notifWeeklySummary = false
-    @AppStorage("showCentsAlways")    private var showCentsAlways    = true
 
     @State private var notifStatus: UNAuthorizationStatus = .notDetermined
     @State private var showSignOutAlert = false
@@ -28,9 +27,6 @@ struct SettingsView: View {
                         Label("System", systemImage: "circle.lefthalf.filled").tag("system")
                         Label("Light",  systemImage: "sun.max.fill").tag("light")
                         Label("Dark",   systemImage: "moon.fill").tag("dark")
-                    }
-                    Toggle(isOn: $showCentsAlways) {
-                        Label("Always Show Decimals", systemImage: "textformat.123")
                     }
                 } header: {
                     Text("Display")
