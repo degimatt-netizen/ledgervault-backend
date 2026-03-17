@@ -2,6 +2,24 @@ from sqlalchemy import Column, String, Float, Boolean, ForeignKey, Text
 from app.db import Base
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id              = Column(String, primary_key=True, index=True)
+    email           = Column(String, unique=True, nullable=False, index=True)
+    phone           = Column(String, unique=True, nullable=True, index=True)
+    password_hash   = Column(String, nullable=True)
+    name            = Column(String, nullable=True)
+    is_verified     = Column(Boolean, nullable=False, default=False)
+    verify_code     = Column(String, nullable=True)
+    verify_expires  = Column(String, nullable=True)   # ISO datetime string
+    reset_code      = Column(String, nullable=True)
+    reset_expires   = Column(String, nullable=True)   # ISO datetime string
+    apple_user_id   = Column(String, unique=True, nullable=True)
+    google_sub      = Column(String, unique=True, nullable=True)
+    created_at      = Column(String, nullable=False)
+
+
 class Account(Base):
     __tablename__ = "accounts"
 

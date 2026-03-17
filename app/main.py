@@ -3,9 +3,11 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Header
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-import time, os, httpx, logging, hmac, hashlib, base64, urllib.parse
+import time, os, httpx, logging, hmac, hashlib, base64, urllib.parse, random, secrets
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import jwt as pyjwt
+from passlib.context import CryptContext
 
 from app.db import engine, SessionLocal, Base
 from app import models
@@ -19,6 +21,8 @@ from app.schemas import (
     RecurringTransactionCreate, RecurringTransactionUpdate,
     RecurringTransactionOut, RecurringTransactionList,
     BankConnectionOut, BankConnectionList, BankAuthUrlResponse, BankCallbackResponse,
+    RegisterRequest, LoginRequest, VerifyEmailRequest, ResendCodeRequest,
+    ForgotPasswordRequest, ResetPasswordRequest, SocialAuthRequest, AuthResponse,
 )
 
 app = FastAPI(title="LedgerVault API", version="4.3.0")
@@ -41,6 +45,75 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────
+# AUTH UTILITIES
+# ─────────────────────────────────────────────
+JWT_SECRET     = os.getenv("JWT_SECRET", "ledgervault-dev-secret-change-in-production")
+JWT_ALGORITHM  = "HS256"
+JWT_EXPIRE_DAYS = 90
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM    = os.getenv("RESEND_FROM", "LedgerVault <noreply@ledgervault.app>")
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _create_token(user_id: str) -> str:
+    payload = {
+        "sub": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRE_DAYS),
+    }
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def _decode_token(token: str) -> Optional[str]:
+    try:
+        data = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return data.get("sub")
+    except Exception:
+        return None
+
+def get_user_id(authorization: Optional[str] = Header(None)) -> Optional[str]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    return _decode_token(authorization[7:])
+
+def require_user_id(authorization: Optional[str] = Header(None)) -> str:
+    uid = get_user_id(authorization)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
+
+def _gen_otp() -> str:
+    return str(random.randint(100000, 999999))
+
+def _otp_expires() -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+
+def _otp_valid(expires_str: Optional[str]) -> bool:
+    if not expires_str:
+        return False
+    try:
+        exp = datetime.fromisoformat(expires_str)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < exp
+    except Exception:
+        return False
+
+def _send_email(to: str, subject: str, html: str) -> bool:
+    if not RESEND_API_KEY:
+        logger.warning(f"RESEND_API_KEY not set — skipping email to {to}: {subject}")
+        return False
+    try:
+        with httpx.Client(timeout=10.0) as c:
+            r = c.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+                json={"from": RESEND_FROM, "to": [to], "subject": subject, "html": html},
+            )
+            return r.status_code in (200, 201)
+    except Exception as e:
+        logger.warning(f"Email send failed: {e}")
+        return False
 
 def get_db():
     db = SessionLocal()
@@ -927,6 +1000,159 @@ def _advance_date(date_str: str, frequency: str) -> str:
 
 
 # ─────────────────────────────────────────────
+# AUTH ROUTES
+# ─────────────────────────────────────────────
+
+@app.post("/auth/register", response_model=AuthResponse)
+def auth_register(payload: RegisterRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    existing = db.query(models.User).filter(models.User.email == email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    code = _gen_otp()
+    user = models.User(
+        id=str(uuid4()), email=email,
+        password_hash=pwd_context.hash(payload.password),
+        name=payload.name.strip() or None,
+        is_verified=False,
+        verify_code=code, verify_expires=_otp_expires(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(user); db.commit()
+    _send_email(email, "Verify your LedgerVault account",
+        f"<p>Your verification code is: <strong>{code}</strong></p>"
+        f"<p>It expires in 15 minutes.</p>")
+    return AuthResponse(status="needs_verification", email=email,
+                        message="Check your email for a 6-digit verification code.")
+
+@app.post("/auth/verify-email", response_model=AuthResponse)
+def auth_verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.verify_code != payload.code or not _otp_valid(user.verify_expires):
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    user.is_verified = True
+    user.verify_code = None
+    user.verify_expires = None
+    db.commit()
+    token = _create_token(user.id)
+    return AuthResponse(status="ok", access_token=token,
+                        user_id=user.id, email=user.email, name=user.name)
+
+@app.post("/auth/resend-code", response_model=AuthResponse)
+def auth_resend_code(payload: ResendCodeRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_verified:
+        raise HTTPException(status_code=400, detail="Email already verified")
+    code = _gen_otp()
+    user.verify_code = code
+    user.verify_expires = _otp_expires()
+    db.commit()
+    _send_email(email, "Your new LedgerVault verification code",
+        f"<p>Your new verification code is: <strong>{code}</strong></p>"
+        f"<p>It expires in 15 minutes.</p>")
+    return AuthResponse(status="needs_verification", email=email,
+                        message="A new code has been sent to your email.")
+
+@app.post("/auth/login", response_model=AuthResponse)
+def auth_login(payload: LoginRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user or not user.password_hash:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not pwd_context.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.is_verified:
+        # Re-send verification code
+        code = _gen_otp()
+        user.verify_code = code
+        user.verify_expires = _otp_expires()
+        db.commit()
+        _send_email(email, "Verify your LedgerVault account",
+            f"<p>Your verification code is: <strong>{code}</strong></p>"
+            f"<p>It expires in 15 minutes.</p>")
+        return AuthResponse(status="needs_verification", email=email,
+                            message="Please verify your email first. A new code has been sent.")
+    token = _create_token(user.id)
+    return AuthResponse(status="ok", access_token=token,
+                        user_id=user.id, email=user.email, name=user.name)
+
+@app.post("/auth/forgot-password", response_model=AuthResponse)
+def auth_forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    # Always return success to not leak whether email exists
+    if user:
+        code = _gen_otp()
+        user.reset_code = code
+        user.reset_expires = _otp_expires()
+        db.commit()
+        _send_email(email, "Reset your LedgerVault password",
+            f"<p>Your password reset code is: <strong>{code}</strong></p>"
+            f"<p>It expires in 15 minutes.</p>")
+    return AuthResponse(status="ok",
+                        message="If that email is registered, a reset code has been sent.")
+
+@app.post("/auth/reset-password", response_model=AuthResponse)
+def auth_reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.reset_code != payload.code or not _otp_valid(user.reset_expires):
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    user.password_hash = pwd_context.hash(payload.new_password)
+    user.reset_code = None
+    user.reset_expires = None
+    user.is_verified = True   # reset also implicitly verifies
+    db.commit()
+    token = _create_token(user.id)
+    return AuthResponse(status="ok", access_token=token,
+                        user_id=user.id, email=user.email, name=user.name)
+
+@app.post("/auth/social", response_model=AuthResponse)
+def auth_social(payload: SocialAuthRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        # Create new user via social — pre-verified
+        user = models.User(
+            id=str(uuid4()), email=email,
+            name=payload.name.strip() or None,
+            is_verified=True,
+            apple_user_id=payload.apple_user_id or None,
+            google_sub=payload.google_sub or None,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        db.add(user); db.commit()
+    else:
+        # Update social identifiers if missing
+        changed = False
+        if payload.apple_user_id and not user.apple_user_id:
+            user.apple_user_id = payload.apple_user_id; changed = True
+        if payload.google_sub and not user.google_sub:
+            user.google_sub = payload.google_sub; changed = True
+        if payload.name and not user.name:
+            user.name = payload.name.strip(); changed = True
+        if changed:
+            db.commit()
+    token = _create_token(user.id)
+    return AuthResponse(status="ok", access_token=token,
+                        user_id=user.id, email=user.email, name=user.name)
+
+@app.get("/auth/me", response_model=AuthResponse)
+def auth_me(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return AuthResponse(status="ok", user_id=user.id, email=user.email, name=user.name)
+
+# ─────────────────────────────────────────────
 # ROUTES
 # ─────────────────────────────────────────────
 @app.get("/")
@@ -1071,14 +1297,14 @@ def get_crypto_quote(symbol: str):
 # ── Valuation ─────────────────────────────────
 @app.get("/valuation")
 def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
-              x_user_id: Optional[str] = Header(None)):
+              user_id: Optional[str] = Depends(get_user_id)):
     try: fx = _fetch_live_fx()
     except: fx = FALLBACK_FX
 
     crypto_prices = _fetch_crypto_prices()
     acct_q = db.query(models.Account)
-    if x_user_id:
-        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    if user_id:
+        acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     accounts  = {a.id: a for a in acct_q.all()}
@@ -1173,8 +1399,8 @@ HIST_CACHE_TTL = 3600  # 1 hour
 
 @app.get("/portfolio/history")
 def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = Depends(get_db),
-                      x_user_id: Optional[str] = Header(None)):
-    cache_key = f"{days}:{base_currency.upper()}:{x_user_id or ''}"
+                      user_id: Optional[str] = Depends(get_user_id)):
+    cache_key = f"{days}:{base_currency.upper()}:{user_id or ''}"
     if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < HIST_CACHE_TTL:
         return _hist_cache["data"]
 
@@ -1183,8 +1409,8 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
     dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
 
     acct_q = db.query(models.Account)
-    if x_user_id:
-        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    if user_id:
+        acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     user_account_ids = {a.id for a in acct_q.all()}
@@ -1295,21 +1521,21 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
 
 # ── Accounts ──────────────────────────────────
 @app.get("/accounts", response_model=AccountList)
-def list_accounts(db: Session = Depends(get_db), x_user_id: Optional[str] = Header(None)):
+def list_accounts(db: Session = Depends(get_db), user_id: Optional[str] = Depends(get_user_id)):
     q = db.query(models.Account)
-    if x_user_id:
-        q = q.filter(models.Account.user_id == x_user_id)
+    if user_id:
+        q = q.filter(models.Account.user_id == user_id)
     else:
         q = q.filter(models.Account.user_id == None)
     return {"items": q.all()}
 
 @app.post("/accounts", response_model=AccountOut)
 def create_account(payload: AccountCreate, db: Session = Depends(get_db),
-                   x_user_id: Optional[str] = Header(None)):
+                   user_id: Optional[str] = Depends(get_user_id)):
     item = models.Account(id=str(uuid4()), name=payload.name,
                           account_type=payload.account_type,
                           base_currency=payload.base_currency.upper(),
-                          user_id=x_user_id)
+                          user_id=user_id)
     db.add(item); db.commit(); db.refresh(item); return item
 
 @app.put("/accounts/{account_id}", response_model=AccountOut)
@@ -1370,10 +1596,10 @@ def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):
 
 # ── Holdings ──────────────────────────────────
 @app.get("/holdings", response_model=HoldingList)
-def list_holdings(db: Session = Depends(get_db), x_user_id: Optional[str] = Header(None)):
+def list_holdings(db: Session = Depends(get_db), user_id: Optional[str] = Depends(get_user_id)):
     acct_q = db.query(models.Account)
-    if x_user_id:
-        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    if user_id:
+        acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     user_account_ids = [a.id for a in acct_q.all()]
@@ -1383,10 +1609,10 @@ def list_holdings(db: Session = Depends(get_db), x_user_id: Optional[str] = Head
 # ── Transaction events ────────────────────────
 @app.get("/transaction-events", response_model=TransactionEventList)
 def list_transaction_events(account_id: str = Query(None), db: Session = Depends(get_db),
-                             x_user_id: Optional[str] = Header(None)):
+                             user_id: Optional[str] = Depends(get_user_id)):
     acct_q = db.query(models.Account)
-    if x_user_id:
-        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    if user_id:
+        acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     user_account_ids = {a.id for a in acct_q.all()}
@@ -1400,10 +1626,10 @@ def list_transaction_events(account_id: str = Query(None), db: Session = Depends
     return {"items": items}
 
 @app.get("/transaction-legs", response_model=TransactionLegList)
-def list_transaction_legs(db: Session = Depends(get_db), x_user_id: Optional[str] = Header(None)):
+def list_transaction_legs(db: Session = Depends(get_db), user_id: Optional[str] = Depends(get_user_id)):
     acct_q = db.query(models.Account)
-    if x_user_id:
-        acct_q = acct_q.filter(models.Account.user_id == x_user_id)
+    if user_id:
+        acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     user_account_ids = [a.id for a in acct_q.all()]

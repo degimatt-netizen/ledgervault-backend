@@ -2,6 +2,50 @@ from pydantic import BaseModel
 from typing import List, Literal, Optional
 
 
+# -------------------------
+# Auth
+# -------------------------
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class VerifyEmailRequest(BaseModel):
+    email: str
+    code: str
+
+class ResendCodeRequest(BaseModel):
+    email: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+class SocialAuthRequest(BaseModel):
+    provider: str                   # "apple" | "google"
+    email: str
+    name: str = ""
+    apple_user_id: str = ""
+    google_sub: str = ""
+
+class AuthResponse(BaseModel):
+    status: str                     # "ok" | "needs_verification"
+    access_token: Optional[str] = None
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    message: Optional[str] = None
+
+
 AccountType = Literal["bank", "exchange", "broker", "crypto_wallet", "cash"]
 AssetClass = Literal["fiat", "crypto", "stock", "etf", "commodity", "custom"]
 EventType = Literal["income", "expense", "transfer", "conversion", "trade"]
