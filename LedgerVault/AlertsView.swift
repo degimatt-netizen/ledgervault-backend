@@ -5,13 +5,14 @@ import UserNotifications
 // ── Price Alert Model ─────────────────────────────────────────────────────────
 struct PriceAlert: Codable, Identifiable {
     let id: String
-    var symbol:    String
-    var assetName: String
+    var symbol:      String
+    var assetName:   String
     var targetPrice: Double
-    var condition:   String   // "above" or "below"
+    var condition:   String   // "above" or "below" — auto-derived from target vs current
     var isActive:    Bool
     var triggered:   Bool
     var createdAt:   String
+    var imageURL:    String?  // thumbnail for display
 
     var conditionLabel: String { condition == "above" ? "≥" : "≤" }
     var conditionIcon:  String { condition == "above" ? "arrow.up.circle.fill" : "arrow.down.circle.fill" }
@@ -26,10 +27,7 @@ class AlertsManager: ObservableObject {
     @Published var alerts: [PriceAlert] = []
     @Published var notificationsEnabled = false
 
-    init() {
-        load()
-        checkNotificationStatus()
-    }
+    init() { load(); checkNotificationStatus() }
 
     func load() {
         guard let data = UserDefaults.standard.data(forKey: key),
@@ -43,15 +41,9 @@ class AlertsManager: ObservableObject {
         }
     }
 
-    func add(_ alert: PriceAlert) {
-        alerts.insert(alert, at: 0)
-        save()
-    }
+    func add(_ alert: PriceAlert) { alerts.insert(alert, at: 0); save() }
 
-    func delete(at offsets: IndexSet) {
-        alerts.remove(atOffsets: offsets)
-        save()
-    }
+    func delete(at offsets: IndexSet) { alerts.remove(atOffsets: offsets); save() }
 
     func toggle(_ id: String) {
         if let i = alerts.firstIndex(where: { $0.id == id }) {
@@ -75,12 +67,9 @@ class AlertsManager: ObservableObject {
                 .requestAuthorization(options: [.alert, .badge, .sound])
             await MainActor.run { notificationsEnabled = granted }
             return granted
-        } catch {
-            return false
-        }
+        } catch { return false }
     }
 
-    // Called from background price check
     func checkPrices(_ prices: [String: Double]) {
         var changed = false
         for i in alerts.indices {
@@ -90,7 +79,6 @@ class AlertsManager: ObservableObject {
             let hit = alerts[i].condition == "above"
                 ? current >= alerts[i].targetPrice
                 : current <= alerts[i].targetPrice
-
             if hit {
                 alerts[i].triggered = true
                 changed = true
@@ -101,20 +89,13 @@ class AlertsManager: ObservableObject {
     }
 
     private func sendNotification(_ alert: PriceAlert, currentPrice: Double) {
-        // Respect the user's notification preference from Settings
         guard UserDefaults.standard.object(forKey: "notifPriceAlerts") as? Bool != false else { return }
-
         let content = UNMutableNotificationContent()
         content.title = "🔔 Price Alert: \(alert.symbol)"
-        content.body  = "\(alert.symbol) is \(alert.condition == "above" ? "above" : "below") \(String(format: "$%.2f", alert.targetPrice)). Current: \(String(format: "$%.2f", currentPrice))"
+        content.body  = "\(alert.symbol) hit \(alert.conditionLabel) $\(String(format: "%.2f", alert.targetPrice)). Now: $\(String(format: "%.2f", currentPrice))"
         content.sound = .default
         content.badge = 1
-
-        let request = UNNotificationRequest(
-            identifier: "alert_\(alert.id)",
-            content: content,
-            trigger: nil  // deliver immediately
-        )
+        let request = UNNotificationRequest(identifier: "alert_\(alert.id)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
 }
@@ -123,12 +104,11 @@ class AlertsManager: ObservableObject {
 struct AlertsView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var manager = AlertsManager.shared
-    @State private var showAdd       = false
-    @State private var showPermissionBanner = false
+    @State private var showAdd = false
     @State private var rates: APIService.RatesResponse?
 
     private var activeAlerts:    [PriceAlert] { manager.alerts.filter {  $0.isActive && !$0.triggered } }
-    private var triggeredAlerts: [PriceAlert] { manager.alerts.filter { $0.triggered } }
+    private var triggeredAlerts: [PriceAlert] { manager.alerts.filter {  $0.triggered } }
     private var inactiveAlerts:  [PriceAlert] { manager.alerts.filter { !$0.isActive && !$0.triggered } }
 
     var body: some View {
@@ -136,16 +116,11 @@ struct AlertsView: View {
             VStack(spacing: 0) {
                 // Notification permission banner
                 if !manager.notificationsEnabled {
-                    Button {
-                        Task {
-                            let _ = await manager.requestPermission()
-                        }
-                    } label: {
+                    Button { Task { let _ = await manager.requestPermission() } } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "bell.badge.fill").foregroundColor(.orange)
                             Text("Enable notifications to receive price alerts")
-                                .font(.caption.weight(.semibold))
-                                .foregroundColor(.primary)
+                                .font(.caption.weight(.semibold)).foregroundColor(.primary)
                             Spacer()
                             Text("Enable →").font(.caption.weight(.bold)).foregroundColor(.blue)
                         }
@@ -156,7 +131,6 @@ struct AlertsView: View {
                 }
 
                 if manager.alerts.isEmpty {
-                    // Empty state
                     VStack(spacing: 16) {
                         Spacer()
                         Image(systemName: "bell.slash").font(.system(size: 56)).foregroundColor(.secondary.opacity(0.4))
@@ -168,37 +142,25 @@ struct AlertsView: View {
                     .frame(maxWidth: .infinity).padding()
                 } else {
                     List {
-                        // Triggered alerts
                         if !triggeredAlerts.isEmpty {
                             Section {
-                                ForEach(triggeredAlerts) { alert in
-                                    alertRow(alert, status: "triggered")
-                                }
+                                ForEach(triggeredAlerts) { alertRow($0, status: "triggered") }
                             } header: {
-                                Label("TRIGGERED", systemImage: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
+                                Label("TRIGGERED", systemImage: "checkmark.circle.fill").foregroundColor(.green)
                             }
                         }
-
-                        // Active alerts
                         if !activeAlerts.isEmpty {
                             Section {
-                                ForEach(activeAlerts) { alert in
-                                    alertRow(alert, status: "active")
-                                }
-                                .onDelete { manager.delete(at: $0) }
+                                ForEach(activeAlerts) { alertRow($0, status: "active") }
+                                    .onDelete { manager.delete(at: $0) }
                             } header: {
                                 Label("ACTIVE", systemImage: "bell.fill").foregroundColor(.blue)
                             }
                         }
-
-                        // Paused alerts
                         if !inactiveAlerts.isEmpty {
                             Section {
-                                ForEach(inactiveAlerts) { alert in
-                                    alertRow(alert, status: "paused")
-                                }
-                                .onDelete { manager.delete(at: $0) }
+                                ForEach(inactiveAlerts) { alertRow($0, status: "paused") }
+                                    .onDelete { manager.delete(at: $0) }
                             } header: {
                                 Label("PAUSED", systemImage: "pause.circle").foregroundColor(.secondary)
                             }
@@ -210,9 +172,7 @@ struct AlertsView: View {
             .navigationTitle("Price Alerts")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }
-                }
+                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAdd = true } label: {
                         Image(systemName: "plus.circle.fill").font(.title2)
@@ -221,9 +181,7 @@ struct AlertsView: View {
             }
             .task { await loadRates() }
             .sheet(isPresented: $showAdd) {
-                AddAlertView(rates: rates) { alert in
-                    manager.add(alert)
-                }
+                AddAlertView(rates: rates) { manager.add($0) }
             }
         }
         .onAppear { manager.checkNotificationStatus() }
@@ -232,14 +190,26 @@ struct AlertsView: View {
     @ViewBuilder
     private func alertRow(_ alert: PriceAlert, status: String) -> some View {
         HStack(spacing: 14) {
-            // Icon
+            // Thumbnail or condition icon
             ZStack {
                 Circle()
-                    .fill(alert.conditionColor.opacity(0.12))
-                    .frame(width: 44, height: 44)
-                Image(systemName: alert.conditionIcon)
-                    .foregroundColor(alert.conditionColor)
-                    .font(.title3)
+                    .fill(alert.conditionColor.opacity(0.10))
+                    .frame(width: 46, height: 46)
+                if let urlStr = alert.imageURL, let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                                .frame(width: 34, height: 34).clipShape(Circle())
+                        default:
+                            Image(systemName: alert.conditionIcon)
+                                .foregroundColor(alert.conditionColor).font(.title3)
+                        }
+                    }
+                } else {
+                    Image(systemName: alert.conditionIcon)
+                        .foregroundColor(alert.conditionColor).font(.title3)
+                }
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -247,39 +217,33 @@ struct AlertsView: View {
                     Text(alert.symbol).font(.subheadline.weight(.bold))
                     Text(alert.assetName).font(.caption).foregroundColor(.secondary).lineLimit(1)
                 }
-                Text("\(alert.condition == "above" ? "Price ≥" : "Price ≤") $\(String(format: "%.2f", alert.targetPrice))")
-                    .font(.subheadline)
-
-                // Current price
+                HStack(spacing: 4) {
+                    Image(systemName: alert.condition == "above" ? "arrow.up" : "arrow.down")
+                        .font(.caption2.bold())
+                        .foregroundColor(alert.conditionColor)
+                    Text("Price \(alert.conditionLabel) $\(String(format: "%.2f", alert.targetPrice))")
+                        .font(.subheadline)
+                }
                 if let price = rates?.prices[alert.symbol.uppercased()] {
-                    Text("Current: $\(String(format: "%.2f", price))")
+                    Text("Current: $\(String(format: price < 1 ? "%.4f" : "%.2f", price))")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 6) {
-                if status == "triggered" {
-                    Text("HIT ✓")
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Color.green.opacity(0.15))
-                        .foregroundColor(.green)
-                        .cornerRadius(6)
-                } else if status == "active" {
-                    Toggle("", isOn: Binding(
-                        get: { alert.isActive },
-                        set: { _ in manager.toggle(alert.id) }
-                    ))
-                    .labelsHidden()
-                } else {
-                    Toggle("", isOn: Binding(
-                        get: { alert.isActive },
-                        set: { _ in manager.toggle(alert.id) }
-                    ))
-                    .labelsHidden()
-                }
+            if status == "triggered" {
+                Text("HIT ✓")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Color.green.opacity(0.15))
+                    .foregroundColor(.green)
+                    .cornerRadius(6)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { alert.isActive },
+                    set: { _ in manager.toggle(alert.id) }
+                )).labelsHidden()
             }
         }
         .padding(.vertical, 4)
@@ -287,9 +251,17 @@ struct AlertsView: View {
 
     private func loadRates() async {
         rates = try? await APIService.shared.fetchRates()
-        // Check alerts against current prices
         if let r = rates { manager.checkPrices(r.prices) }
     }
+}
+
+// ── Asset Hit (search result with image) ─────────────────────────────────────
+private struct AssetHit: Identifiable {
+    let id   = UUID().uuidString
+    let symbol: String
+    let name:   String
+    let imageURL: String?
+    let price:    Double?
 }
 
 // ── Add Alert View ────────────────────────────────────────────────────────────
@@ -298,49 +270,82 @@ struct AddAlertView: View {
     let rates: APIService.RatesResponse?
     let onAdd: (PriceAlert) -> Void
 
-    @State private var searchText  = ""
-    @State private var selectedSym = ""
-    @State private var selectedName = ""
-    @State private var targetPrice: Double?
-    @State private var condition   = "above"
-    @State private var isSearching = false
-    @State private var searchResults: [(symbol: String, name: String)] = []
-    @State private var searchTask: Task<Void, Never>?
+    @FocusState private var priceFocused: Bool
+
+    @State private var searchText    = ""
+    @State private var selectedSym   = ""
+    @State private var selectedName  = ""
+    @State private var selectedImage: String? = nil
+    @State private var targetPrice:  Double?
+    @State private var isSearching   = false
+    @State private var searchResults: [AssetHit] = []
+    @State private var searchTask:   Task<Void, Never>?
 
     private var currentPrice: Double? { rates?.prices[selectedSym.uppercased()] }
+
+    // Auto-derive condition from target vs current
+    private var condition: String {
+        guard let t = targetPrice, let c = currentPrice else { return "above" }
+        return t >= c ? "above" : "below"
+    }
+    private var conditionColor: Color  { condition == "above" ? .green : .red }
+    private var conditionIcon:  String { condition == "above" ? "arrow.up.circle.fill" : "arrow.down.circle.fill" }
 
     var body: some View {
         NavigationStack {
             Form {
+                // ── Search ────────────────────────────────────────────────
                 Section("Search Asset") {
                     HStack {
                         Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                        TextField("TSLA, BTC, ETH, NVDA...", text: $searchText)
+                        TextField("TSLA, BTC, ETH, NVDA…", text: $searchText)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.characters)
                             .onChange(of: searchText) { _, q in scheduleSearch(q) }
                         if isSearching { ProgressView().scaleEffect(0.8) }
+                        if !selectedSym.isEmpty {
+                            Button {
+                                selectedSym = ""; selectedName = ""; selectedImage = nil
+                                targetPrice = nil; searchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                            }
+                        }
                     }
                 }
 
+                // ── Search results ────────────────────────────────────────
                 if !searchResults.isEmpty && selectedSym.isEmpty {
                     Section("Results") {
-                        ForEach(Array(searchResults.prefix(6).enumerated()), id: \.offset) { _, asset in
-                            Button {
-                                selectedSym  = asset.symbol
-                                selectedName = asset.name
-                                searchText   = asset.symbol
-                                searchResults = []
-                                if let price = currentPrice { targetPrice = price }
-                            } label: {
-                                HStack {
+                        ForEach(searchResults.prefix(8)) { hit in
+                            Button { select(hit) } label: {
+                                HStack(spacing: 12) {
+                                    // Thumbnail
+                                    ZStack {
+                                        Circle().fill(Color.blue.opacity(0.10)).frame(width: 38, height: 38)
+                                        if let urlStr = hit.imageURL, let url = URL(string: urlStr) {
+                                            AsyncImage(url: url) { phase in
+                                                switch phase {
+                                                case .success(let img):
+                                                    img.resizable().scaledToFill()
+                                                        .frame(width: 30, height: 30).clipShape(Circle())
+                                                default:
+                                                    Text(String(hit.symbol.prefix(2)))
+                                                        .font(.caption2.bold()).foregroundColor(.blue)
+                                                }
+                                            }
+                                        } else {
+                                            Text(String(hit.symbol.prefix(2)))
+                                                .font(.caption2.bold()).foregroundColor(.blue)
+                                        }
+                                    }
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(asset.symbol).font(.headline).foregroundColor(.primary)
-                                        Text(asset.name).font(.caption).foregroundColor(.secondary)
+                                        Text(hit.symbol).font(.headline).foregroundColor(.primary)
+                                        Text(hit.name).font(.caption).foregroundColor(.secondary).lineLimit(1)
                                     }
                                     Spacer()
-                                    if let price = rates?.prices[asset.symbol.uppercased()] {
-                                        Text("$\(String(format: "%.2f", price))")
+                                    if let price = hit.price {
+                                        Text("$\(price < 1 ? String(format: "%.4f", price) : String(format: "%.2f", price))")
                                             .font(.subheadline.weight(.semibold))
                                             .foregroundColor(.secondary)
                                     }
@@ -350,43 +355,71 @@ struct AddAlertView: View {
                     }
                 }
 
+                // ── Alert Details ─────────────────────────────────────────
                 if !selectedSym.isEmpty {
-                    Section("Alert Details") {
-                        HStack {
-                            Text(selectedSym).font(.headline.bold())
-                            Text(selectedName).font(.caption).foregroundColor(.secondary)
-                            Spacer()
-                            if let price = currentPrice {
-                                Text("Now: $\(String(format: "%.2f", price))")
-                                    .font(.caption).foregroundColor(.secondary)
+                    Section {
+                        // Asset header row
+                        HStack(spacing: 12) {
+                            ZStack {
+                                Circle().fill(conditionColor.opacity(0.10)).frame(width: 48, height: 48)
+                                if let urlStr = selectedImage, let url = URL(string: urlStr) {
+                                    AsyncImage(url: url) { phase in
+                                        switch phase {
+                                        case .success(let img):
+                                            img.resizable().scaledToFill()
+                                                .frame(width: 38, height: 38).clipShape(Circle())
+                                        default:
+                                            Text(String(selectedSym.prefix(2)))
+                                                .font(.subheadline.bold()).foregroundColor(conditionColor)
+                                        }
+                                    }
+                                } else {
+                                    Text(String(selectedSym.prefix(2)))
+                                        .font(.subheadline.bold()).foregroundColor(conditionColor)
+                                }
                             }
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(selectedSym).font(.headline.bold())
+                                    Text(selectedName).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                                }
+                                if let price = currentPrice {
+                                    Text("Current: $\(price < 1 ? String(format: "%.4f", price) : String(format: "%.2f", price))")
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
+                            }
+                            Spacer()
                         }
+                        .padding(.vertical, 4)
 
-                        Picker("Condition", selection: $condition) {
-                            Text("Price rises above").tag("above")
-                            Text("Price falls below").tag("below")
-                        }
-
-                        HStack {
-                            Text("$")
-                            TextField("Target Price", value: $targetPrice,
+                        // Target price input
+                        HStack(spacing: 8) {
+                            Text("$").foregroundColor(.secondary).font(.body)
+                            TextField("Target price", value: $targetPrice,
                                       format: .number.precision(.fractionLength(2)))
                                 .keyboardType(.decimalPad)
+                                .focused($priceFocused)
+                                .font(.body)
                         }
 
-                        if let current = currentPrice, let target = targetPrice {
+                        // Direction indicator (auto-derived)
+                        if let current = currentPrice, let target = targetPrice, target > 0 {
                             let diff = ((target - current) / current) * 100
-                            Label(
-                                String(format: "%@%.1f%% from current price",
-                                       diff >= 0 ? "+" : "", diff),
-                                systemImage: diff >= 0 ? "arrow.up.right" : "arrow.down.right"
-                            )
-                            .font(.caption)
-                            .foregroundColor(diff >= 0 ? .green : .red)
+                            HStack(spacing: 6) {
+                                Image(systemName: diff >= 0 ? "arrow.up.right" : "arrow.down.right")
+                                    .font(.caption.bold())
+                                    .foregroundColor(diff >= 0 ? .green : .red)
+                                Text(String(format: "%@%.1f%% from current price — alert when price %@",
+                                            diff >= 0 ? "+" : "", diff,
+                                            diff >= 0 ? "rises above" : "falls below"))
+                                    .font(.caption)
+                                    .foregroundColor(diff >= 0 ? .green : .red)
+                            }
                         }
-                    }
+                    } header: { Text("Alert Details") }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("New Alert")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -394,7 +427,7 @@ struct AddAlertView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add Alert") {
                         guard !selectedSym.isEmpty, let price = targetPrice, price > 0 else { return }
-                        let alert = PriceAlert(
+                        onAdd(PriceAlert(
                             id: UUID().uuidString,
                             symbol: selectedSym.uppercased(),
                             assetName: selectedName,
@@ -402,45 +435,88 @@ struct AddAlertView: View {
                             condition: condition,
                             isActive: true,
                             triggered: false,
-                            createdAt: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day())
-                        )
-                        onAdd(alert)
+                            createdAt: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day()),
+                            imageURL: selectedImage
+                        ))
                         dismiss()
                     }
                     .disabled(selectedSym.isEmpty || targetPrice == nil)
+                    .fontWeight(.semibold)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { priceFocused = false }.font(.body.bold())
                 }
             }
         }
     }
 
+    private func select(_ hit: AssetHit) {
+        selectedSym   = hit.symbol
+        selectedName  = hit.name
+        selectedImage = hit.imageURL
+        searchText    = hit.symbol
+        searchResults = []
+        if let p = hit.price ?? currentPrice { targetPrice = p }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { priceFocused = true }
+    }
+
     private func scheduleSearch(_ query: String) {
-        selectedSym = ""; selectedName = ""
+        selectedSym = ""; selectedName = ""; selectedImage = nil
         searchTask?.cancel()
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard q.count >= 1 else { searchResults = []; return }
         searchTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run { isSearching = true }
-            // Search from rates prices (contains all crypto + stocks)
-            var hits: [(symbol: String, name: String)] = []
-            if let r = rates {
-                hits = r.prices.keys
-                    .filter { $0.contains(q) }
-                    .sorted()
-                    .prefix(10)
-                    .map { (symbol: $0, name: $0) }
-            }
-            // Also try live search for crypto and stocks
+
+            // Search crypto and stocks concurrently
             async let cryptoSearch = try? APIService.shared.searchCrypto(query: q)
             async let stockSearch  = try? APIService.shared.searchStocks(query: q)
-            let (cryptos, stocks) = await (cryptoSearch, stockSearch)
-            var combined = hits
-            if let c = cryptos { combined += c.prefix(5).map { (symbol: $0.symbol, name: $0.name) } }
-            if let s = stocks  { combined += s.prefix(5).map { (symbol: $0.symbol, name: $0.name) } }
-            // Deduplicate
+            let (cryptos, stocks)  = await (cryptoSearch, stockSearch)
+
+            var hits: [AssetHit] = []
+
+            // Crypto results — use CoinGecko small image
+            if let c = cryptos {
+                for r in c.prefix(5) {
+                    let imgURL = r.thumb?.replacingOccurrences(of: "/thumb/", with: "/small/")
+                    hits.append(AssetHit(
+                        symbol: r.symbol.uppercased(),
+                        name: r.name,
+                        imageURL: imgURL,
+                        price: r.price_usd ?? rates?.prices[r.symbol.uppercased()]
+                    ))
+                }
+            }
+
+            // Stock results — use Parqet logo
+            if let s = stocks {
+                for r in s.prefix(5) {
+                    let imgURL = "https://assets.parqet.com/logos/symbol/\(r.symbol)?format=jpg"
+                    hits.append(AssetHit(
+                        symbol: r.symbol.uppercased(),
+                        name: r.name,
+                        imageURL: imgURL,
+                        price: r.price_usd ?? rates?.prices[r.symbol.uppercased()]
+                    ))
+                }
+            }
+
+            // Fallback: any matching symbol from rates dict (if both API searches returned nothing)
+            if hits.isEmpty, let r = rates {
+                let uq = q.uppercased()
+                let rateHits = r.prices.keys
+                    .filter { $0.contains(uq) }
+                    .sorted().prefix(6)
+                    .map { sym in AssetHit(symbol: sym, name: sym, imageURL: nil, price: r.prices[sym]) }
+                hits = Array(rateHits)
+            }
+
+            // Deduplicate by symbol
             var seen = Set<String>()
-            let deduped = combined.filter { seen.insert($0.symbol).inserted }
+            let deduped = hits.filter { seen.insert($0.symbol).inserted }
             await MainActor.run { searchResults = deduped; isSearching = false }
         }
     }
