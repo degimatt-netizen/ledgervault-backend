@@ -17,13 +17,19 @@ struct ContentView: View {
 
 // ── More tab ──────────────────────────────────────────────────────────────────
 struct MoreView: View {
-    @State private var showAnalysis = false
-    @State private var showAlerts   = false
-    @State private var showMarket   = false
-    @State private var showSettings = false
-    @State private var showProfile  = false
+    @State private var showAnalysis     = false
+    @State private var showAlerts       = false
+    @State private var showMarket       = false
+    @State private var showSettings     = false
+    @State private var showProfile      = false
+    @State private var showExportImport = false
+    @State private var showSecurity     = false
+    @State private var showExchanges    = false
+    @State private var showBanking      = false
+    @State private var showRecurring    = false
+    @State private var showReset        = false
+    @State private var showFAQ          = false
 
-    // Badge: count of active (non-triggered) alerts
     @StateObject private var alertsManager = AlertsManager.shared
     private var alertBadge: Int {
         alertsManager.alerts.filter { $0.isActive && !$0.triggered }.count
@@ -33,26 +39,52 @@ struct MoreView: View {
         NavigationStack {
             List {
                 Section("Insights") {
-                    moreRow("Market Analysis",    "sparkles",            .purple,  badge: nil)   { showMarket   = true }
-                    moreRow("Portfolio Analysis", "chart.bar.xaxis",     .blue,    badge: nil)   { showAnalysis = true }
-                    moreRow("Price Alerts",       "bell.fill",           .orange,  badge: alertBadge > 0 ? alertBadge : nil) { showAlerts = true }
+                    moreRow("Market Analysis",    "sparkles",            .purple,  badge: nil) { showMarket   = true }
+                    moreRow("Portfolio Analysis", "chart.bar.xaxis",     .blue,    badge: nil) { showAnalysis = true }
+                    moreRow("Price Alerts",       "bell.fill",           .orange,
+                             badge: alertBadge > 0 ? alertBadge : nil)                        { showAlerts   = true }
                 }
+
+                Section("Tools") {
+                    moreRow("Export / Import",    "square.and.arrow.up.on.square", .teal,   badge: nil) { showExportImport = true }
+                    moreRow("Recurring",          "repeat",                         .cyan,   badge: nil) { showRecurring    = true }
+                }
+
+                Section("Integrations") {
+                    moreRow("Exchange Connections", "link.circle.fill",        .indigo, badge: nil) { showExchanges = true }
+                    moreRow("Open Banking",         "building.columns.fill",   .blue,   badge: nil) { showBanking   = true }
+                }
+
                 Section("Account") {
-                    moreRow("Settings", "gearshape.fill", .gray, badge: nil) { showSettings = true }
-                    moreRow("Profile",  "person.circle",  .gray, badge: nil) { showProfile  = true }
+                    moreRow("Settings", "gearshape.fill",  .gray, badge: nil) { showSettings = true }
+                    moreRow("Security", "lock.shield.fill", .gray, badge: nil) { showSecurity = true }
+                    moreRow("Profile",  "person.circle",   .gray, badge: nil) { showProfile  = true }
+                }
+
+                Section("Data") {
+                    moreRow("FAQ",        "questionmark.circle.fill", .mint, badge: nil) { showFAQ   = true }
+                    moreRow("Reset Data", "trash.fill",               .red,  badge: nil) { showReset = true }
                 }
             }
             .navigationTitle("More")
-            .sheet(isPresented: $showMarket)   { MarketAnalysisView() }
-            .sheet(isPresented: $showAnalysis) { PortfolioAnalysisView() }
-            .sheet(isPresented: $showAlerts)   { AlertsView() }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showProfile)  { ProfileView() }
+            .sheet(isPresented: $showMarket)       { MarketAnalysisView() }
+            .sheet(isPresented: $showAnalysis)     { PortfolioAnalysisView() }
+            .sheet(isPresented: $showAlerts)       { AlertsView() }
+            .sheet(isPresented: $showSettings)     { SettingsView() }
+            .sheet(isPresented: $showProfile)      { ProfileView() }
+            .sheet(isPresented: $showExportImport) { ExportImportView() }
+            .sheet(isPresented: $showSecurity)     { SecurityView() }
+            .sheet(isPresented: $showExchanges)    { ExchangeConnectionsView() }
+            .sheet(isPresented: $showBanking)      { BankConnectionsView() }
+            .sheet(isPresented: $showRecurring)    { RecurringTransactionsView() }
+            .sheet(isPresented: $showReset)        { ResetDataView() }
+            .sheet(isPresented: $showFAQ)          { FAQView() }
         }
     }
 
     @ViewBuilder
-    private func moreRow(_ title: String, _ icon: String, _ color: Color, badge: Int?, action: @escaping () -> Void) -> some View {
+    private func moreRow(_ title: String, _ icon: String, _ color: Color,
+                         badge: Int?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
                 ZStack(alignment: .topTrailing) {

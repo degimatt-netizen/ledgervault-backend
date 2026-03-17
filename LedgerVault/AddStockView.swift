@@ -26,8 +26,10 @@ struct AddStockView: View {
     @State private var isRefreshingPrice = false
     @State private var priceLastUpdated: Date?
     @State private var searchTask: Task<Void, Never>? = nil
+    @State private var accountBalances: [String: Double] = [:]   // account_id -> native balance
 
     private let liveUpdateIntervalSeconds: TimeInterval = 30
+    private let fiatAccountTypes = ["bank", "cash", "stablecoin_wallet", "exchange"]
 
     private var estimatedShares: Double? {
         guard let amount = amountToDeduct, amount > 0,
@@ -39,20 +41,60 @@ struct AddStockView: View {
         return q / price
     }
 
-    private var marketStateColor: Color {
-        switch liveQuote?.market_state?.uppercased() {
-        case "REGULAR": return .green
-        case "PRE", "POST": return .orange
-        default: return .red
+    // Always use time-based ET detection once we have a live quote.
+    // Yahoo Finance's market_state is unreliable (returns "CLOSED" during after-hours
+    // and varies by device timezone), so we don't trust it.
+    private var resolvedMarketState: String {
+        if liveQuote != nil { return timeBasedMarketState() }
+        // While still loading, use search result state only for active sessions (PRE/REGULAR/POST)
+        let hint = selectedResult?.market_state?.uppercased() ?? ""
+        if ["REGULAR", "PRE", "PREPRE", "POST", "POSTPOST"].contains(hint) { return hint }
+        return ""   // still loading
+    }
+
+    /// Derives market session from current time in Eastern Time (handles DST automatically)
+    private func timeBasedMarketState() -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        let comps = cal.dateComponents([.hour, .minute, .weekday], from: Date())
+        let weekday = comps.weekday ?? 1        // 1 = Sun, 7 = Sat
+        guard weekday != 1, weekday != 7 else { return "CLOSED" }
+        let mins = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        switch mins {
+        case 240..<570:   return "PRE"      // 4:00 – 9:30 AM ET
+        case 570..<960:   return "REGULAR"  // 9:30 AM – 4:00 PM ET
+        case 960..<1200:  return "POST"     // 4:00 – 8:00 PM ET
+        default:          return "CLOSED"
         }
     }
 
     private var marketStateLabel: String {
-        switch liveQuote?.market_state?.uppercased() {
-        case "REGULAR": return "Market Open"
-        case "PRE":     return "Pre-Market"
-        case "POST":    return "After Hours"
-        default:        return "Market Closed"
+        switch resolvedMarketState {
+        case "REGULAR":            return "Market Open"
+        case "PRE", "PREPRE":     return "Pre-Market"
+        case "POST", "POSTPOST":  return "After Hours"
+        case "CLOSED":             return "Market Closed"
+        default:                   return "Checking market…"
+        }
+    }
+
+    private var marketStateIcon: String {
+        switch resolvedMarketState {
+        case "REGULAR":            return "circle.fill"
+        case "PRE", "PREPRE":     return "sunrise.fill"
+        case "POST", "POSTPOST":  return "moon.fill"
+        case "CLOSED":             return "xmark.circle"
+        default:                   return "ellipsis"
+        }
+    }
+
+    private var marketStateColor: Color {
+        switch resolvedMarketState {
+        case "REGULAR":            return .green
+        case "PRE", "PREPRE":     return .orange
+        case "POST", "POSTPOST":  return .blue
+        case "CLOSED":             return .secondary
+        default:                   return .secondary
         }
     }
 
@@ -85,8 +127,17 @@ struct AddStockView: View {
                                 HStack(spacing: 12) {
                                     ZStack {
                                         RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.12)).frame(width: 36, height: 36)
-                                        Text(String(result.symbol.prefix(3)))
-                                            .font(.caption2.bold()).foregroundColor(.green)
+                                        AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(result.symbol)?format=jpg")) { phase in
+                                            switch phase {
+                                            case .success(let img):
+                                                img.resizable().scaledToFill()
+                                                    .frame(width: 28, height: 28)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            default:
+                                                Text(String(result.symbol.prefix(3)))
+                                                    .font(.caption2.bold()).foregroundColor(.green)
+                                            }
+                                        }
                                     }
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 6) {
@@ -134,8 +185,17 @@ struct AddStockView: View {
                         HStack(spacing: 14) {
                             ZStack {
                                 RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)).frame(width: 44, height: 44)
-                                Text(String(result.symbol.prefix(3)))
-                                    .font(.caption.bold()).foregroundColor(.green)
+                                AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(result.symbol)?format=jpg")) { phase in
+                                    switch phase {
+                                    case .success(let img):
+                                        img.resizable().scaledToFill()
+                                            .frame(width: 36, height: 36)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    default:
+                                        Text(String(result.symbol.prefix(3)))
+                                            .font(.caption.bold()).foregroundColor(.green)
+                                    }
+                                }
                             }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(result.symbol).font(.title3.bold())
@@ -149,7 +209,7 @@ struct AddStockView: View {
                                             .foregroundColor(.blue)
                                             .clipShape(Capsule())
                                     }
-                                    Label(marketStateLabel, systemImage: "circle.fill")
+                                    Label(marketStateLabel, systemImage: marketStateIcon)
                                         .font(.caption2.bold())
                                         .padding(.horizontal, 6).padding(.vertical, 2)
                                         .background(marketStateColor.opacity(0.1))
@@ -201,9 +261,14 @@ struct AddStockView: View {
                 // ── Buy details ───────────────────────────────────────────
                 if selectedResult != nil {
                     Section("Buy Details") {
-                        TextField("Amount to deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
-                            .keyboardType(.decimalPad)
-                            .focused($focusedField, equals: .amount)
+                        HStack(spacing: 4) {
+                            Text(deductCurrencySymbol)
+                                .foregroundColor(.secondary)
+                                .font(.body)
+                            TextField("Amount to deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
+                                .keyboardType(.decimalPad)
+                                .focused($focusedField, equals: .amount)
+                        }
 
                         TextField("Price per share (USD)", value: $purchasePricePerUnit, format: .number.precision(.fractionLength(2)))
                             .keyboardType(.decimalPad)
@@ -241,8 +306,21 @@ struct AddStockView: View {
                         }
 
                         Picker("Deduct from", selection: $selectedDeductId) {
-                            ForEach(accounts.filter { ["bank","cash","stablecoin_wallet"].contains($0.account_type) }) { acc in
-                                Text("\(acc.name) (\(acc.base_currency))").tag(acc.id)
+                            ForEach(accounts.filter { fiatAccountTypes.contains($0.account_type) }) { acc in
+                                let bal = accountBalances[acc.id] ?? 0
+                                Text("\(acc.name) — \(bal.formatted(.number.precision(.fractionLength(2)))) \(acc.base_currency)").tag(acc.id)
+                            }
+                        }
+
+                        // Balance warning
+                        if let amount = amountToDeduct, amount > 0,
+                           let bal = accountBalances[selectedDeductId], bal < amount {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Insufficient balance (\(bal.formatted(.number.precision(.fractionLength(2)))) available)")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
                             }
                         }
 
@@ -258,6 +336,7 @@ struct AddStockView: View {
                     Section { Text(err).foregroundColor(.red) }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Buy Stock")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -333,10 +412,22 @@ struct AddStockView: View {
 
     private func loadAccounts() async {
         do {
-            accounts = try await APIService.shared.fetchAccounts()
-            rates = try? await APIService.shared.fetchRates()
+            async let accFetch  = APIService.shared.fetchAccounts()
+            async let rateFetch = APIService.shared.fetchRates()
+            async let legFetch  = APIService.shared.fetchTransactionLegs()
+            let (fetchedAccounts, fetchedRates, allLegs) = try await (accFetch, rateFetch, legFetch)
+
+            accounts = fetchedAccounts
+            rates    = fetchedRates
+
+            // Compute fiat balances from transaction legs (accurate for bank/stablecoin/exchange)
+            for acc in accounts where fiatAccountTypes.contains(acc.account_type) {
+                let bal = allLegs.filter { $0.account_id == acc.id }.reduce(0.0) { $0 + $1.quantity }
+                accountBalances[acc.id] = bal
+            }
+
             if let b = accounts.first(where: { $0.account_type == "broker" }) { selectedBrokerId = b.id }
-            if let f = accounts.first(where: { ["bank","cash","stablecoin_wallet"].contains($0.account_type) }) { selectedDeductId = f.id }
+            if let f = accounts.first(where: { fiatAccountTypes.contains($0.account_type) }) { selectedDeductId = f.id }
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -350,6 +441,12 @@ struct AddStockView: View {
                   let price = purchasePricePerUnit, price > 0,
                   let funding = accounts.first(where: { $0.id == selectedDeductId })
             else { throw URLError(.badServerResponse) }
+
+            // Balance check (native currency)
+            let availableBalance = accountBalances[selectedDeductId] ?? 0
+            guard availableBalance >= amount else {
+                throw NSError(domain: "Balance", code: 0, userInfo: [NSLocalizedDescriptionKey: "Insufficient funds. Available: \(availableBalance.formatted(.number.precision(.fractionLength(2)))) \(funding.base_currency)"])
+            }
 
             guard let quoteAmount = convert(amount: amount, from: funding.base_currency, to: result.quote_currency)
             else { throw NSError(domain:"FX",code:0,userInfo:[NSLocalizedDescriptionKey:"FX rate missing. Try again."]) }
@@ -378,6 +475,16 @@ struct AddStockView: View {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    // MARK: - Currency helpers
+
+    private var deductCurrencySymbol: String {
+        guard let acc = accounts.first(where: { $0.id == selectedDeductId }) else { return "€" }
+        switch acc.base_currency.uppercased() {
+        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF"
+        default: return "€"
+        }
+    }
+
     // MARK: - FX helpers
 
     private func convert(amount: Double, from: String, to: String) -> Double? {
@@ -386,6 +493,9 @@ struct AddStockView: View {
         guard let rates else { return nil }
         let fx = rates.fx_to_usd
         guard let fRate = fx[f], let tRate = fx[t], fRate > 0, tRate > 0 else { return nil }
+        // fx_to_usd stores "USD per currency unit" (e.g. fx["EUR"] ≈ 1.15 means 1 EUR = $1.15).
+        // To convert A→B: multiply by fRate to get USD, divide by tRate to get target currency.
+        // e.g. EUR→USD: 100 * (1.15 / 1.0) = $115; USD→EUR: 100 * (1.0 / 1.15) ≈ €87
         return amount * (fRate / tRate)
     }
 

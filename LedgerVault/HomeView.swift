@@ -5,6 +5,10 @@ struct HomeView: View {
 
     @State private var valuation: APIService.ValuationResponse?
     @State private var accounts: [APIService.Account] = []
+    @State private var assets: [APIService.Asset] = []
+    @State private var legs: [APIService.TransactionLeg] = []
+    @State private var cryptoImages: [String: String] = [:]
+    @State private var fxRates: [String: Double] = [:]
     @State private var isLoading = false
     @State private var lastUpdated: Date?
     @State private var errorMessage: String?
@@ -17,31 +21,29 @@ struct HomeView: View {
 
     private let refreshInterval: TimeInterval = 30
 
-    private var total:  Double { valuation?.total  ?? 0 }
-    private var stocks: Double { valuation?.stocks ?? 0 }
+    private var stocks: Double     { valuation?.stocks ?? 0 }
+    private var crypto: Double     { valuation?.crypto  ?? 0 }
 
-    private var cash: Double {
-        let bankIds = Set(accounts.filter { $0.account_type == "bank" }.map { $0.id })
-        return (valuation?.portfolio ?? [])
-            .filter { bankIds.contains($0.account_id) }
-            .reduce(0) { $0 + $1.value_in_base }
+    private func toBase(_ amount: Double, currency: String) -> Double {
+        let usdPerCurrency = fxRates[currency.uppercased()] ?? 1.0
+        let usdPerBase     = fxRates[baseCurrency.uppercased()] ?? 1.0
+        guard usdPerBase > 0 else { return amount }
+        return (amount * usdPerCurrency) / usdPerBase
     }
 
-    private var stablecoins: Double {
-        let stableIds = Set(accounts.filter {
-            $0.account_type == "cash" || $0.account_type == "stablecoin_wallet"
-        }.map { $0.id })
-        return (valuation?.portfolio ?? [])
-            .filter { stableIds.contains($0.account_id) }
-            .reduce(0) { $0 + $1.value_in_base }
+    private func fiatBalance(accountTypes: [String]) -> Double {
+        let relevantAccounts = accounts.filter { accountTypes.contains($0.account_type) }
+        return relevantAccounts.reduce(0.0) { total, account in
+            let nativeBalance = legs
+                .filter { $0.account_id == account.id }
+                .reduce(0.0) { $0 + $1.quantity }
+            return total + toBase(nativeBalance, currency: account.base_currency)
+        }
     }
 
-    private var crypto: Double {
-        let cryptoIds = Set(accounts.filter { $0.account_type == "crypto_wallet" }.map { $0.id })
-        return (valuation?.portfolio ?? [])
-            .filter { cryptoIds.contains($0.account_id) }
-            .reduce(0) { $0 + $1.value_in_base }
-    }
+    private var cash: Double        { fiatBalance(accountTypes: ["bank"]) }
+    private var stablecoins: Double { fiatBalance(accountTypes: ["cash", "stablecoin_wallet"]) }
+    private var total: Double       { cash + stablecoins + stocks + crypto }
 
     private let fiatSymbols: Set<String> = [
         "USD","EUR","GBP","CHF","CAD","AUD","JPY","PLN","SEK","NOK",
@@ -54,69 +56,29 @@ struct HomeView: View {
             .sorted { $0.value_in_base > $1.value_in_base }
     }
 
+    // MARK: - Body
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
-                    netWorthCard
-                    if total > 0 { allocationBar }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("MY ACCOUNTS")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(.secondary)
-                            .tracking(1)
-                            .padding(.horizontal, 4)
-
-                        HStack(spacing: 12) {
-                            NavigationLink(destination: BanksView()) {
-                                accountCard(title: "Cash", subtitle: "Bank Accounts",
-                                            icon: "banknote.fill", amount: cash, color: .blue)
-                            }
-                            .buttonStyle(.plain)
-
-                            NavigationLink(destination: StablecoinsView()) {
-                                accountCard(title: "Stablecoins", subtitle: "USDT · USDC",
-                                            icon: "link.circle.fill", amount: stablecoins, color: .indigo)
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        HStack(spacing: 12) {
-                            NavigationLink(destination: StocksView()) {
-                                accountCard(title: "Stocks", subtitle: "Equities & ETFs",
-                                            icon: "chart.bar.fill", amount: stocks, color: .green)
-                            }
-                            .buttonStyle(.plain)
-
-                            NavigationLink(destination: CryptoStocksView()) {
-                                accountCard(title: "Crypto", subtitle: "BTC · ETH · SOL",
-                                            icon: "bitcoinsign.circle.fill", amount: crypto, color: .orange)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
+                VStack(spacing: 16) {
+                    netWorthHero
+                    accountGrid
+                    if !investmentPositions.isEmpty { topHoldingsSection }
                     recentActivitySection
-
-                    HStack {
-                        Text("Live • Updated \(lastUpdated?.formatted(date: .omitted, time: .shortened) ?? "now")")
-                            .font(.caption).foregroundColor(.secondary)
-                        Spacer()
-                        Button("Refresh") { Task { await load() } }
-                            .font(.caption.weight(.bold))
-                    }
-                    .padding(.horizontal, 4)
+                    updatedFooter
                 }
-                .padding()
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showProfile = true } label: {
                         HStack(spacing: 10) {
-                            profileAvatarSmall
+                            profileAvatar
                             VStack(alignment: .leading, spacing: 0) {
                                 Text("Hello, \(firstName)! 👋")
                                     .font(.subheadline.weight(.semibold))
@@ -129,7 +91,9 @@ struct HomeView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAddTransaction = true } label: {
-                        Image(systemName: "plus.circle.fill").font(.title2)
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
                     }
                 }
             }
@@ -158,217 +122,417 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private var profileAvatarSmall: some View {
+    private var profileAvatar: some View {
         ZStack {
             Circle()
-                .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .fill(LinearGradient(colors: [.blue, .purple],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
                 .frame(width: 34, height: 34)
             Text(firstName.prefix(1).uppercased())
-                .font(.subheadline.bold())
-                .foregroundColor(.white)
+                .font(.subheadline.bold()).foregroundColor(.white)
         }
     }
 
-    // MARK: - Net Worth Card
+    // MARK: - Net Worth Hero
 
     @ViewBuilder
-    private var netWorthCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("TOTAL NET WORTH")
-                .font(.caption.weight(.semibold))
-                .foregroundColor(.secondary)
-                .tracking(1)
-
-            Text(fmt(total))
-                .font(.system(size: 42, weight: .bold))
-
+    private var netWorthHero: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header row
             HStack {
-                Text("Base: \(baseCurrency)")
-                    .font(.caption).foregroundColor(.secondary)
+                Text("Total Portfolio")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.white.opacity(0.75))
                 Spacer()
-                Label("Live", systemImage: "circle.fill")
-                    .font(.caption.bold())
-                    .foregroundColor(.green)
-                    .labelStyle(.titleAndIcon)
+                HStack(spacing: 5) {
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
+                    Text("LIVE")
+                        .font(.caption2.bold())
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(Color.white.opacity(0.18))
+                .clipShape(Capsule())
             }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.systemGray6))
-        .cornerRadius(22)
-    }
 
-    // MARK: - Allocation Bar
+            // Amount
+            Text(fmt(total))
+                .font(.system(size: 46, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .padding(.top, 8)
 
-    @ViewBuilder
-    private var allocationBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("ALLOCATION")
+            Text(baseCurrency)
                 .font(.caption.weight(.semibold))
-                .foregroundColor(.secondary)
-                .tracking(1)
+                .foregroundColor(.white.opacity(0.55))
+                .padding(.top, 2)
 
-            GeometryReader { geo in
-                HStack(spacing: 2) {
-                    let segments: [(Double, Color)] = [
-                        (cash, .blue), (stablecoins, .indigo),
-                        (stocks, .green), (crypto, .orange)
-                    ]
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
-                        if seg.0 > 0 {
-                            Rectangle()
-                                .fill(seg.1)
-                                .frame(width: geo.size.width * (seg.0 / max(total, 1)))
+            // Allocation bar
+            if total > 0 {
+                VStack(alignment: .leading, spacing: 10) {
+                    GeometryReader { geo in
+                        HStack(spacing: 3) {
+                            ForEach(allocationSegments, id: \.2) { value, color, _ in
+                                if value > 0 {
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(color)
+                                        .frame(width: max(4, geo.size.width * (value / max(total, 1))))
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 6)
+
+                    HStack(spacing: 14) {
+                        ForEach(allocationSegments, id: \.2) { value, color, label in
+                            HStack(spacing: 5) {
+                                Circle().fill(color).frame(width: 7, height: 7)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(label)
+                                        .font(.caption2)
+                                        .foregroundColor(.white.opacity(0.65))
+                                    Text("\(total > 0 ? Int((value / total) * 100) : 0)%")
+                                        .font(.caption2.bold())
+                                        .foregroundColor(.white.opacity(0.9))
+                                }
+                            }
                         }
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .frame(height: 10)
-
-            HStack(spacing: 12) {
-                legendDot("Cash", .blue,     cash)
-                legendDot("Stable", .indigo, stablecoins)
-                legendDot("Stocks", .green,  stocks)
-                legendDot("Crypto", .orange, crypto)
+                .padding(.top, 20)
             }
         }
-        .padding(16)
-        .background(Color(.systemGray6))
-        .cornerRadius(22)
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.18, green: 0.25, blue: 0.82),
+                    Color(red: 0.44, green: 0.18, blue: 0.78)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .cornerRadius(26)
+        .shadow(color: .blue.opacity(0.25), radius: 16, x: 0, y: 6)
+    }
+
+    private var allocationSegments: [(Double, Color, String)] {
+        [(cash, .blue, "Cash"),
+         (stablecoins, .teal, "Stable"),
+         (stocks, .green, "Stocks"),
+         (crypto, .orange, "Crypto")]
+    }
+
+    // MARK: - Account Grid
+
+    @ViewBuilder
+    private var accountGrid: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                NavigationLink(destination: BanksView()) {
+                    accountTile(title: "Cash", subtitle: "Bank accounts",
+                                icon: "banknote.fill", amount: cash, color: .blue)
+                }.buttonStyle(.plain)
+
+                NavigationLink(destination: StablecoinsView()) {
+                    accountTile(title: "Stablecoins", subtitle: "USDT · USDC",
+                                icon: "link.circle.fill", amount: stablecoins, color: .teal)
+                }.buttonStyle(.plain)
+            }
+            HStack(spacing: 10) {
+                NavigationLink(destination: StocksView()) {
+                    accountTile(title: "Stocks", subtitle: "Equities & ETFs",
+                                icon: "chart.bar.fill", amount: stocks, color: .green)
+                }.buttonStyle(.plain)
+
+                NavigationLink(destination: CryptoStocksView()) {
+                    accountTile(title: "Crypto", subtitle: "BTC · ETH · SOL",
+                                icon: "bitcoinsign.circle.fill", amount: crypto, color: .orange)
+                }.buttonStyle(.plain)
+            }
+        }
     }
 
     @ViewBuilder
-    private func legendDot(_ label: String, _ color: Color, _ value: Double) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text("\(label) \(total > 0 ? Int((value/total)*100) : 0)%")
-                .font(.caption2).foregroundColor(.secondary)
-        }
-    }
-
-    // MARK: - Account Card
-
-    @ViewBuilder
-    private func accountCard(title: String, subtitle: String, icon: String, amount: Double, color: Color) -> some View {
+    private func accountTile(title: String, subtitle: String, icon: String,
+                             amount: Double, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: icon)
-                    .font(.title3)
-                    .foregroundColor(color)
+            HStack(alignment: .top) {
+                ZStack {
+                    Circle().fill(color.opacity(0.15)).frame(width: 40, height: 40)
+                    Image(systemName: icon)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(color)
+                }
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                if total > 0 && amount > 0 {
+                    Text("\(Int((amount / total) * 100))%")
+                        .font(.caption2.bold())
+                        .foregroundColor(color)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(color.opacity(0.12))
+                        .clipShape(Capsule())
+                }
             }
-            Text(title).font(.subheadline.weight(.semibold))
-            Text(fmt(amount)).font(.title3.bold())
-            Text(subtitle).font(.caption2).foregroundColor(.secondary)
+            Text(fmt(amount))
+                .font(.title3.bold())
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(subtitle).font(.caption2).foregroundColor(.secondary)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.systemBackground))
+        .background(Color(.secondarySystemGroupedBackground))
         .cornerRadius(20)
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(color.opacity(0.15), lineWidth: 1))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(color.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Top Holdings
+
+    @ViewBuilder
+    private var topHoldingsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Top Holdings") { EmptyView() }
+
+            VStack(spacing: 0) {
+                ForEach(Array(investmentPositions.prefix(5).enumerated()), id: \.element.id) { idx, item in
+                    holdingRow(item)
+                    if idx < min(5, investmentPositions.count) - 1 {
+                        Divider().padding(.leading, 62)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            .background(Color(.secondarySystemGroupedBackground))
+            .cornerRadius(20)
+        }
+    }
+
+    @ViewBuilder
+    private func holdingRow(_ item: APIService.ValuationPortfolioItem) -> some View {
+        let pl = item.avg_cost > 0 ? ((item.price_usd - item.avg_cost) / item.avg_cost) * 100 : 0.0
+        let isStock = ["stock", "etf"].contains(item.asset_class.lowercased())
+        let isCrypto = item.asset_class.lowercased() == "crypto"
+        let accentColor: Color = isStock ? .green : isCrypto ? .orange : .blue
+
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: isStock ? 10 : 22)
+                    .fill(accentColor.opacity(0.12))
+                    .frame(width: 44, height: 44)
+                if isStock {
+                    AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(item.symbol)?format=jpg")) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                                .frame(width: 34, height: 34)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        default:
+                            Text(String(item.symbol.prefix(3)))
+                                .font(.caption.bold()).foregroundColor(accentColor)
+                        }
+                    }
+                } else if isCrypto, let imgURL = cryptoImages[item.symbol.uppercased()],
+                          let url = URL(string: imgURL) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFit()
+                                .frame(width: 32, height: 32).clipShape(Circle())
+                        default:
+                            Text(String(item.symbol.prefix(3)))
+                                .font(.caption.bold()).foregroundColor(accentColor)
+                        }
+                    }
+                } else {
+                    Text(String(item.symbol.prefix(3)))
+                        .font(.caption.bold()).foregroundColor(accentColor)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.symbol).font(.subheadline.weight(.semibold))
+                Text(item.asset_name).font(.caption).foregroundColor(.secondary).lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(fmt(item.value_in_base)).font(.subheadline.weight(.semibold))
+                Text((pl >= 0 ? "+" : "") + String(format: "%.2f%%", pl))
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(pl >= 0 ? .green : .red)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     // MARK: - Recent Activity
 
     private var recentActivitySection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Recent Activity").font(.headline)
-                Spacer()
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Recent Activity") {
                 NavigationLink(destination: TransactionsFullView()) {
                     Text("See all")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.blue)
                 }
             }
-            .padding(.bottom, 14)
 
-            let activity  = valuation?.recent_activity ?? []
-            let positions = investmentPositions.prefix(2)
+            let activity = valuation?.recent_activity ?? []
 
-            if activity.isEmpty && positions.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "chart.line.uptrend.xyaxis")
-                        .font(.system(size: 40)).foregroundColor(.secondary.opacity(0.3))
+            if activity.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 36)).foregroundColor(.secondary.opacity(0.35))
                     Text("No activity yet").font(.subheadline).foregroundColor(.secondary)
                     Text("Tap + to add your first transaction")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                .frame(maxWidth: .infinity).padding(.vertical, 24)
+                .frame(maxWidth: .infinity).padding(.vertical, 28)
+                .background(Color(.secondarySystemGroupedBackground))
+                .cornerRadius(20)
             } else {
-                ForEach(Array(positions.enumerated()), id: \.element.id) { idx, item in
-                    positionRow(item)
-                    if idx < positions.count - 1 { Divider() }
-                }
-
-                if !activity.isEmpty {
-                    if !positions.isEmpty { Divider().padding(.vertical, 4) }
-                    ForEach(Array(activity.prefix(4).enumerated()), id: \.element.id) { idx, item in
+                VStack(spacing: 0) {
+                    ForEach(Array(activity.prefix(5).enumerated()), id: \.element.id) { idx, item in
                         activityRow(item)
-                        if idx < min(4, activity.count) - 1 { Divider() }
+                        if idx < min(5, activity.count) - 1 {
+                            Divider().padding(.leading, 58)
+                        }
                     }
                 }
+                .background(Color(.secondarySystemGroupedBackground))
+                .cornerRadius(20)
             }
         }
-        .padding(16)
-        .background(Color(.systemGray6))
-        .cornerRadius(22)
     }
 
     @ViewBuilder
-    private func positionRow(_ item: APIService.ValuationPortfolioItem) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(assetColor(item.asset_class).opacity(0.15)).frame(width: 42, height: 42)
-                Image(systemName: assetIcon(item.asset_class)).foregroundColor(assetColor(item.asset_class))
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.symbol).font(.subheadline.weight(.semibold))
-                Text(item.asset_name).font(.caption).foregroundColor(.secondary).lineLimit(1)
-            }
+    private func sectionHeader(_ title: String, @ViewBuilder trailing: () -> some View) -> some View {
+        HStack {
+            Text(title).font(.headline)
             Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(fmt(item.value_in_base)).font(.subheadline.weight(.semibold))
-                let pl = item.avg_cost > 0 ? ((item.price_usd - item.avg_cost) / item.avg_cost) * 100 : 0
-                Text((pl >= 0 ? "+" : "") + String(format: "%.2f%%", pl))
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(pl >= 0 ? .green : .red)
-            }
+            trailing()
         }
-        .padding(.vertical, 8)
     }
 
     @ViewBuilder
     private func activityRow(_ item: APIService.ValuationRecentActivity) -> some View {
+        let amt       = activityAmount(item)
+        let symbol    = activitySymbol(item)
+        let accName   = activityAccount(item)
+        let isIncome  = item.event_type.lowercased() == "income"
+        let isExpense = item.event_type.lowercased() == "expense"
+        let isTrade   = item.event_type.lowercased() == "trade"
+        let amtColor: Color = isIncome ? .green : isExpense ? .red : .primary
+        let asset     = isTrade ? activityAsset(item) : nil
+        let isStock   = ["stock", "etf"].contains(asset?.asset_class.lowercased() ?? "")
+        let isCrypto  = asset?.asset_class.lowercased() == "crypto"
+
         HStack(spacing: 12) {
             ZStack {
-                Circle().fill(eventColor(item.event_type).opacity(0.15)).frame(width: 42, height: 42)
-                Image(systemName: eventIcon(item.event_type)).foregroundColor(eventColor(item.event_type))
+                Circle()
+                    .fill(eventColor(item.event_type).opacity(0.15))
+                    .frame(width: 42, height: 42)
+                if let asset, isStock {
+                    AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(asset.symbol)?format=jpg")) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                                .frame(width: 32, height: 32).clipShape(Circle())
+                        default:
+                            Text(String(asset.symbol.prefix(2)))
+                                .font(.caption.bold()).foregroundColor(.green)
+                        }
+                    }
+                } else if let asset, isCrypto {
+                    if let imgURL = cryptoImages[asset.symbol.uppercased()], let url = URL(string: imgURL) {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .success(let img):
+                                img.resizable().scaledToFit()
+                                    .frame(width: 32, height: 32).clipShape(Circle())
+                            default:
+                                Text(String(asset.symbol.prefix(2)))
+                                    .font(.caption.bold()).foregroundColor(.orange)
+                            }
+                        }
+                    } else {
+                        Text(String(asset.symbol.prefix(2)))
+                            .font(.caption.bold()).foregroundColor(.orange)
+                    }
+                } else {
+                    Image(systemName: eventIcon(item.event_type))
+                        .foregroundColor(eventColor(item.event_type))
+                        .font(.system(size: 16))
+                }
             }
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.description ?? item.event_type.capitalized)
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(item.event_type.capitalized)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(eventColor(item.event_type).opacity(0.12))
-                        .foregroundColor(eventColor(item.event_type))
-                        .cornerRadius(6)
-                    if let cat = item.category {
-                        Text(cat).font(.caption).foregroundColor(.secondary)
+
+                if isTrade, let price = activityUnitPrice(item), let qty = activityAssetQty(item) {
+                    Text("\(qty.formatted(.number.precision(.fractionLength(0...6)))) \(asset?.symbol ?? "units") @ $\(price.formatted(.number.precision(.fractionLength(2))))")
+                        .font(.caption2).foregroundColor(.secondary)
+                } else {
+                    HStack(spacing: 5) {
+                        Text(item.event_type.capitalized)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(eventColor(item.event_type).opacity(0.12))
+                            .foregroundColor(eventColor(item.event_type))
+                            .clipShape(Capsule())
+                        if let cat = item.category {
+                            Text(cat).font(.caption2).foregroundColor(.secondary)
+                        }
+                        if let name = accName {
+                            Text("· \(name)").font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                        }
                     }
-                    Text("·").font(.caption2).foregroundColor(.secondary)
-                    Text(item.date).font(.caption2).foregroundColor(.secondary)
                 }
             }
             Spacer()
+            if amt > 0 {
+                Text("\(isExpense || isTrade ? "-" : isIncome ? "+" : "")\(symbol)\(amt.formatted(.number.precision(.fractionLength(2))))")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(amtColor)
+            }
         }
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    // MARK: - Footer
+
+    @ViewBuilder
+    private var updatedFooter: some View {
+        HStack {
+            HStack(spacing: 5) {
+                Circle().fill(Color.green).frame(width: 6, height: 6)
+                Text("Updated \(lastUpdated?.formatted(date: .omitted, time: .shortened) ?? "now")")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Spacer()
+            Button {
+                Task { await load() }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+                    .font(.caption.weight(.bold))
+                    .labelStyle(.iconOnly)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 4)
     }
 
     // MARK: - Data
@@ -377,14 +541,87 @@ struct HomeView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            async let v = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
-            async let a = APIService.shared.fetchAccounts()
+            async let v   = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
+            async let a   = APIService.shared.fetchAccounts()
+            async let as_ = APIService.shared.fetchAssets()
+            async let l   = APIService.shared.fetchTransactionLegs()
+            async let r   = APIService.shared.fetchRates()
             valuation   = try await v
             accounts    = try await a
+            assets      = try await as_
+            legs        = try await l
+            fxRates     = try await r.fx_to_usd
             lastUpdated = Date()
             errorMessage = nil
+            let cryptoSymbols = assets
+                .filter { $0.asset_class.lowercased() == "crypto" }
+                .map { $0.symbol.uppercased() }
+            await loadCryptoImages(for: cryptoSymbols)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadCryptoImages(for symbols: [String]) async {
+        let unique = Array(Set(symbols))
+        await withTaskGroup(of: (String, String?).self) { group in
+            for symbol in unique {
+                group.addTask {
+                    guard let results = try? await APIService.shared.searchCrypto(query: symbol),
+                          let match = results.first(where: { $0.symbol.uppercased() == symbol }) ?? results.first
+                    else { return (symbol, nil) }
+                    let url = match.thumb?.replacingOccurrences(of: "/thumb/", with: "/small/")
+                    return (symbol, url)
+                }
+            }
+            for await (symbol, url) in group {
+                if let url { cryptoImages[symbol] = url }
+            }
+        }
+    }
+
+    private func activityAssetLeg(_ item: APIService.ValuationRecentActivity) -> APIService.TransactionLeg? {
+        legs.filter { $0.event_id == item.id && $0.fee_flag != "true" }
+            .first(where: { $0.quantity > 0 })
+    }
+
+    private func activityAsset(_ item: APIService.ValuationRecentActivity) -> APIService.Asset? {
+        guard let assetId = activityAssetLeg(item)?.asset_id else { return nil }
+        return assets.first(where: { $0.id == assetId })
+    }
+
+    private func activityUnitPrice(_ item: APIService.ValuationRecentActivity) -> Double? {
+        activityAssetLeg(item)?.unit_price
+    }
+
+    private func activityAssetQty(_ item: APIService.ValuationRecentActivity) -> Double? {
+        activityAssetLeg(item).map { abs($0.quantity) }
+    }
+
+    private func primaryActivityLeg(_ item: APIService.ValuationRecentActivity) -> APIService.TransactionLeg? {
+        let txLegs = legs.filter { $0.event_id == item.id && $0.fee_flag != "true" }
+        if item.event_type.lowercased() == "trade" {
+            return txLegs.first(where: { $0.quantity < 0 }) ?? txLegs.first
+        }
+        return txLegs.first(where: { $0.quantity > 0 }) ?? txLegs.first
+    }
+
+    private func activityAmount(_ item: APIService.ValuationRecentActivity) -> Double {
+        abs(primaryActivityLeg(item)?.quantity ?? 0)
+    }
+
+    private func activityAccount(_ item: APIService.ValuationRecentActivity) -> String? {
+        guard let leg = primaryActivityLeg(item) else { return nil }
+        return accounts.first(where: { $0.id == leg.account_id })?.name
+    }
+
+    private func activitySymbol(_ item: APIService.ValuationRecentActivity) -> String {
+        guard let leg = primaryActivityLeg(item),
+              let currency = accounts.first(where: { $0.id == leg.account_id })?.base_currency
+        else { return "€" }
+        switch currency.uppercased() {
+        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF "
+        default: return "€"
         }
     }
 
@@ -405,22 +642,6 @@ struct HomeView: View {
         case "AUD": s = "A$"; default: s = baseCurrency + " "
         }
         return s + v.formatted(.number.precision(.fractionLength(2)))
-    }
-
-    private func assetIcon(_ cls: String) -> String {
-        switch cls.lowercased() {
-        case "stock","etf": return "chart.bar.fill"
-        case "crypto":      return "bitcoinsign.circle.fill"
-        default:            return "dollarsign.circle.fill"
-        }
-    }
-
-    private func assetColor(_ cls: String) -> Color {
-        switch cls.lowercased() {
-        case "stock","etf": return .green
-        case "crypto":      return .orange
-        default:            return .blue
-        }
     }
 
     private func eventIcon(_ t: String) -> String {
