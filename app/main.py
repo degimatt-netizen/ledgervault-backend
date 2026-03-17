@@ -1158,7 +1158,14 @@ def auth_reset_password(request: Request, payload: ResetPasswordRequest, db: Ses
 @limiter.limit("5/minute")
 def auth_social(request: Request, payload: SocialAuthRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
-    user = db.query(models.User).filter(models.User.email == email).first()
+    user = None
+    # Look up by social ID first — works even when Apple doesn't return email on repeat sign-ins
+    if payload.apple_user_id:
+        user = db.query(models.User).filter(models.User.apple_user_id == payload.apple_user_id).first()
+    if not user and payload.google_sub:
+        user = db.query(models.User).filter(models.User.google_sub == payload.google_sub).first()
+    if not user and email:
+        user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
         # Create new user via social — pre-verified
         user = models.User(
