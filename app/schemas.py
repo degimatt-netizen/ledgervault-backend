@@ -167,6 +167,37 @@ class SyncResult(BaseModel):
 
 
 # -------------------------
+# Bank Connections (TrueLayer)
+# -------------------------
+
+class BankConnectionOut(BaseModel):
+    id: str
+    provider_id: str
+    provider_name: str
+    account_display_name: str
+    account_type: Optional[str] = None
+    currency: Optional[str] = None
+    truelayer_account_id: str
+    ledger_account_id: Optional[str] = None
+    last_synced: Optional[str] = None
+    status: str
+    status_message: Optional[str] = None
+
+
+class BankConnectionList(BaseModel):
+    items: List[BankConnectionOut]
+
+
+class BankAuthUrlResponse(BaseModel):
+    auth_url: str
+    state: str
+
+
+class BankCallbackResponse(BaseModel):
+    items: List[BankConnectionOut]
+
+
+# -------------------------
 # Recurring Transactions
 # -------------------------
 

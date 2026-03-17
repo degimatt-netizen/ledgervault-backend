@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Boolean, ForeignKey
+from sqlalchemy import Column, String, Float, Boolean, ForeignKey, Text
 from app.db import Base
 
 
@@ -71,6 +71,24 @@ class ExchangeConnection(Base):
     account_id = Column(String, ForeignKey("accounts.id"), nullable=True)  # optional linked account
     last_synced = Column(String, nullable=True)     # ISO datetime string
     status = Column(String, nullable=False, default="active")  # active, error, inactive
+    status_message = Column(String, nullable=True)
+
+
+class BankConnection(Base):
+    __tablename__ = "bank_connections"
+
+    id = Column(String, primary_key=True, index=True)
+    provider_id = Column(String, nullable=False)            # "uk-ob-revolut"
+    provider_name = Column(String, nullable=False)          # "Revolut"
+    account_display_name = Column(String, nullable=False)   # "Current Account"
+    account_type = Column(String, nullable=True)            # "TRANSACTION", "SAVINGS"
+    currency = Column(String, nullable=True)                # "GBP", "EUR", …
+    truelayer_account_id = Column(String, nullable=False, unique=True)
+    access_token = Column(Text, nullable=False)
+    refresh_token = Column(Text, nullable=True)
+    ledger_account_id = Column(String, ForeignKey("accounts.id"), nullable=True)
+    last_synced = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")
     status_message = Column(String, nullable=True)
 
 
