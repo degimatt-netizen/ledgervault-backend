@@ -275,15 +275,14 @@ struct HomeView: View {
                 }
             }
 
-            // Compute change
+            // Compute change — use live total as "now", history for the start point
             let first = history.points.first(where: { $0.total > 0 })?.total ?? 0
-            let last  = history.points.last?.total ?? 0
-            let change = last - first
+            let change = total - first
             let changePct = first > 0 ? (change / first) * 100 : 0
             let isUp = change >= 0
 
             HStack(spacing: 6) {
-                Text(fmt(last))
+                Text(fmt(total))
                     .font(.subheadline.bold())
                 HStack(spacing: 3) {
                     Image(systemName: isUp ? "arrow.up.right" : "arrow.down.right")

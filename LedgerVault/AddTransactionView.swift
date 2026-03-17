@@ -180,130 +180,140 @@ struct AddTransactionView: View {
                 Divider()
 
                 // ── Rows ─────────────────────────────────────────────────
-                ScrollView {
-                    // Dismiss keyboard on tap of blank area
-                    Color.clear.frame(height: 0)
-                        .contentShape(Rectangle())
-                        .onTapGesture { focusedField = nil }
-                    VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        // Dismiss keyboard on tap of blank area
+                        Color.clear.frame(height: 0)
+                            .contentShape(Rectangle())
+                            .onTapGesture { focusedField = nil }
+                        VStack(spacing: 0) {
 
-                        // Category
-                        Button { showCategoryPicker = true } label: {
-                            row(icon: categoryIcon, iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
-                                HStack(spacing: 4) {
-                                    Text("Category:").foregroundColor(.secondary)
-                                    Text(category).foregroundColor(.primary).bold()
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-
-                        rowDivider()
-
-                        // Description
-                        row(icon: "text.alignleft", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
-                            TextField("Description (optional)", text: $description)
-                                .foregroundColor(.primary)
-                                .focused($focusedField, equals: .description)
-                                .submitLabel(.done)
-                                .onSubmit { focusedField = nil }
-                        }
-
-                        rowDivider()
-
-                        // Account rows
-                        if type == "Income" {
-                            Button { showToPicker = true } label: {
-                                row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                            // Category
+                            Button { showCategoryPicker = true } label: {
+                                row(icon: categoryIcon, iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
                                     HStack(spacing: 4) {
-                                        Text("To:").foregroundColor(.secondary)
-                                        Text("\(toAccount?.name ?? "Select account")")
-                                            .foregroundColor(.primary).bold()
+                                        Text("Category:").foregroundColor(.secondary)
+                                        Text(category).foregroundColor(.primary).bold()
                                         Spacer()
                                         Image(systemName: "chevron.right")
-                                            .font(.caption).foregroundColor(.secondary)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
                                     }
                                 }
                             }
-                        } else if type == "Expense" {
-                            Button { showFromPicker = true } label: {
-                                row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
-                                    HStack(spacing: 4) {
-                                        Text("From:").foregroundColor(.secondary)
-                                        Text("\(fromAccount?.name ?? "Select account")")
-                                            .foregroundColor(.primary).bold()
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption).foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                        } else {
-                            Button { showFromPicker = true } label: {
-                                row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
-                                    HStack(spacing: 4) {
-                                        Text("From:").foregroundColor(.secondary)
-                                        Text("\(fromAccount?.name ?? "Select")")
-                                            .foregroundColor(.primary).bold()
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption).foregroundColor(.secondary)
-                                    }
-                                }
-                            }
+
                             rowDivider()
-                            Button { showToPicker = true } label: {
-                                row(icon: "wallet.pass.fill", iconBg: Color.green.opacity(0.2), iconColor: .green) {
-                                    HStack(spacing: 4) {
-                                        Text("To:").foregroundColor(.secondary)
-                                        Text("\(toAccount?.name ?? "Select")")
-                                            .foregroundColor(.primary).bold()
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption).foregroundColor(.secondary)
+
+                            // Description
+                            row(icon: "text.alignleft", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
+                                TextField("Description (optional)", text: $description)
+                                    .foregroundColor(.primary)
+                                    .focused($focusedField, equals: .description)
+                                    .submitLabel(.next)
+                                    .onSubmit { focusedField = .note }
+                            }
+                            .id("description")
+
+                            rowDivider()
+
+                            // Account rows
+                            if type == "Income" {
+                                Button { showToPicker = true } label: {
+                                    row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                                        HStack(spacing: 4) {
+                                            Text("To:").foregroundColor(.secondary)
+                                            Text("\(toAccount?.name ?? "Select account")")
+                                                .foregroundColor(.primary).bold()
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption).foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+                            } else if type == "Expense" {
+                                Button { showFromPicker = true } label: {
+                                    row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                                        HStack(spacing: 4) {
+                                            Text("From:").foregroundColor(.secondary)
+                                            Text("\(fromAccount?.name ?? "Select account")")
+                                                .foregroundColor(.primary).bold()
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption).foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+                            } else {
+                                Button { showFromPicker = true } label: {
+                                    row(icon: "wallet.pass.fill", iconBg: Color.blue.opacity(0.2), iconColor: .blue) {
+                                        HStack(spacing: 4) {
+                                            Text("From:").foregroundColor(.secondary)
+                                            Text("\(fromAccount?.name ?? "Select")")
+                                                .foregroundColor(.primary).bold()
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption).foregroundColor(.secondary)
+                                        }
+                                    }
+                                }
+                                rowDivider()
+                                Button { showToPicker = true } label: {
+                                    row(icon: "wallet.pass.fill", iconBg: Color.green.opacity(0.2), iconColor: .green) {
+                                        HStack(spacing: 4) {
+                                            Text("To:").foregroundColor(.secondary)
+                                            Text("\(toAccount?.name ?? "Select")")
+                                                .foregroundColor(.primary).bold()
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption).foregroundColor(.secondary)
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        rowDivider()
+                            rowDivider()
 
-                        // Note
-                        row(icon: "note.text", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
-                            TextField("Note", text: $note)
-                                .foregroundColor(.primary)
-                                .focused($focusedField, equals: .note)
-                                .submitLabel(.done)
-                                .onSubmit { focusedField = nil }
-                        }
-
-                        rowDivider()
-
-                        // Date
-                        row(icon: "calendar", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
-                            HStack {
-                                DatePicker("", selection: $date, displayedComponents: .date)
-                                    .labelsHidden()
-                                Spacer()
+                            // Note
+                            row(icon: "note.text", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
+                                TextField("Note (optional)", text: $note)
+                                    .foregroundColor(.primary)
+                                    .focused($focusedField, equals: .note)
+                                    .submitLabel(.done)
+                                    .onSubmit { focusedField = nil }
                             }
-                        }
+                            .id("note")
 
-                        if let errorMessage {
-                            Text(errorMessage)
-                                .foregroundColor(.red)
-                                .font(.caption)
-                                .padding()
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 20)
-                        }
+                            rowDivider()
 
-                        Color.clear.frame(height: 100)
+                            // Date
+                            row(icon: "calendar", iconBg: Color.gray.opacity(0.25), iconColor: .primary) {
+                                HStack {
+                                    DatePicker("", selection: $date, displayedComponents: .date)
+                                        .labelsHidden()
+                                    Spacer()
+                                }
+                            }
+
+                            if let errorMessage {
+                                Text(errorMessage)
+                                    .foregroundColor(.red)
+                                    .font(.caption)
+                                    .padding()
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 20)
+                            }
+
+                            Color.clear.frame(height: 240)
+                        }
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onChange(of: focusedField) { _, field in
+                        guard let field, field != .amount else { return }
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(field == .description ? "description" : "note", anchor: .center)
+                        }
                     }
                 }
-                .scrollDismissesKeyboard(.interactively)
 
                 // ── Save button ──────────────────────────────────────────
                 Button { Task { await save() } } label: {

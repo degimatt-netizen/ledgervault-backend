@@ -357,6 +357,16 @@ struct TransactionsView: View {
         return fmt.string(from: date)
     }
 
+    private func dayNet(for txs: [APIService.TransactionEvent]) -> Double {
+        txs.reduce(0.0) { total, tx in
+            switch tx.event_type.lowercased() {
+            case "income":  return total + txAmount(tx)
+            case "expense": return total - txAmount(tx)
+            default:        return total
+            }
+        }
+    }
+
     // ── Summary totals ─────────────────────────────────────────────────────────
     private var totalIncome: Double {
         filtered.filter { $0.event_type.lowercased() == "income" }.reduce(0) { $0 + txAmount($1) }
@@ -409,53 +419,53 @@ struct TransactionsView: View {
 
                 // ── Income / Expense summary strip ─────────────────────────────
                 if filterType == "All" || filterType == "Income" || filterType == "Expense" {
-                    HStack(spacing: 0) {
-                        // Income column
-                        HStack(spacing: 8) {
+                    HStack(spacing: 10) {
+                        // Income card
+                        HStack(spacing: 10) {
                             ZStack {
-                                Circle().fill(Color.green.opacity(0.12)).frame(width: 32, height: 32)
+                                Circle().fill(Color.green.opacity(0.12)).frame(width: 34, height: 34)
                                 Image(systemName: "arrow.down.circle.fill")
-                                    .foregroundColor(.green).font(.system(size: 14))
+                                    .foregroundColor(.green).font(.system(size: 15))
                             }
-                            VStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 1) {
                                 Text("Income").font(.caption2).foregroundColor(.secondary)
                                 Text(totalIncome > 0
                                      ? "+\(baseCurrencySymbol)\(totalIncome.formatted(.number.precision(.fractionLength(2))))"
                                      : "—")
-                                    .font(.caption.bold())
+                                    .font(.subheadline.bold())
                                     .foregroundColor(totalIncome > 0 ? .green : .secondary)
                             }
+                            Spacer()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 16)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
 
-                        Divider().frame(height: 32)
-
-                        // Expenses column
-                        HStack(spacing: 8) {
+                        // Expenses card
+                        HStack(spacing: 10) {
                             ZStack {
-                                Circle().fill(Color.red.opacity(0.12)).frame(width: 32, height: 32)
+                                Circle().fill(Color.red.opacity(0.12)).frame(width: 34, height: 34)
                                 Image(systemName: "arrow.up.circle.fill")
-                                    .foregroundColor(.red).font(.system(size: 14))
+                                    .foregroundColor(.red).font(.system(size: 15))
                             }
-                            VStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 1) {
                                 Text("Expenses").font(.caption2).foregroundColor(.secondary)
                                 Text(totalExpenses > 0
                                      ? "-\(baseCurrencySymbol)\(totalExpenses.formatted(.number.precision(.fractionLength(2))))"
                                      : "—")
-                                    .font(.caption.bold())
+                                    .font(.subheadline.bold())
                                     .foregroundColor(totalExpenses > 0 ? .red : .secondary)
                             }
+                            Spacer()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 12)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
                     }
+                    .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(Color(.secondarySystemGroupedBackground))
-                    Divider()
+                    .background(Color(.systemGroupedBackground))
                 }
-
-                Divider()
 
                 // ── List or empty state ────────────────────────────────────────
                 if filtered.isEmpty {
@@ -480,15 +490,26 @@ struct TransactionsView: View {
                                 ForEach(txs, id: \.id) { tx in
                                     Button { selectedTx = tx } label: { txRow(tx) }
                                         .buttonStyle(.plain)
+                                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                                 }
                                 .onDelete { offsets in
                                     Task { await deleteItems(offsets, from: txs) }
                                 }
                             } header: {
-                                Text(sectionTitle(for: dateStr))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(.secondary)
-                                    .textCase(nil)
+                                let net = dayNet(for: txs)
+                                HStack {
+                                    Text(sectionTitle(for: dateStr))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.secondary)
+                                        .textCase(nil)
+                                    Spacer()
+                                    if net != 0 {
+                                        Text("\(net >= 0 ? "+" : "")\(baseCurrencySymbol)\(abs(net).formatted(.number.precision(.fractionLength(2))))")
+                                            .font(.caption2.bold())
+                                            .foregroundColor(net >= 0 ? .green : .red)
+                                            .textCase(nil)
+                                    }
+                                }
                             }
                         }
                     }
@@ -534,88 +555,103 @@ struct TransactionsView: View {
         let isIncome  = tx.event_type.lowercased() == "income"
         let isExpense = tx.event_type.lowercased() == "expense"
         let isTrade   = tx.event_type.lowercased() == "trade"
-        let amtColor: Color = isIncome ? .green : isExpense ? .red : .primary
+        let isTransfer = tx.event_type.lowercased() == "transfer"
+        let amtColor: Color = isIncome ? .green : isExpense ? .red : isTrade ? .orange : .blue
         let asset     = isTrade ? tradeAsset(tx) : nil
         let isStock   = ["stock", "etf"].contains(asset?.asset_class.lowercased() ?? "")
         let isCrypto  = asset?.asset_class.lowercased() == "crypto"
+        let evColor   = eventColor(tx.event_type)
 
         HStack(spacing: 14) {
-            // Icon
+            // ── Icon ──────────────────────────────────────────────────────
             ZStack {
                 Circle()
-                    .fill(eventColor(tx.event_type).opacity(0.13))
-                    .frame(width: 48, height: 48)
+                    .fill(evColor.opacity(0.12))
+                    .frame(width: 46, height: 46)
                 if let asset, isStock {
                     AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(asset.symbol)?format=jpg")) { phase in
                         switch phase {
                         case .success(let img):
                             img.resizable().scaledToFill()
-                                .frame(width: 36, height: 36).clipShape(Circle())
+                                .frame(width: 34, height: 34).clipShape(Circle())
                         default:
-                            Text(String(asset.symbol.prefix(2)))
-                                .font(.caption.bold()).foregroundColor(.green)
+                            Image(systemName: eventIcon(tx.event_type))
+                                .foregroundColor(evColor).font(.system(size: 18))
                         }
                     }
-                } else if let asset, isCrypto {
-                    if let imgURL = cryptoImages[asset.symbol.uppercased()], let url = URL(string: imgURL) {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let img):
-                                img.resizable().scaledToFit()
-                                    .frame(width: 36, height: 36).clipShape(Circle())
-                            default:
-                                Text(String(asset.symbol.prefix(2)))
-                                    .font(.caption.bold()).foregroundColor(.orange)
-                            }
+                } else if let asset, isCrypto,
+                          let imgURL = cryptoImages[asset.symbol.uppercased()],
+                          let url = URL(string: imgURL) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFit()
+                                .frame(width: 34, height: 34).clipShape(Circle())
+                        default:
+                            Image(systemName: eventIcon(tx.event_type))
+                                .foregroundColor(evColor).font(.system(size: 18))
                         }
-                    } else {
-                        Text(String(asset.symbol.prefix(2)))
-                            .font(.caption.bold()).foregroundColor(.orange)
                     }
                 } else {
                     Image(systemName: eventIcon(tx.event_type))
-                        .foregroundColor(eventColor(tx.event_type))
-                        .font(.system(size: 19))
+                        .foregroundColor(evColor)
+                        .font(.system(size: 18, weight: .semibold))
                 }
             }
 
-            // Description + subtitle
-            VStack(alignment: .leading, spacing: 3) {
+            // ── Left content ──────────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 4) {
                 Text(tx.description ?? tx.event_type.capitalized)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
                     .lineLimit(1)
 
-                if isTrade, let price = tradeUnitPrice(tx), let qty = tradeAssetQty(tx) {
-                    Text("\(qty.formatted(.number.precision(.fractionLength(0...6)))) \(asset?.symbol ?? "units") @ $\(price.formatted(.number.precision(.fractionLength(2))))")
-                        .font(.caption2).foregroundColor(.secondary)
-                } else {
-                    HStack(spacing: 4) {
+                HStack(spacing: 5) {
+                    if isTrade, let qty = tradeAssetQty(tx), let price = tradeUnitPrice(tx) {
+                        Text("\(qty.formatted(.number.precision(.fractionLength(0...5)))) \(asset?.symbol ?? "") @ $\(price.formatted(.number.precision(.fractionLength(2))))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    } else {
                         if let cat = tx.category, !cat.isEmpty {
-                            Text(cat).font(.caption2).foregroundColor(.secondary)
-                            if accName != nil { Text("·").font(.caption2).foregroundColor(.secondary.opacity(0.5)) }
+                            Text(cat)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(evColor.opacity(0.10))
+                                .foregroundColor(evColor)
+                                .clipShape(Capsule())
                         }
                         if let name = accName {
-                            Text(name).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                            Text(name)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
                         }
                     }
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            // Amount + type badge
+            // ── Right content ─────────────────────────────────────────────
             VStack(alignment: .trailing, spacing: 3) {
                 if amt > 0 {
-                    Text("\(isExpense || isTrade ? "−" : isIncome ? "+" : "")\(symbol)\(amt.formatted(.number.precision(.fractionLength(2))))")
-                        .font(.subheadline.weight(.bold))
+                    Text("\(isExpense || isTrade ? "−" : isIncome ? "+" : isTransfer ? "⇄ " : "")\(symbol)\(amt.formatted(.number.precision(.fractionLength(2))))")
+                        .font(.callout.weight(.bold))
                         .foregroundColor(amtColor)
                 }
-                Text(tx.event_type.capitalized)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(eventColor(tx.event_type))
+                if isTrade, let asset {
+                    Text(asset.symbol)
+                        .font(.caption2.weight(.medium))
+                        .foregroundColor(.secondary)
+                } else if let accName {
+                    Text(accName)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
     }
 
     // ── Data loading ───────────────────────────────────────────────────────────
