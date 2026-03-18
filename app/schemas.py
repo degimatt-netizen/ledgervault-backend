@@ -44,6 +44,7 @@ class AuthResponse(BaseModel):
     email: Optional[str] = None
     name: Optional[str] = None
     message: Optional[str] = None
+    is_new_user: Optional[bool] = None
 
 class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None

@@ -1167,6 +1167,7 @@ def auth_social(request: Request, payload: SocialAuthRequest, db: Session = Depe
         user = db.query(models.User).filter(models.User.google_sub == payload.google_sub).first()
     if not user and email:
         user = db.query(models.User).filter(models.User.email == email).first()
+    is_new_user = False
     if not user:
         # Create new user via social — pre-verified
         user = models.User(
@@ -1178,6 +1179,7 @@ def auth_social(request: Request, payload: SocialAuthRequest, db: Session = Depe
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         db.add(user); db.commit()
+        is_new_user = True
     else:
         # Update social identifiers if missing
         changed = False
@@ -1191,7 +1193,8 @@ def auth_social(request: Request, payload: SocialAuthRequest, db: Session = Depe
             db.commit()
     token = _create_token(user.id)
     return AuthResponse(status="ok", access_token=token,
-                        user_id=user.id, email=user.email, name=user.name)
+                        user_id=user.id, email=user.email, name=user.name,
+                        is_new_user=is_new_user)
 
 @app.get("/auth/me", response_model=AuthResponse)
 def auth_me(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
