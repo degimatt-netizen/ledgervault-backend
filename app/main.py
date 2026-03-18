@@ -27,6 +27,7 @@ from app.schemas import (
     BankConnectionOut, BankConnectionList, BankAuthUrlResponse, BankCallbackResponse,
     RegisterRequest, LoginRequest, VerifyEmailRequest, ResendCodeRequest,
     ForgotPasswordRequest, ResetPasswordRequest, SocialAuthRequest, AuthResponse,
+    UpdateProfileRequest,
 )
 
 app = FastAPI(title="LedgerVault API", version="4.3.0")
@@ -1199,6 +1200,31 @@ def auth_me(user_id: str = Depends(require_user_id), db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail="User not found")
     return AuthResponse(status="ok", user_id=user.id, email=user.email, name=user.name)
 
+@app.patch("/auth/profile")
+@limiter.limit("10/minute")
+def update_profile(request: Request, payload: UpdateProfileRequest,
+                   user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Update profile fields (phone, name). Phone must be globally unique."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.phone is not None:
+        phone = payload.phone.strip()
+        if phone:
+            existing = db.query(models.User).filter(
+                models.User.phone == phone,
+                models.User.id != user_id
+            ).first()
+            if existing:
+                raise HTTPException(status_code=409, detail="Mobile number already in use")
+            user.phone = phone
+        else:
+            user.phone = None
+    if payload.name is not None and payload.name.strip():
+        user.name = payload.name.strip()
+    db.commit()
+    return {"status": "ok", "message": "Profile updated"}
+
 @app.delete("/auth/account")
 def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
     """Hard-delete the authenticated user and all their data."""
@@ -1256,6 +1282,47 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
     db.delete(user)
     db.commit()
     return {"status": "deleted"}
+
+@app.delete("/user/transactions")
+def user_clear_transactions(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Clear all transactions and holdings for the current user. Accounts are kept."""
+    account_ids = [a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()]
+    if account_ids:
+        db.query(models.TransactionLeg).filter(
+            models.TransactionLeg.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.TransactionEvent).all()  # events not user-scoped; legs are gone, orphans ok
+        db.query(models.Holding).filter(
+            models.Holding.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "ok"}
+
+@app.delete("/user/data")
+def user_full_reset(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Delete all accounts, holdings, transactions for the current user. User account is kept."""
+    account_ids = [a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()]
+    if account_ids:
+        db.query(models.TransactionLeg).filter(
+            models.TransactionLeg.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.Holding).filter(
+            models.Holding.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.ExchangeConnection).filter(
+            models.ExchangeConnection.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.BankConnection).filter(
+            models.BankConnection.ledger_account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.RecurringTransaction).filter(
+            models.RecurringTransaction.from_account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.Account).filter(
+            models.Account.user_id == user_id
+        ).delete(synchronize_session=False)
+    db.commit()
+    return {"status": "ok"}
 
 # ─────────────────────────────────────────────
 # ROUTES

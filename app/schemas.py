@@ -45,6 +45,10 @@ class AuthResponse(BaseModel):
     name: Optional[str] = None
     message: Optional[str] = None
 
+class UpdateProfileRequest(BaseModel):
+    phone: Optional[str] = None
+    name: Optional[str] = None
+
 
 AccountType = Literal["bank", "exchange", "broker", "crypto_wallet", "cash"]
 AssetClass = Literal["fiat", "crypto", "stock", "etf", "commodity", "custom"]
