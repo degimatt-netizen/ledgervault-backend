@@ -1288,16 +1288,22 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
 
 @app.delete("/user/transactions")
 def user_clear_transactions(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
-    """Clear all transactions and holdings for the current user. Accounts are kept."""
+    """Clear all transaction records for the current user. Accounts, wallets, holdings are kept."""
     account_ids = [a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()]
     if account_ids:
+        # Collect event IDs tied to this user's legs
+        leg_rows = db.query(models.TransactionLeg.event_id).filter(
+            models.TransactionLeg.account_id.in_(account_ids)
+        ).distinct().all()
+        event_ids = [r.event_id for r in leg_rows]
+        # Delete legs first (FK child), then events
         db.query(models.TransactionLeg).filter(
             models.TransactionLeg.account_id.in_(account_ids)
         ).delete(synchronize_session=False)
-        db.query(models.TransactionEvent).all()  # events not user-scoped; legs are gone, orphans ok
-        db.query(models.Holding).filter(
-            models.Holding.account_id.in_(account_ids)
-        ).delete(synchronize_session=False)
+        if event_ids:
+            db.query(models.TransactionEvent).filter(
+                models.TransactionEvent.id.in_(event_ids)
+            ).delete(synchronize_session=False)
     db.commit()
     return {"status": "ok"}
 
