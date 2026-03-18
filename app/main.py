@@ -1199,6 +1199,64 @@ def auth_me(user_id: str = Depends(require_user_id), db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail="User not found")
     return AuthResponse(status="ok", user_id=user.id, email=user.email, name=user.name)
 
+@app.delete("/auth/account")
+def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Hard-delete the authenticated user and all their data."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get all account IDs belonging to this user
+    account_ids = [a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()]
+
+    if account_ids:
+        # Delete transaction legs for these accounts
+        db.query(models.TransactionLeg).filter(
+            models.TransactionLeg.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+
+        # Find orphaned transaction events (events with no remaining legs)
+        from sqlalchemy import text as _t
+        orphaned = db.execute(_t(
+            "SELECT DISTINCT event_id FROM transaction_legs WHERE account_id IN :ids"
+        ), {"ids": tuple(account_ids) if len(account_ids) > 1 else (account_ids[0],)}).fetchall()
+        # Delete all transaction events linked to user's accounts
+        event_ids = [r[0] for r in orphaned]
+        if event_ids:
+            db.query(models.TransactionEvent).filter(
+                models.TransactionEvent.id.in_(event_ids)
+            ).delete(synchronize_session=False)
+
+        # Delete holdings
+        db.query(models.Holding).filter(
+            models.Holding.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+
+        # Delete exchange connections
+        db.query(models.ExchangeConnection).filter(
+            models.ExchangeConnection.account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+
+        # Delete bank connections
+        db.query(models.BankConnection).filter(
+            models.BankConnection.ledger_account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+
+        # Delete recurring transactions
+        db.query(models.RecurringTransaction).filter(
+            models.RecurringTransaction.from_account_id.in_(account_ids)
+        ).delete(synchronize_session=False)
+
+        # Delete accounts
+        db.query(models.Account).filter(
+            models.Account.user_id == user_id
+        ).delete(synchronize_session=False)
+
+    # Finally delete the user
+    db.delete(user)
+    db.commit()
+    return {"status": "deleted"}
+
 # ─────────────────────────────────────────────
 # ROUTES
 # ─────────────────────────────────────────────
