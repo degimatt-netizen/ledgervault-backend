@@ -44,22 +44,24 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Idempotent schema migrations (add columns safely to existing DB) ──────────
-with engine.connect() as _conn:
-    for _stmt in [
-        "ALTER TABLE accounts ADD COLUMN user_id VARCHAR",
-        "CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)",
-        "ALTER TABLE bank_connections ADD COLUMN provider VARCHAR DEFAULT 'truelayer'",
-        "ALTER TABLE bank_connections ADD COLUMN saltedge_connection_id VARCHAR",
-        "ALTER TABLE bank_connections ALTER COLUMN saltedge_connection_id DROP NOT NULL",
-        "ALTER TABLE users ADD COLUMN logout_at VARCHAR",
-        "ALTER TABLE users ADD COLUMN totp_secret VARCHAR",
-        "ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN DEFAULT FALSE",
-    ]:
-        try:
+# Each statement runs in its own connection to prevent one failure from
+# aborting the rest (PostgreSQL aborts the whole transaction on any error).
+for _stmt in [
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+    "CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)",
+    "ALTER TABLE bank_connections ADD COLUMN IF NOT EXISTS provider VARCHAR DEFAULT 'truelayer'",
+    "ALTER TABLE bank_connections ADD COLUMN IF NOT EXISTS saltedge_connection_id VARCHAR",
+    "ALTER TABLE bank_connections ALTER COLUMN saltedge_connection_id DROP NOT NULL",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS logout_at VARCHAR",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT FALSE",
+]:
+    try:
+        with engine.connect() as _conn:
             _conn.execute(_sql_text(_stmt))
             _conn.commit()
-        except Exception:
-            pass  # column/index already exists
+    except Exception:
+        pass  # e.g. ALTER COLUMN is idempotent but has no IF NOT EXISTS
 
 app.add_middleware(
     CORSMiddleware,
