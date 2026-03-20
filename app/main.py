@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet, InvalidToken
 import pyotp
 
 from app.db import engine, SessionLocal, Base
+from sqlalchemy import text as _sql_text
 from app import models
 from app.schemas import (
     AccountList, AccountOut, AccountCreate, AccountUpdate,
@@ -35,23 +36,6 @@ from app.schemas import (
 app = FastAPI(title="LedgerVault API", version="4.3.0")
 models.Base.metadata.create_all(bind=engine)
 
-# ── Idempotent schema migrations (add columns safely to existing DB) ──────────
-with engine.connect() as _conn:
-    try:
-        _conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS logout_at VARCHAR"))
-        _conn.commit()
-    except Exception:
-        pass
-    try:
-        # Ensure bank_connections.provider can store "plaid"
-        # (column already exists, just making sure saltedge_connection_id is nullable)
-        _conn.execute(text(
-            "ALTER TABLE bank_connections ALTER COLUMN saltedge_connection_id DROP NOT NULL"
-        ))
-        _conn.commit()
-    except Exception:
-        pass
-
 logger = logging.getLogger("ledgervault")
 
 # ── Rate limiter ────────────────────────────────────────────────────────────
@@ -59,14 +43,15 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── Startup migrations ──────────────────────────────────────────────────────
-from sqlalchemy import text, text as _sql_text
+# ── Idempotent schema migrations (add columns safely to existing DB) ──────────
 with engine.connect() as _conn:
     for _stmt in [
         "ALTER TABLE accounts ADD COLUMN user_id VARCHAR",
         "CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)",
         "ALTER TABLE bank_connections ADD COLUMN provider VARCHAR DEFAULT 'truelayer'",
         "ALTER TABLE bank_connections ADD COLUMN saltedge_connection_id VARCHAR",
+        "ALTER TABLE bank_connections ALTER COLUMN saltedge_connection_id DROP NOT NULL",
+        "ALTER TABLE users ADD COLUMN logout_at VARCHAR",
         "ALTER TABLE users ADD COLUMN totp_secret VARCHAR",
         "ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN DEFAULT FALSE",
     ]:
