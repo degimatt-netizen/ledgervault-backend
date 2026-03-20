@@ -18,6 +18,9 @@ class User(Base):
     apple_user_id   = Column(String, unique=True, nullable=True)
     google_sub      = Column(String, unique=True, nullable=True)
     created_at      = Column(String, nullable=False)
+    logout_at       = Column(String, nullable=True)   # ISO datetime; tokens issued before this are revoked
+    totp_secret     = Column(String, nullable=True)   # base32 TOTP secret (only set when TOTP is enabled)
+    totp_enabled    = Column(Boolean, nullable=False, default=False)
 
 
 class Account(Base):

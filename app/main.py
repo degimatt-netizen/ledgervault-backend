@@ -12,6 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from cryptography.fernet import Fernet, InvalidToken
+import pyotp
 
 from app.db import engine, SessionLocal, Base
 from app import models
@@ -28,10 +29,29 @@ from app.schemas import (
     RegisterRequest, LoginRequest, VerifyEmailRequest, ResendCodeRequest,
     ForgotPasswordRequest, ResetPasswordRequest, SocialAuthRequest, AuthResponse,
     UpdateProfileRequest,
+    TotpSetupResponse, TotpVerifyRequest, TotpStatusResponse,
 )
 
 app = FastAPI(title="LedgerVault API", version="4.3.0")
 models.Base.metadata.create_all(bind=engine)
+
+# ── Idempotent schema migrations (add columns safely to existing DB) ──────────
+with engine.connect() as _conn:
+    try:
+        _conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS logout_at VARCHAR"))
+        _conn.commit()
+    except Exception:
+        pass
+    try:
+        # Ensure bank_connections.provider can store "plaid"
+        # (column already exists, just making sure saltedge_connection_id is nullable)
+        _conn.execute(text(
+            "ALTER TABLE bank_connections ALTER COLUMN saltedge_connection_id DROP NOT NULL"
+        ))
+        _conn.commit()
+    except Exception:
+        pass
+
 logger = logging.getLogger("ledgervault")
 
 # ── Rate limiter ────────────────────────────────────────────────────────────
@@ -40,13 +60,15 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Startup migrations ──────────────────────────────────────────────────────
-from sqlalchemy import text as _sql_text
+from sqlalchemy import text, text as _sql_text
 with engine.connect() as _conn:
     for _stmt in [
         "ALTER TABLE accounts ADD COLUMN user_id VARCHAR",
         "CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)",
         "ALTER TABLE bank_connections ADD COLUMN provider VARCHAR DEFAULT 'truelayer'",
         "ALTER TABLE bank_connections ADD COLUMN saltedge_connection_id VARCHAR",
+        "ALTER TABLE users ADD COLUMN totp_secret VARCHAR",
+        "ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN DEFAULT FALSE",
     ]:
         try:
             _conn.execute(_sql_text(_stmt))
@@ -96,28 +118,55 @@ def _decrypt(text: str) -> str:
         return text  # already plaintext (pre-encryption legacy row)
 
 def _create_token(user_id: str) -> str:
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRE_DAYS),
+        "iat": int(now.timestamp()),
+        "exp": now + timedelta(days=JWT_EXPIRE_DAYS),
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def _decode_token(token: str) -> Optional[str]:
+def _decode_token(token: str) -> Optional[dict]:
+    """Returns the full payload dict, or None if invalid."""
     try:
-        data = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return data.get("sub")
+        return pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except Exception:
         return None
 
 def get_user_id(authorization: Optional[str] = Header(None)) -> Optional[str]:
+    """Optional auth — returns user_id or None. Does NOT check revocation (no DB)."""
     if not authorization or not authorization.startswith("Bearer "):
         return None
-    return _decode_token(authorization[7:])
+    data = _decode_token(authorization[7:])
+    return data.get("sub") if data else None
 
-def require_user_id(authorization: Optional[str] = Header(None)) -> str:
-    uid = get_user_id(authorization)
+def require_user_id(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+) -> str:
+    """Strict auth — raises 401 if missing, invalid, or revoked."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    data = _decode_token(authorization[7:])
+    if not data:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    uid: Optional[str] = data.get("sub")
+    iat: Optional[int] = data.get("iat")
     if not uid:
         raise HTTPException(status_code=401, detail="Authentication required")
+    # Check whether this token was issued before the last logout/invalidation
+    if iat:
+        user = db.query(models.User).filter(models.User.id == uid).first()
+        if user and user.logout_at:
+            try:
+                revoked_ts = datetime.fromisoformat(user.logout_at).timestamp()
+                if iat < revoked_ts:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Session has been revoked. Please sign in again.",
+                    )
+            except ValueError:
+                pass
     return uid
 
 def _gen_otp() -> str:
@@ -1120,6 +1169,15 @@ def auth_login(request: Request, payload: LoginRequest, db: Session = Depends(ge
             f"<p>It expires in 15 minutes.</p>")
         return AuthResponse(status="needs_verification", email=email,
                             message="Please verify your email first. A new code has been sent.")
+    # TOTP check
+    if user.totp_enabled and user.totp_secret:
+        if not payload.totp_code:
+            return AuthResponse(status="totp_required", email=email,
+                                totp_required=True,
+                                message="Two-factor authentication code required.")
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(payload.totp_code, valid_window=1):
+            raise HTTPException(status_code=401, detail="Invalid two-factor authentication code")
     token = _create_token(user.id)
     return AuthResponse(status="ok", access_token=token,
                         user_id=user.id, email=user.email, name=user.name)
@@ -1232,6 +1290,81 @@ def update_profile(request: Request, payload: UpdateProfileRequest,
     db.commit()
     return {"status": "ok", "message": "Profile updated"}
 
+@app.get("/auth/totp/status", response_model=TotpStatusResponse)
+def totp_status(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Returns whether TOTP is currently enabled for the authenticated user."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return TotpStatusResponse(enabled=bool(user.totp_enabled))
+
+@app.post("/auth/totp/setup", response_model=TotpSetupResponse)
+@limiter.limit("5/minute")
+def totp_setup(request: Request, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """
+    Generates a fresh TOTP secret and returns the base32 secret + otpauth:// URI.
+    The secret is NOT saved yet — the user must confirm a valid code via /auth/totp/enable.
+    """
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    secret = pyotp.random_base32()
+    label  = urllib.parse.quote(user.email or user_id)
+    uri    = f"otpauth://totp/LedgerVault:{label}?secret={secret}&issuer=LedgerVault"
+    # Temporarily store the pending secret (not yet confirmed) in totp_secret.
+    # totp_enabled stays False until confirmed.
+    user.totp_secret  = secret
+    user.totp_enabled = False
+    db.commit()
+    return TotpSetupResponse(secret=secret, uri=uri)
+
+@app.post("/auth/totp/enable")
+@limiter.limit("5/minute")
+def totp_enable(request: Request, payload: TotpVerifyRequest,
+                user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """
+    Verifies the TOTP code against the pending secret and, on success, enables TOTP.
+    Must be called after /auth/totp/setup.
+    """
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user or not user.totp_secret:
+        raise HTTPException(status_code=400, detail="No pending TOTP setup. Call /auth/totp/setup first.")
+    totp = pyotp.TOTP(user.totp_secret)
+    if not totp.verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid TOTP code. Check your authenticator app and try again.")
+    user.totp_enabled = True
+    db.commit()
+    return {"status": "ok", "message": "Two-factor authentication enabled"}
+
+@app.post("/auth/totp/disable")
+@limiter.limit("5/minute")
+def totp_disable(request: Request, payload: TotpVerifyRequest,
+                 user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """
+    Verifies the current TOTP code and disables TOTP. Requires a valid code to prevent accidental lock-out.
+    """
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.totp_enabled or not user.totp_secret:
+        raise HTTPException(status_code=400, detail="TOTP is not currently enabled.")
+    totp = pyotp.TOTP(user.totp_secret)
+    if not totp.verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid TOTP code.")
+    user.totp_enabled = False
+    user.totp_secret  = None
+    db.commit()
+    return {"status": "ok", "message": "Two-factor authentication disabled"}
+
+@app.post("/auth/logout")
+def auth_logout(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Invalidate all existing tokens for this user by recording the logout timestamp."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user:
+        user.logout_at = datetime.now(timezone.utc).isoformat()
+        db.commit()
+    return {"status": "ok", "message": "Signed out"}
+
 @app.delete("/auth/account")
 def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
     """Hard-delete the authenticated user and all their data."""
@@ -1243,18 +1376,20 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
     account_ids = [a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()]
 
     if account_ids:
-        # Delete transaction legs for these accounts
+        # Collect event IDs BEFORE deleting legs (otherwise the query returns nothing)
+        event_ids = [
+            r.event_id for r in
+            db.query(models.TransactionLeg.event_id)
+              .filter(models.TransactionLeg.account_id.in_(account_ids))
+              .distinct().all()
+        ]
+
+        # Delete transaction legs first (FK child of events)
         db.query(models.TransactionLeg).filter(
             models.TransactionLeg.account_id.in_(account_ids)
         ).delete(synchronize_session=False)
 
-        # Find orphaned transaction events (events with no remaining legs)
-        from sqlalchemy import text as _t
-        orphaned = db.execute(_t(
-            "SELECT DISTINCT event_id FROM transaction_legs WHERE account_id IN :ids"
-        ), {"ids": tuple(account_ids) if len(account_ids) > 1 else (account_ids[0],)}).fetchall()
-        # Delete all transaction events linked to user's accounts
-        event_ids = [r[0] for r in orphaned]
+        # Now delete the events (safe — no legs reference them anymore)
         if event_ids:
             db.query(models.TransactionEvent).filter(
                 models.TransactionEvent.id.in_(event_ids)
@@ -2349,7 +2484,7 @@ def sync_bank_connection(conn_id: str, db: Session = Depends(get_db)):
 
 SALTEDGE_APP_ID    = os.getenv("SALTEDGE_APP_ID", "")
 SALTEDGE_SECRET    = os.getenv("SALTEDGE_SECRET", "")
-SALTEDGE_BASE_URL  = "https://www.saltedge.com/api/v5"
+SALTEDGE_BASE_URL  = "https://www.saltedge.com/api/v6"
 SALTEDGE_RETURN_URL = os.getenv(
     "SALTEDGE_RETURN_URL",
     "https://ledgervault-backend-production.up.railway.app/bank-connections-saltedge/callback"
@@ -2588,3 +2723,359 @@ def sync_saltedge_connection(conn_id: str, db: Session = Depends(get_db)):
     conn.status_message = None
     db.commit()
     return {"imported": imported, "skipped": skipped, "errors": errors, "status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────
+# WALLET / RPC ADDRESS SCAN
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/wallet-scan")
+async def scan_wallet_address(
+    address: str = Query(..., description="Public blockchain address"),
+    chain:   str = Query("eth", description="Chain: eth | btc | sol | bnb | matic | arb | avax | trx"),
+):
+    """
+    Scan any public blockchain address for its native-token balance.
+    Uses free public APIs — no API key required.
+    """
+    chain   = chain.lower().strip()
+    address = address.strip()
+
+    # EVM-compatible chain config: rpc_url, symbol, decimals
+    EVM = {
+        "eth":  ("https://cloudflare-eth.com",                    "ETH",  18),
+        "bnb":  ("https://bsc-dataseed.binance.org",              "BNB",  18),
+        "matic":("https://polygon-rpc.com",                       "MATIC",18),
+        "arb":  ("https://arb1.arbitrum.io/rpc",                  "ETH",  18),
+        "avax": ("https://api.avax.network/ext/bc/C/rpc",         "AVAX", 18),
+    }
+
+    COINGECKO_IDS = {
+        "eth": "ethereum", "btc": "bitcoin", "sol": "solana",
+        "bnb": "binancecoin", "matic": "matic-network",
+        "trx": "tron", "avax": "avalanche-2",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+
+            # ── EVM chains ──────────────────────────────────────────
+            if chain in EVM:
+                rpc_url, symbol, decimals = EVM[chain]
+                r = await client.post(rpc_url, json={
+                    "jsonrpc": "2.0", "method": "eth_getBalance",
+                    "params":  [address, "latest"], "id": 1
+                })
+                r.raise_for_status()
+                hex_bal = r.json().get("result", "0x0") or "0x0"
+                balance = int(hex_bal, 16) / (10 ** decimals)
+
+            # ── Bitcoin ─────────────────────────────────────────────
+            elif chain == "btc":
+                r = await client.get(f"https://mempool.space/api/address/{address}")
+                r.raise_for_status()
+                stats   = r.json().get("chain_stats", {})
+                satoshi = stats.get("funded_txo_sum", 0) - stats.get("spent_txo_sum", 0)
+                balance = satoshi / 1e8
+                symbol  = "BTC"
+
+            # ── Solana ──────────────────────────────────────────────
+            elif chain == "sol":
+                r = await client.post("https://api.mainnet-beta.solana.com", json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "method":  "getBalance", "params": [address]
+                })
+                r.raise_for_status()
+                lamports = r.json().get("result", {}).get("value", 0)
+                balance  = lamports / 1e9
+                symbol   = "SOL"
+
+            # ── Tron ────────────────────────────────────────────────
+            elif chain == "trx":
+                r = await client.get(
+                    f"https://api.trongrid.io/v1/accounts/{address}",
+                    headers={"Accept": "application/json"},
+                )
+                r.raise_for_status()
+                accounts = r.json().get("data", [])
+                sun      = accounts[0].get("balance", 0) if accounts else 0
+                balance  = sun / 1e6
+                symbol   = "TRX"
+
+            else:
+                raise HTTPException(400, f"Unsupported chain '{chain}'. Use: eth, btc, sol, bnb, matic, arb, avax, trx")
+
+            # ── Optional USD price lookup ────────────────────────────
+            usd_value = None
+            try:
+                cg_id = COINGECKO_IDS.get(chain)
+                if cg_id:
+                    pr = await client.get(
+                        f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd",
+                        timeout=5,
+                    )
+                    usd_price = pr.json().get(cg_id, {}).get("usd", 0)
+                    if usd_price:
+                        usd_value = round(balance * usd_price, 2)
+            except Exception:
+                pass  # price is optional, don't fail the scan
+
+            return {
+                "address":   address,
+                "chain":     chain,
+                "balance":   round(balance, 8),
+                "symbol":    symbol,
+                "usd_value": usd_value,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Scan failed: {str(e)[:120]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plaid Open Banking
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLAID_CLIENT_ID  = os.getenv("PLAID_CLIENT_ID", "")
+PLAID_SECRET     = os.getenv("PLAID_SECRET", "")
+PLAID_ENV        = os.getenv("PLAID_ENV", "sandbox")   # sandbox | development | production
+PLAID_BASE_URL   = f"https://{PLAID_ENV}.plaid.com"
+PLAID_REDIRECT_URI = "ledgervault://plaid/callback"
+
+
+def _plaid_headers() -> dict:
+    return {
+        "PLAID-CLIENT-ID": PLAID_CLIENT_ID,
+        "PLAID-SECRET":    PLAID_SECRET,
+        "Content-Type":    "application/json",
+    }
+
+
+@app.get("/bank-connections-plaid/auth-url")
+def plaid_auth_url(user_id: str = Query("default_user")):
+    """Create a Plaid Link token and return the hosted link URL."""
+    if not PLAID_CLIENT_ID or not PLAID_SECRET:
+        raise HTTPException(500, "Plaid credentials not configured")
+
+    with httpx.Client(timeout=10) as c:
+        r = c.post(f"{PLAID_BASE_URL}/link/token/create",
+                   headers=_plaid_headers(),
+                   json={
+                       "client_id":    PLAID_CLIENT_ID,
+                       "secret":       PLAID_SECRET,
+                       "client_name":  "LedgerVault",
+                       "user":         {"client_user_id": f"ledgervault_{user_id}"},
+                       "products":     ["transactions"],
+                       "country_codes": ["US", "GB", "IE", "DE", "FR", "ES", "IT",
+                                         "NL", "BE", "PT", "AT", "FI", "NO", "SE", "DK"],
+                       "language":     "en",
+                       "redirect_uri": PLAID_REDIRECT_URI,
+                   })
+        if r.status_code not in (200, 201):
+            raise HTTPException(400, f"Plaid link token creation failed: {r.text[:300]}")
+
+    link_token = r.json()["link_token"]
+    auth_url   = f"https://cdn.plaid.com/link/v2/stable/link.html?token={link_token}"
+    return {"auth_url": auth_url, "link_token": link_token}
+
+
+@app.post("/bank-connections-plaid/exchange")
+def plaid_exchange(
+    public_token: str = Query(...),
+    user_id: str      = Query("default_user"),
+    db: Session       = Depends(get_db),
+):
+    """Exchange a Plaid public_token for an access_token, then fetch and store accounts."""
+    if not PLAID_CLIENT_ID or not PLAID_SECRET:
+        raise HTTPException(500, "Plaid credentials not configured")
+
+    headers = _plaid_headers()
+
+    # 1. Exchange public_token → access_token + item_id
+    with httpx.Client(timeout=10) as c:
+        r = c.post(f"{PLAID_BASE_URL}/item/public_token/exchange",
+                   headers=headers,
+                   json={"client_id": PLAID_CLIENT_ID, "secret": PLAID_SECRET,
+                         "public_token": public_token})
+        if r.status_code not in (200, 201):
+            raise HTTPException(400, f"Plaid token exchange failed: {r.text[:300]}")
+        data         = r.json()
+        access_token = data["access_token"]
+        item_id      = data["item_id"]
+
+    # 2. Fetch accounts
+    with httpx.Client(timeout=10) as c:
+        r = c.post(f"{PLAID_BASE_URL}/accounts/get",
+                   headers=headers,
+                   json={"client_id": PLAID_CLIENT_ID, "secret": PLAID_SECRET,
+                         "access_token": access_token})
+        if r.status_code not in (200, 201):
+            raise HTTPException(400, f"Plaid accounts fetch failed: {r.text[:300]}")
+        accounts     = r.json().get("accounts", [])
+        institution  = r.json().get("item", {})
+
+    # 3. Fetch institution name
+    inst_id   = institution.get("institution_id", "")
+    inst_name = "Unknown Bank"
+    if inst_id:
+        with httpx.Client(timeout=10) as c:
+            ri = c.post(f"{PLAID_BASE_URL}/institutions/get_by_id",
+                        headers=headers,
+                        json={"client_id": PLAID_CLIENT_ID, "secret": PLAID_SECRET,
+                              "institution_id": inst_id, "country_codes": ["US","GB","IE","DE","FR","ES","IT","NL"]})
+            if ri.status_code == 200:
+                inst_name = ri.json().get("institution", {}).get("name", inst_name)
+
+    encrypted_token = _encrypt(access_token)
+    created = []
+
+    # 4. Upsert a BankConnection row per account
+    for acct in accounts:
+        acct_id      = acct["account_id"]
+        unique_key   = f"plaid:{item_id}:{acct_id}"
+        display_name = acct.get("official_name") or acct.get("name") or "Account"
+        acct_type    = acct.get("subtype") or acct.get("type") or "depository"
+        currency     = (acct.get("balances") or {}).get("iso_currency_code") or "USD"
+
+        existing = db.query(models.BankConnection).filter_by(
+            truelayer_account_id=unique_key).first()
+        if existing:
+            existing.access_token = encrypted_token
+            existing.status       = "active"
+        else:
+            existing = models.BankConnection(
+                id=str(uuid.uuid4()),
+                provider="plaid",
+                provider_id=inst_id or item_id,
+                provider_name=inst_name,
+                account_display_name=display_name,
+                account_type=acct_type,
+                currency=currency,
+                truelayer_account_id=unique_key,
+                saltedge_connection_id=item_id,
+                access_token=encrypted_token,
+                refresh_token=None,
+                status="active",
+            )
+            db.add(existing)
+        created.append(existing.id)
+
+    db.commit()
+    return {"status": "ok", "connected": len(created), "institution": inst_name}
+
+
+@app.get("/bank-connections-plaid")
+def list_plaid_connections(db: Session = Depends(get_db)):
+    conns = db.query(models.BankConnection).filter_by(provider="plaid").all()
+    return {"data": [_se_conn_out(c) for c in conns]}
+
+
+@app.post("/bank-connections-plaid/{conn_id}/sync")
+def sync_plaid_connection(conn_id: str, db: Session = Depends(get_db)):
+    """Import recent transactions for a Plaid connection."""
+    conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
+    if not conn or conn.provider != "plaid":
+        raise HTTPException(404, "Plaid connection not found")
+
+    access_token = _decrypt(conn.access_token)
+    if not access_token:
+        raise HTTPException(400, "Missing Plaid access token")
+
+    headers = _plaid_headers()
+    from datetime import timedelta
+    start = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    end   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    with httpx.Client(timeout=15) as c:
+        r = c.post(f"{PLAID_BASE_URL}/transactions/get",
+                   headers=headers,
+                   json={
+                       "client_id":    PLAID_CLIENT_ID,
+                       "secret":       PLAID_SECRET,
+                       "access_token": access_token,
+                       "start_date":   start,
+                       "end_date":     end,
+                       "options":      {"count": 500, "offset": 0},
+                   })
+        if r.status_code not in (200, 201):
+            raise HTTPException(400, f"Plaid transactions fetch failed: {r.text[:300]}")
+        transactions = r.json().get("transactions", [])
+
+    # Extract the Plaid account_id from the unique key (plaid:{item_id}:{acct_id})
+    plaid_account_id = conn.truelayer_account_id.split(":")[-1] if conn.truelayer_account_id else None
+
+    # Find or create a ledger account
+    ledger_acct = None
+    if conn.ledger_account_id:
+        ledger_acct = db.query(models.Account).filter_by(id=conn.ledger_account_id).first()
+    if not ledger_acct:
+        ledger_acct = models.Account(
+            id=str(uuid.uuid4()),
+            name=f"{conn.provider_name} — {conn.account_display_name}",
+            account_type="bank",
+            base_currency=conn.currency or "USD",
+        )
+        db.add(ledger_acct)
+        conn.ledger_account_id = ledger_acct.id
+        db.flush()
+
+    # Get or create fiat asset
+    currency = conn.currency or "USD"
+    asset = db.query(models.Asset).filter(
+        models.Asset.symbol == currency
+    ).first()
+    if not asset:
+        asset = models.Asset(
+            id=str(uuid.uuid4()),
+            symbol=currency,
+            name=currency,
+            asset_class="fiat",
+            quote_currency="USD",
+        )
+        db.add(asset)
+        db.flush()
+
+    imported = 0
+    for tx in transactions:
+        if plaid_account_id and tx.get("account_id") != plaid_account_id:
+            continue
+        ext_id = f"plaid:{conn.id}:{tx['transaction_id']}"
+        if db.query(models.TransactionEvent).filter_by(external_id=ext_id).first():
+            continue
+
+        amount   = tx.get("amount", 0)   # Plaid: positive = debit (money out)
+        tx_date  = tx.get("date", end)
+        name     = tx.get("name") or tx.get("merchant_name") or "Transaction"
+        cat_list = tx.get("category") or []
+        category = cat_list[-1] if cat_list else "expense"
+
+        event = models.TransactionEvent(
+            id=str(uuid.uuid4()),
+            event_type="expense" if amount > 0 else "income",
+            category=category.lower(),
+            description=name,
+            date=tx_date,
+            source="plaid",
+            external_id=ext_id,
+        )
+        db.add(event)
+        db.flush()
+
+        leg = models.TransactionLeg(
+            id=str(uuid.uuid4()),
+            event_id=event.id,
+            account_id=ledger_acct.id,
+            asset_id=asset.id,
+            quantity=round(-amount, 8),   # negate: plaid positive = outflow for us
+            unit_price=1.0,
+            fee_flag="false",
+        )
+        db.add(leg)
+        imported += 1
+
+    conn.last_synced = datetime.now(timezone.utc).isoformat()
+    conn.status      = "active"
+    db.commit()
+    return {"status": "ok", "imported": imported}

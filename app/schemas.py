@@ -14,6 +14,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+    totp_code: Optional[str] = None   # 6-digit TOTP code, required when TOTP is enabled
 
 class VerifyEmailRequest(BaseModel):
     email: str
@@ -38,13 +39,24 @@ class SocialAuthRequest(BaseModel):
     google_sub: str = ""
 
 class AuthResponse(BaseModel):
-    status: str                     # "ok" | "needs_verification"
+    status: str                     # "ok" | "needs_verification" | "totp_required"
     access_token: Optional[str] = None
     user_id: Optional[str] = None
     email: Optional[str] = None
     name: Optional[str] = None
     message: Optional[str] = None
     is_new_user: Optional[bool] = None
+    totp_required: Optional[bool] = None   # true when TOTP challenge needed on login
+
+class TotpSetupResponse(BaseModel):
+    secret: str             # base32 secret for manual entry
+    uri: str                # otpauth:// URI for QR code generation
+
+class TotpVerifyRequest(BaseModel):
+    code: str               # 6-digit TOTP code
+
+class TotpStatusResponse(BaseModel):
+    enabled: bool
 
 class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
