@@ -39,16 +39,20 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── Startup migration: add user_id to accounts if missing ──────────────────
+# ── Startup migrations ──────────────────────────────────────────────────────
 from sqlalchemy import text as _sql_text
 with engine.connect() as _conn:
-    try:
-        _conn.execute(_sql_text("ALTER TABLE accounts ADD COLUMN user_id VARCHAR"))
-        _conn.execute(_sql_text("CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)"))
-        _conn.commit()
-        logger.info("Migration: added user_id column to accounts")
-    except Exception:
-        pass  # column already exists
+    for _stmt in [
+        "ALTER TABLE accounts ADD COLUMN user_id VARCHAR",
+        "CREATE INDEX IF NOT EXISTS ix_accounts_user_id ON accounts (user_id)",
+        "ALTER TABLE bank_connections ADD COLUMN provider VARCHAR DEFAULT 'truelayer'",
+        "ALTER TABLE bank_connections ADD COLUMN saltedge_connection_id VARCHAR",
+    ]:
+        try:
+            _conn.execute(_sql_text(_stmt))
+            _conn.commit()
+        except Exception:
+            pass  # column/index already exists
 
 app.add_middleware(
     CORSMiddleware,
@@ -2325,6 +2329,253 @@ def sync_bank_connection(conn_id: str, db: Session = Depends(get_db)):
                 account_id=conn.ledger_account_id,
                 asset_id=fiat_asset.id,
                 quantity=abs(amount),
+                unit_price=1.0, fee_flag="false",
+            )
+            db.add(leg)
+            imported += 1
+        except Exception as e:
+            errors.append(str(e)[:80])
+
+    conn.last_synced    = datetime.now(timezone.utc).isoformat()
+    conn.status         = "active"
+    conn.status_message = None
+    db.commit()
+    return {"imported": imported, "skipped": skipped, "errors": errors, "status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Salt Edge Open Banking
+# ─────────────────────────────────────────────────────────────────────────────
+
+SALTEDGE_APP_ID    = os.getenv("SALTEDGE_APP_ID", "")
+SALTEDGE_SECRET    = os.getenv("SALTEDGE_SECRET", "")
+SALTEDGE_BASE_URL  = "https://www.saltedge.com/api/v5"
+SALTEDGE_RETURN_URL = os.getenv(
+    "SALTEDGE_RETURN_URL",
+    "https://ledgervault-backend-production.up.railway.app/bank-connections-saltedge/callback"
+)
+SALTEDGE_DEEP_LINK = "ledgervault://saltedge/callback"
+
+
+def _se_headers() -> dict:
+    return {
+        "App-id": SALTEDGE_APP_ID,
+        "Secret": SALTEDGE_SECRET,
+        "Content-Type": "application/json",
+    }
+
+
+def _se_conn_out(c: models.BankConnection) -> dict:
+    return {
+        "id": c.id,
+        "provider": c.provider or "saltedge",
+        "provider_id": c.provider_id,
+        "provider_name": c.provider_name,
+        "account_display_name": c.account_display_name,
+        "account_type": c.account_type,
+        "currency": c.currency,
+        "saltedge_connection_id": c.saltedge_connection_id,
+        "ledger_account_id": c.ledger_account_id,
+        "last_synced": c.last_synced,
+        "status": c.status,
+    }
+
+
+@app.get("/bank-connections-saltedge/auth-url")
+def saltedge_auth_url(user_id: str = Query("default_user")):
+    """Create a Salt Edge connect session and return the connect_url for the iOS app."""
+    if not SALTEDGE_APP_ID or not SALTEDGE_SECRET:
+        raise HTTPException(500, "Salt Edge credentials not configured")
+
+    headers = _se_headers()
+    customer_identifier = f"ledgervault_{user_id}"
+
+    # 1. Create customer (or handle already-existing)
+    with httpx.Client(timeout=10) as c:
+        r = c.post(f"{SALTEDGE_BASE_URL}/customers",
+                   headers=headers,
+                   json={"data": {"identifier": customer_identifier}})
+        if r.status_code in (200, 201):
+            customer_id = r.json()["data"]["id"]
+        elif r.status_code == 409:
+            # Already exists — fetch it
+            r2 = c.get(f"{SALTEDGE_BASE_URL}/customers",
+                       headers=headers,
+                       params={"identifier": customer_identifier})
+            if r2.status_code != 200:
+                raise HTTPException(400, f"Salt Edge customer lookup failed: {r2.text[:200]}")
+            items = r2.json().get("data", [])
+            if not items:
+                raise HTTPException(400, "Salt Edge customer not found after 409")
+            customer_id = items[0]["id"]
+        else:
+            raise HTTPException(400, f"Salt Edge customer creation failed: {r.text[:200]}")
+
+    # 2. Create connect session
+    with httpx.Client(timeout=10) as c:
+        r = c.post(f"{SALTEDGE_BASE_URL}/connect_sessions/create",
+                   headers=headers,
+                   json={"data": {
+                       "customer_id": str(customer_id),
+                       "consent": {
+                           "scopes": ["account_details", "transactions_details"],
+                           "from_date": "2020-01-01",
+                       },
+                       "attempt": {
+                           "return_to": SALTEDGE_RETURN_URL,
+                           "fetch_scopes": ["accounts", "transactions"],
+                       },
+                   }})
+        if r.status_code not in (200, 201):
+            raise HTTPException(400, f"Salt Edge connect session failed: {r.text[:200]}")
+        connect_url = r.json()["data"]["connect_url"]
+
+    return {"auth_url": connect_url, "state": str(customer_id)}
+
+
+@app.get("/bank-connections-saltedge/callback")
+def saltedge_callback(
+    connection_id: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Handle Salt Edge redirect after user connects a bank. Stores accounts then deep-links back to iOS."""
+    from starlette.responses import RedirectResponse
+
+    headers = _se_headers()
+
+    # 1. Fetch connection details
+    with httpx.Client(timeout=10) as c:
+        r = c.get(f"{SALTEDGE_BASE_URL}/connections/{connection_id}", headers=headers)
+        connection = r.json().get("data", {}) if r.status_code == 200 else {}
+
+    provider_name = connection.get("provider_name", "Bank")
+    provider_code = connection.get("provider_code", "unknown")
+
+    # 2. Fetch accounts for this connection
+    with httpx.Client(timeout=10) as c:
+        r = c.get(f"{SALTEDGE_BASE_URL}/accounts",
+                  headers=headers,
+                  params={"connection_id": connection_id})
+        if r.status_code != 200:
+            return RedirectResponse(f"{SALTEDGE_DEEP_LINK}?error=fetch_failed")
+        accounts = r.json().get("data", [])
+
+    # 3. Persist each account as a BankConnection row
+    created_count = 0
+    for acct in accounts:
+        se_acct_id   = str(acct["id"])
+        unique_key   = f"se:{se_acct_id}"
+
+        existing = db.query(models.BankConnection).filter_by(
+            truelayer_account_id=unique_key
+        ).first()
+
+        if existing:
+            existing.saltedge_connection_id = connection_id
+            existing.status = "active"
+            existing.status_message = None
+        else:
+            new_conn = models.BankConnection(
+                id=str(uuid4()),
+                provider="saltedge",
+                provider_id=provider_code,
+                provider_name=provider_name,
+                account_display_name=acct.get("name", "Account"),
+                account_type=acct.get("nature", "account"),
+                currency=acct.get("currency_code", "EUR"),
+                truelayer_account_id=unique_key,
+                saltedge_connection_id=connection_id,
+                access_token="",   # Salt Edge uses App-id/Secret, not per-user tokens
+                refresh_token="",
+                status="active",
+            )
+            db.add(new_conn)
+            created_count += 1
+
+    db.commit()
+
+    # 4. Redirect back to iOS app via deep link
+    return RedirectResponse(f"{SALTEDGE_DEEP_LINK}?success=true&count={created_count}")
+
+
+@app.get("/bank-connections-saltedge", response_model=BankConnectionList)
+def list_saltedge_connections(db: Session = Depends(get_db)):
+    conns = db.query(models.BankConnection).filter_by(provider="saltedge").all()
+    return {"items": [_se_conn_out(c) for c in conns]}
+
+
+@app.post("/bank-connections-saltedge/{conn_id}/sync", response_model=SyncResult)
+def sync_saltedge_connection(conn_id: str, db: Session = Depends(get_db)):
+    """Import the last 90 days of transactions from Salt Edge."""
+    conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
+    if not conn:
+        raise HTTPException(404, "Salt Edge connection not found")
+    if not conn.ledger_account_id:
+        raise HTTPException(400, "Link a LedgerVault account to this connection first.")
+    if not conn.saltedge_connection_id:
+        raise HTTPException(400, "Missing Salt Edge connection_id.")
+
+    se_account_id = conn.truelayer_account_id.replace("se:", "")
+    headers       = _se_headers()
+    from_date     = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+
+    with httpx.Client(timeout=20) as c:
+        r = c.get(f"{SALTEDGE_BASE_URL}/transactions",
+                  headers=headers,
+                  params={
+                      "connection_id": conn.saltedge_connection_id,
+                      "account_id":    se_account_id,
+                      "from_date":     from_date,
+                  })
+        if r.status_code != 200:
+            conn.status         = "error"
+            conn.status_message = f"Salt Edge {r.status_code}: {r.text[:120]}"
+            db.commit()
+            raise HTTPException(400, conn.status_message)
+        transactions = r.json().get("data", [])
+
+    # Ensure fiat asset exists for this currency
+    currency  = conn.currency or "EUR"
+    fiat_asset = db.query(models.Asset).filter_by(symbol=currency).first()
+    if not fiat_asset:
+        fiat_asset = models.Asset(
+            id=str(uuid4()), symbol=currency, name=currency,
+            asset_class="fiat", quote_currency="USD"
+        )
+        db.add(fiat_asset)
+        db.flush()
+
+    imported = skipped = 0
+    errors: list[str] = []
+
+    for tx in transactions:
+        tx_id       = str(tx.get("id", ""))
+        external_id = f"saltedge:{conn.id}:{tx_id}"
+
+        if db.query(models.TransactionEvent).filter_by(external_id=external_id).first():
+            skipped += 1
+            continue
+
+        try:
+            amount      = float(tx.get("amount", 0))
+            event_type  = "income" if amount > 0 else "expense"
+            description = (tx.get("description") or "")[:200]
+            category    = tx.get("category", "other") or "other"
+            tx_date     = tx.get("made_on", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+
+            event = models.TransactionEvent(
+                id=str(uuid4()), event_type=event_type,
+                description=description, category=category,
+                date=tx_date, source="saltedge", external_id=external_id,
+            )
+            db.add(event)
+            db.flush()
+
+            leg = models.TransactionLeg(
+                id=str(uuid4()), event_id=event.id,
+                account_id=conn.ledger_account_id,
+                asset_id=fiat_asset.id,
+                quantity=abs(amount) if amount > 0 else -abs(amount),
                 unit_price=1.0, fee_flag="false",
             )
             db.add(leg)

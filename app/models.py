@@ -97,12 +97,14 @@ class BankConnection(Base):
     __tablename__ = "bank_connections"
 
     id = Column(String, primary_key=True, index=True)
-    provider_id = Column(String, nullable=False)            # "uk-ob-revolut"
+    provider = Column(String, nullable=True, default="truelayer")  # "truelayer" | "saltedge"
+    provider_id = Column(String, nullable=False)            # "uk-ob-revolut" | "revolut_eu"
     provider_name = Column(String, nullable=False)          # "Revolut"
     account_display_name = Column(String, nullable=False)   # "Current Account"
     account_type = Column(String, nullable=True)            # "TRANSACTION", "SAVINGS"
     currency = Column(String, nullable=True)                # "GBP", "EUR", …
-    truelayer_account_id = Column(String, nullable=False, unique=True)
+    truelayer_account_id = Column(String, nullable=False, unique=True)  # TrueLayer acct ID or "se:{saltedge_acct_id}"
+    saltedge_connection_id = Column(String, nullable=True)  # Salt Edge connection_id
     access_token = Column(Text, nullable=False)
     refresh_token = Column(Text, nullable=True)
     ledger_account_id = Column(String, ForeignKey("accounts.id"), nullable=True)
