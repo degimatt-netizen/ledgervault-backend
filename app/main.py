@@ -133,6 +133,13 @@ def _decode_token(token: str) -> Optional[dict]:
     except Exception:
         return None
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 def get_user_id(authorization: Optional[str] = Header(None)) -> Optional[str]:
     """Optional auth — returns user_id or None. Does NOT check revocation (no DB)."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -201,13 +208,6 @@ def _send_email(to: str, subject: str, html: str) -> bool:
     except Exception as e:
         logger.warning(f"Email send failed: {e}")
         return False
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # ─────────────────────────────────────────────
 # FX  (open.er-api.com — free, no key)
