@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Header, Request
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-import time, os, httpx, logging, hmac, hashlib, base64, urllib.parse, random, secrets
+import time, os, httpx, logging, hmac, hashlib, base64, urllib.parse, random, secrets, json
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import jwt as pyjwt
@@ -55,6 +55,45 @@ for _stmt in [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS logout_at VARCHAR",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT FALSE",
+    # New aggregator tables
+    """CREATE TABLE IF NOT EXISTS snaptrade_connections (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        snaptrade_user_id VARCHAR NOT NULL,
+        snaptrade_secret VARCHAR NOT NULL,
+        brokerage_name VARCHAR,
+        brokerage_id VARCHAR,
+        authorization_id VARCHAR,
+        account_id VARCHAR,
+        status VARCHAR NOT NULL DEFAULT 'active',
+        status_message VARCHAR,
+        last_synced VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_snaptrade_connections_user_id ON snaptrade_connections (user_id)",
+    """CREATE TABLE IF NOT EXISTS vezgo_connections (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        vezgo_user_id VARCHAR NOT NULL,
+        vezgo_token VARCHAR,
+        account_name VARCHAR,
+        account_id VARCHAR,
+        status VARCHAR NOT NULL DEFAULT 'active',
+        status_message VARCHAR,
+        last_synced VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_vezgo_connections_user_id ON vezgo_connections (user_id)",
+    """CREATE TABLE IF NOT EXISTS flanks_connections (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        broker_id VARCHAR NOT NULL,
+        broker_name VARCHAR,
+        flanks_user_id VARCHAR,
+        account_id VARCHAR,
+        status VARCHAR NOT NULL DEFAULT 'active',
+        status_message VARCHAR,
+        last_synced VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_flanks_connections_user_id ON flanks_connections (user_id)",
 ]:
     try:
         with engine.connect() as _conn:
@@ -1033,13 +1072,834 @@ def _apply_legs(legs_data: list, event_id: str, db: Session):
         ))
 
 
+# ── Gate.io ──────────────────────────────────────────────────────────────────
+def _sync_gate(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Gate.io spot trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.gateio.ws/api/v4"
+
+    def gate_headers(method: str, path: str, query: str = "", body: str = "") -> dict:
+        ts = str(int(time.time()))
+        body_hash = hashlib.sha512(body.encode()).hexdigest()
+        msg = f"{method}\n{path}\n{query}\n{body_hash}\n{ts}"
+        sig = hmac.new(conn.api_secret.encode(), msg.encode(), hashlib.sha512).hexdigest()
+        return {"KEY": conn.api_key, "SIGN": sig, "Timestamp": ts, "Content-Type": "application/json"}
+
+    try:
+        headers = gate_headers("GET", "/api/v4/spot/my_trades", "limit=1000")
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/spot/my_trades?limit=1000", headers=headers)
+            r.raise_for_status()
+            all_trades = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Gate.io auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"gate:{trade['id']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            parts = trade["currency_pair"].split("_")
+            base_sym, quote_sym = parts[0].upper(), parts[1].upper()
+            qty = float(trade["amount"])
+            price = float(trade["price"])
+            is_buy = trade["side"] == "buy"
+            fee = float(trade.get("fee", 0))
+            fee_asset = trade.get("fee_currency", quote_sym).upper()
+            trade_date = datetime.fromtimestamp(float(trade["create_time"]), tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_asset).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── Bitfinex ─────────────────────────────────────────────────────────────────
+def _sync_bitfinex(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Bitfinex trade history via REST v2."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.bitfinex.com"
+
+    def bfx_headers(path: str, body: dict) -> dict:
+        nonce = str(int(time.time() * 1_000_000))
+        body_str = json.dumps(body)
+        sig_msg = f"/api{path}{nonce}{body_str}"
+        sig = hmac.new(conn.api_secret.encode(), sig_msg.encode(), hashlib.sha384).hexdigest()
+        return {"bfx-apikey": conn.api_key, "bfx-nonce": nonce, "bfx-signature": sig, "Content-Type": "application/json"}
+
+    try:
+        path = "/v2/auth/r/trades/hist"
+        body = {"limit": 1000}
+        headers = bfx_headers(path, body)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}{path}", json=body, headers=headers)
+            r.raise_for_status()
+            all_trades = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Bitfinex auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        if not isinstance(trade, list) or len(trade) < 9: continue
+        trade_id, pair, ts_ms, order_id, exec_qty, exec_price, order_type, _, fee, fee_currency = (trade + [None]*10)[:10]
+        ext_id = f"bitfinex:{trade_id}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = (pair or "").replace("t", "", 1)
+            if "/" in pair:
+                base_sym, quote_sym = pair.split("/")
+            elif len(pair) == 6:
+                base_sym, quote_sym = pair[:3], pair[3:]
+            else:
+                base_sym, quote_sym = pair[:-3], pair[-3:]
+            base_sym = base_sym.upper().lstrip("t"); quote_sym = quote_sym.upper()
+            qty = abs(float(exec_qty)); price = abs(float(exec_price))
+            is_buy = float(exec_qty) > 0
+            fee_val = abs(float(fee)) if fee else 0
+            trade_date = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee_val > 0 and fee_currency:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency.upper().lstrip("f")).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee_val, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── Gemini ────────────────────────────────────────────────────────────────────
+def _sync_gemini(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Gemini trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.gemini.com"
+
+    def gemini_request(path: str, payload: dict) -> dict:
+        payload["request"] = path
+        payload["nonce"] = str(int(time.time() * 1000))
+        b64 = base64.b64encode(json.dumps(payload).encode()).decode()
+        sig = hmac.new(conn.api_secret.encode(), b64.encode(), hashlib.sha384).hexdigest()
+        headers = {"X-GEMINI-APIKEY": conn.api_key, "X-GEMINI-PAYLOAD": b64, "X-GEMINI-SIGNATURE": sig}
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}{path}", headers=headers)
+            r.raise_for_status(); return r.json()
+
+    try:
+        all_trades = gemini_request("/v1/mytrades", {"limit_trades": 500})
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Gemini auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"gemini:{trade['tid']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = trade["symbol"].upper()
+            # Gemini pairs like "BTCUSD", "ETHUSD", "SOLUSD"
+            quote_candidates = ["USD", "BTC", "ETH", "USDC", "GUSD", "DAI"]
+            quote_sym = next((q for q in quote_candidates if pair.endswith(q)), pair[-3:])
+            base_sym = pair[:-len(quote_sym)]
+            qty = float(trade["amount"]); price = float(trade["price"])
+            is_buy = trade["type"] == "Buy"
+            fee = float(trade.get("fee_amount", 0))
+            fee_currency = trade.get("fee_currency", quote_sym).upper()
+            trade_date = datetime.fromtimestamp(int(trade["timestampms"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── HTX (Huobi) ───────────────────────────────────────────────────────────────
+def _sync_htx(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync HTX (Huobi) trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.huobi.pro"
+
+    def htx_sign(method: str, path: str, params: dict) -> dict:
+        ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        p = {"AccessKeyId": conn.api_key, "SignatureMethod": "HmacSHA256",
+             "SignatureVersion": "2", "Timestamp": ts}
+        p.update(params)
+        qs = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in sorted(p.items()))
+        msg = f"{method}\napi.huobi.pro\n{path}\n{qs}"
+        sig = base64.b64encode(hmac.new(conn.api_secret.encode(), msg.encode(), hashlib.sha256).digest()).decode()
+        p["Signature"] = sig
+        return p
+
+    try:
+        # Get accounts first
+        params = htx_sign("GET", "/v1/account/accounts", {})
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/v1/account/accounts", params=params)
+            r.raise_for_status()
+            accounts_data = r.json()
+            if accounts_data.get("status") != "ok":
+                raise Exception(accounts_data.get("err-msg", "HTX auth failed"))
+            spot_account = next((a for a in accounts_data["data"] if a["type"] == "spot"), None)
+            if not spot_account:
+                return SyncResult(imported=0, skipped=0, errors=["No spot account found"], status="error")
+            acct_id = spot_account["id"]
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"HTX auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    # Fetch order history (filled orders)
+    try:
+        params = htx_sign("GET", "/v1/order/matchresults", {"size": 500, "account-id": acct_id})
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/v1/order/matchresults", params=params)
+            r.raise_for_status()
+            data = r.json()
+            all_trades = data.get("data", []) if data.get("status") == "ok" else []
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"HTX trades fetch failed: {e}"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"htx:{trade['id']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = trade["symbol"].upper()  # e.g. "btcusdt" -> "BTCUSDT"
+            quotes = ["USDT", "BTC", "ETH", "HT", "HUSD", "USD"]
+            quote_sym = next((q for q in quotes if pair.endswith(q)), pair[-4:])
+            base_sym = pair[:-len(quote_sym)]
+            qty = float(trade["filled-amount"]); price = float(trade["price"])
+            is_buy = "buy" in trade.get("type", "")
+            fee = float(trade.get("filled-fees", 0))
+            fee_currency = trade.get("fee-currency", quote_sym).upper()
+            trade_date = datetime.fromtimestamp(int(trade["created-at"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── MEXC ──────────────────────────────────────────────────────────────────────
+def _sync_mexc(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync MEXC spot trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.mexc.com"
+
+    try:
+        ts = _ms_timestamp()
+        params = f"timestamp={ts}&limit=1000"
+        sig = _hmac_sha256(conn.api_secret, params)
+        headers = {"X-MEXC-APIKEY": conn.api_key}
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/api/v3/myTrades?{params}&signature={sig}", headers=headers)
+            r.raise_for_status()
+            all_trades = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"MEXC auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    quotes = ["USDT", "USDC", "BTC", "ETH", "BNB", "MX"]
+    for trade in all_trades:
+        ext_id = f"mexc:{trade['id']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = trade["symbol"].upper()
+            quote_sym = next((q for q in quotes if pair.endswith(q)), pair[-4:])
+            base_sym = pair[:-len(quote_sym)]
+            qty = float(trade["qty"]); price = float(trade["price"])
+            is_buy = trade["isBuyer"]
+            fee = float(trade.get("commission", 0))
+            fee_currency = trade.get("commissionAsset", quote_sym).upper()
+            trade_date = datetime.fromtimestamp(int(trade["time"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── Crypto.com ────────────────────────────────────────────────────────────────
+def _sync_cryptocom(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Crypto.com Exchange trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.crypto.com/exchange/v1"
+
+    def cdc_request(method: str, params: dict) -> dict:
+        nonce = str(int(time.time() * 1000))
+        req_id = int(time.time() * 1000)
+        payload = {"id": req_id, "method": method, "api_key": conn.api_key, "params": params, "nonce": nonce}
+        param_str = "".join(f"{k}{v}" for k, v in sorted(params.items()))
+        sig_str = method + str(req_id) + conn.api_key + param_str + nonce
+        payload["sig"] = hmac.new(conn.api_secret.encode(), sig_str.encode(), hashlib.sha256).hexdigest()
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}/private/{method.split('/')[-1]}", json=payload)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise Exception(data.get("message", "Crypto.com API error"))
+            return data.get("result", {})
+
+    try:
+        result = cdc_request("private/get-trades", {"page_size": 200})
+        all_trades = result.get("data", {}).get("list", [])
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Crypto.com auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"cryptocom:{trade['trade_id']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = trade["instrument_name"]  # e.g. "BTC_USDT"
+            parts = pair.split("_")
+            base_sym, quote_sym = parts[0].upper(), parts[1].upper()
+            qty = float(trade["quantity"]); price = float(trade["traded_price"])
+            is_buy = trade["side"] == "BUY"
+            fee = float(trade.get("fees", 0))
+            fee_currency = trade.get("fee_instrument_name", quote_sym).split("_")[0].upper()
+            trade_date = datetime.fromtimestamp(int(trade["trade_time"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── Bitstamp ──────────────────────────────────────────────────────────────────
+def _sync_bitstamp(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Bitstamp trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://www.bitstamp.net/api/v2"
+
+    def bitstamp_headers(path: str) -> dict:
+        nonce = str(uuid4()).replace("-", "")
+        ts = str(int(time.time() * 1000))
+        content_type = "application/x-www-form-urlencoded"
+        msg = f"BITSTAMP {conn.api_key}\nPOST\nwww.bitstamp.net\n{path}\n\n{content_type}\n{nonce}\n{ts}\nv2\n"
+        sig = hmac.new(conn.api_secret.encode(), msg.encode(), hashlib.sha256).hexdigest().upper()
+        return {
+            "X-Auth": f"BITSTAMP {conn.api_key}",
+            "X-Auth-Signature": sig,
+            "X-Auth-Nonce": nonce,
+            "X-Auth-Timestamp": ts,
+            "X-Auth-Version": "v2",
+            "Content-Type": content_type,
+        }
+
+    try:
+        path = "/user_transactions/"
+        headers = bitstamp_headers(path)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}{path}", headers=headers, data={"limit": 1000, "transaction_type": 2})
+            r.raise_for_status()
+            all_trades = r.json()
+            if isinstance(all_trades, dict) and "error" in all_trades:
+                raise Exception(all_trades["error"])
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Bitstamp auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        if not isinstance(trade, dict) or trade.get("type") != "2": continue  # type 2 = market trade
+        ext_id = f"bitstamp:{trade['id']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            # Bitstamp returns fields like "btc_usd", "btc", "usd", "btc_usd_trade_id"
+            trade_key = next((k for k in trade if k.endswith("_trade_id") and k != "trade_id"), None)
+            if not trade_key: skipped += 1; continue
+            pair = trade_key.replace("_trade_id", "")
+            parts = pair.split("_")
+            base_sym, quote_sym = parts[0].upper(), parts[1].upper()
+            base_qty = float(trade.get(parts[0], 0))
+            quote_qty = float(trade.get(parts[1], 0))
+            price = float(trade.get(f"{pair}", trade.get("price", 0)))
+            is_buy = base_qty > 0
+            fee = float(trade.get("fee", 0))
+            trade_date = datetime.fromisoformat(trade["datetime"]).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            qty = abs(base_qty)
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": abs(price) if price else None, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": quote_qty, "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": abs(price) if price else None, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -quote_qty, "unit_price": None, "fee_flag": "false"})
+            if fee > 0 and quote_asset:
+                legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── BitMart ───────────────────────────────────────────────────────────────────
+def _sync_bitmart(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync BitMart trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api-cloud.bitmart.com"
+
+    def bm_headers(timestamp: str, memo: str = "") -> dict:
+        msg = f"{timestamp}#{conn.passphrase or memo}#"
+        sig = hmac.new(conn.api_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        return {"X-BM-KEY": conn.api_key, "X-BM-SIGN": sig, "X-BM-TIMESTAMP": timestamp}
+
+    try:
+        ts = str(int(time.time() * 1000))
+        headers = bm_headers(ts)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/spot/v4/query/order-trades?limit=200", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 1000:
+                raise Exception(data.get("message", "BitMart error"))
+            all_trades = data.get("data", {}).get("trades", [])
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"BitMart auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"bitmart:{trade['tradeId']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = trade["symbol"].upper()
+            parts = pair.split("_")
+            base_sym, quote_sym = parts[0], parts[1]
+            qty = float(trade["size"]); price = float(trade["price"])
+            is_buy = trade["side"] == "buy"
+            fee = float(trade.get("fees", 0))
+            fee_currency = trade.get("feeCoinName", quote_sym).upper()
+            trade_date = datetime.fromtimestamp(int(trade["createTime"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── Phemex ────────────────────────────────────────────────────────────────────
+def _sync_phemex(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Phemex spot trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.phemex.com"
+
+    def phemex_headers(path: str, query: str = "") -> dict:
+        expiry = str(int(time.time()) + 60)
+        msg = path + query + expiry
+        sig = hmac.new(conn.api_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        return {
+            "x-phemex-access-token": conn.api_key,
+            "x-phemex-request-expiry": expiry,
+            "x-phemex-request-signature": sig,
+        }
+
+    try:
+        query = "limit=200"
+        headers = phemex_headers("/spot/trades", query)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/spot/trades?{query}", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise Exception(data.get("msg", "Phemex error"))
+            all_trades = data.get("data", {}).get("rows", [])
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Phemex auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    quotes = ["USDT", "USDC", "BTC", "ETH"]
+    for trade in all_trades:
+        ext_id = f"phemex:{trade['execId'] if isinstance(trade, dict) else trade[0]}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            if isinstance(trade, list):
+                # Phemex returns arrays: [execId, orderID, clOrdID, symbol, side, orderType, execQty, execPrice, ...]
+                exec_id, _, _, symbol, side, _, exec_qty, exec_price, *rest = trade
+                fee_val = float(rest[3]) / 1e8 if len(rest) > 3 else 0
+                ts_ms = int(rest[5]) if len(rest) > 5 else int(time.time() * 1000)
+            else:
+                exec_id = trade.get("execId"); symbol = trade.get("symbol", "")
+                side = trade.get("side", ""); exec_qty = trade.get("execQty", 0)
+                exec_price = trade.get("execPrice", 0); fee_val = 0; ts_ms = int(time.time() * 1000)
+            pair = symbol.upper()
+            quote_sym = next((q for q in quotes if pair.endswith(q)), pair[-4:])
+            base_sym = pair[:-len(quote_sym)]
+            qty = float(exec_qty) / 1e8; price = float(exec_price) / 1e8
+            is_buy = str(side).lower() == "buy"
+            trade_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset or qty <= 0: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee_val > 0 and quote_asset:
+                legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -fee_val, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── CoinEx ────────────────────────────────────────────────────────────────────
+def _sync_coinex(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync CoinEx trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.coinex.com/v2"
+
+    def coinex_headers(method: str, path: str, body: str = "") -> dict:
+        ts = str(int(time.time() * 1000))
+        msg = method.upper() + path + body + ts
+        sig = hmac.new(conn.api_secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        return {"X-COINEX-KEY": conn.api_key, "X-COINEX-SIGN": sig, "X-COINEX-TIMESTAMP": ts}
+
+    try:
+        path = "/spot/user-deals"
+        headers = coinex_headers("GET", path)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}{path}?limit=100&page=1", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise Exception(data.get("message", "CoinEx error"))
+            all_trades = data.get("data", {}).get("items", [])
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"CoinEx auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"coinex:{trade['deal_id']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            market = trade["market"].upper()  # e.g. "BTCUSDT"
+            quotes = ["USDT", "USDC", "BTC", "ETH", "CET"]
+            quote_sym = next((q for q in quotes if market.endswith(q)), market[-4:])
+            base_sym = market[:-len(quote_sym)]
+            qty = float(trade["amount"]); price = float(trade["price"])
+            is_buy = trade["side"] == "buy"
+            fee = float(trade.get("fee", 0))
+            fee_currency = trade.get("fee_asset", quote_sym).upper()
+            trade_date = datetime.fromtimestamp(int(trade["created_at"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0:
+                fa = db.query(models.Asset).filter(models.Asset.symbol == fee_currency).first()
+                if fa: legs.append({"account_id": target_account.id, "asset_id": fa.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── LBank ─────────────────────────────────────────────────────────────────────
+def _sync_lbank(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync LBank trade history."""
+    imported, skipped, errors = 0, 0, []
+    base = "https://api.lbank.com/v2"
+
+    def lbank_sign(params: dict) -> str:
+        sorted_params = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        return hmac.new(conn.api_secret.encode(), sorted_params.encode(), hashlib.sha256).hexdigest()
+
+    try:
+        ts = str(int(time.time() * 1000))
+        params = {"api_key": conn.api_key, "timestamp": ts, "current_page": 1, "page_length": 200, "type": "ALL"}
+        params["sign"] = lbank_sign(params)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{base}/orders/transaction_history.do", data=params)
+            r.raise_for_status()
+            data = r.json()
+            if str(data.get("result")) != "true":
+                raise Exception(data.get("error_code", "LBank error"))
+            all_trades = data.get("data", {}).get("transaction", [])
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"LBank auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for trade in all_trades:
+        ext_id = f"lbank:{trade['txUuid']}"
+        if db.query(models.TransactionEvent).filter(models.TransactionEvent.external_id == ext_id).first():
+            skipped += 1; continue
+        try:
+            pair = trade["symbol"].upper()
+            parts = pair.split("_")
+            base_sym, quote_sym = parts[0], parts[1]
+            qty = float(trade["dealAmount"]); price = float(trade["price"])
+            is_buy = trade["type"] == "buy"
+            fee = float(trade.get("tradeFee", 0))
+            trade_date = datetime.fromtimestamp(int(trade["dealTime"]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            base_asset = db.query(models.Asset).filter(models.Asset.symbol == base_sym).first()
+            quote_asset = db.query(models.Asset).filter(models.Asset.symbol == quote_sym).first()
+            if not base_asset: skipped += 1; continue
+            legs = []
+            if is_buy:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -(qty * price), "unit_price": None, "fee_flag": "false"})
+            else:
+                legs.append({"account_id": target_account.id, "asset_id": base_asset.id, "quantity": -qty, "unit_price": price, "fee_flag": "false"})
+                if quote_asset: legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": qty * price, "unit_price": None, "fee_flag": "false"})
+            if fee > 0 and quote_asset:
+                legs.append({"account_id": target_account.id, "asset_id": quote_asset.id, "quantity": -fee, "unit_price": None, "fee_flag": "true"})
+            event = models.TransactionEvent(id=str(uuid4()), event_type="trade",
+                description=f"{'Buy' if is_buy else 'Sell'} {base_sym}/{quote_sym}",
+                date=trade_date, source="api", external_id=ext_id)
+            db.add(event); db.flush()
+            _apply_legs(legs, event.id, db); db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(str(e))
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
+# ── Alpaca ────────────────────────────────────────────────────────────────────
+def _sync_alpaca(conn: models.ExchangeConnection, db: Session) -> SyncResult:
+    """Sync Alpaca broker positions."""
+    imported, skipped, errors = 0, 0, []
+    is_paper = (conn.passphrase or "").lower() == "paper"
+    base = "https://paper-api.alpaca.markets" if is_paper else "https://api.alpaca.markets"
+    headers = {"APCA-API-KEY-ID": conn.api_key, "APCA-API-SECRET-KEY": conn.api_secret}
+
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{base}/v2/positions", headers=headers)
+            r.raise_for_status()
+            positions = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Alpaca auth failed: {e}"], status="error")
+
+    target_account = db.query(models.Account).filter(models.Account.id == conn.account_id).first() if conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    for pos in positions:
+        sym = pos["symbol"].upper()
+        ext_id = f"alpaca:pos:{sym}:{target_account.id}"
+        try:
+            qty = float(pos["qty"]); avg_cost = float(pos["avg_entry_price"])
+            asset = db.query(models.Asset).filter(models.Asset.symbol == sym).first()
+            if not asset:
+                asset = models.Asset(id=str(uuid4()), symbol=sym, name=pos.get("asset_id", sym),
+                                    asset_class="stock", quote_currency="USD")
+                db.add(asset); db.flush()
+            holding = db.query(models.Holding).filter(
+                models.Holding.account_id == target_account.id,
+                models.Holding.asset_id == asset.id).first()
+            if not holding:
+                holding = models.Holding(id=str(uuid4()), account_id=target_account.id,
+                                        asset_id=asset.id, quantity=qty, avg_cost=avg_cost)
+                db.add(holding)
+            else:
+                holding.quantity = qty; holding.avg_cost = avg_cost
+            db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(f"{sym}: {e}")
+
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status="active" if not errors else "error")
+
+
 SYNC_FUNCTIONS = {
-    "binance": _sync_binance,
-    "kraken":  _sync_kraken,
-    "coinbase": _sync_coinbase,
-    "bybit":   _sync_bybit,
-    "kucoin":  _sync_kucoin,
-    "okx":     _sync_okx,
+    "binance":   _sync_binance,
+    "kraken":    _sync_kraken,
+    "coinbase":  _sync_coinbase,
+    "bybit":     _sync_bybit,
+    "kucoin":    _sync_kucoin,
+    "okx":       _sync_okx,
+    "gate":      _sync_gate,
+    "bitfinex":  _sync_bitfinex,
+    "gemini":    _sync_gemini,
+    "htx":       _sync_htx,
+    "mexc":      _sync_mexc,
+    "cryptocom": _sync_cryptocom,
+    "bitstamp":  _sync_bitstamp,
+    "bitmart":   _sync_bitmart,
+    "phemex":    _sync_phemex,
+    "coinex":    _sync_coinex,
+    "lbank":     _sync_lbank,
+    "alpaca":    _sync_alpaca,
 }
 
 # ─────────────────────────────────────────────
@@ -3066,3 +3926,390 @@ def sync_plaid_connection(conn_id: str, db: Session = Depends(get_db)):
     conn.status      = "active"
     db.commit()
     return {"status": "ok", "imported": imported}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SNAPTRADE — Broker Aggregator (Fidelity, Webull, Vanguard, Robinhood, IBKR…)
+# Activate by setting SNAPTRADE_CLIENT_ID + SNAPTRADE_CONSUMER_KEY on Railway.
+# ─────────────────────────────────────────────────────────────────────────────
+SNAPTRADE_CLIENT_ID    = os.getenv("SNAPTRADE_CLIENT_ID", "")
+SNAPTRADE_CONSUMER_KEY = os.getenv("SNAPTRADE_CONSUMER_KEY", "")
+SNAPTRADE_BASE         = "https://api.snaptrade.com/api/v1"
+
+def _snaptrade_configured() -> bool:
+    return bool(SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY)
+
+def _snaptrade_sig(path: str, query: str = "", body: str = "") -> dict:
+    """Build SnapTrade HMAC-SHA256 request signature headers."""
+    ts = str(int(time.time()))
+    msg = ts + path + query + body
+    sig = base64.b64encode(
+        hmac.new(SNAPTRADE_CONSUMER_KEY.encode(), msg.encode(), hashlib.sha256).digest()
+    ).decode()
+    return {
+        "Signature": sig,
+        "timestamp": ts,
+        "clientId": SNAPTRADE_CLIENT_ID,
+        "Content-Type": "application/json",
+    }
+
+
+@app.post("/snaptrade/register")
+@limiter.limit("5/minute")
+def snaptrade_register(request: Request, user_id: str = Depends(require_user_id),
+                       db: Session = Depends(get_db)):
+    """Register user with SnapTrade (idempotent). Returns userSecret."""
+    if not _snaptrade_configured():
+        raise HTTPException(503, "SnapTrade not configured — add SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY")
+    existing = db.query(models.SnaptradeConnection).filter_by(user_id=user_id).first()
+    if existing:
+        return {"snaptrade_user_id": existing.snaptrade_user_id}
+
+    path = "/snapTrade/registerUser"
+    body = json.dumps({"userId": user_id})
+    headers = _snaptrade_sig(path, body=body)
+    with httpx.Client(timeout=15.0) as c:
+        r = c.post(f"{SNAPTRADE_BASE}{path}?clientId={SNAPTRADE_CLIENT_ID}", json={"userId": user_id}, headers=headers)
+        if r.status_code not in (200, 201):
+            raise HTTPException(500, f"SnapTrade register failed: {r.text}")
+        data = r.json()
+
+    conn = models.SnaptradeConnection(
+        id=str(uuid4()), user_id=user_id,
+        snaptrade_user_id=data.get("userId", user_id),
+        snaptrade_secret=_encrypt(data.get("userSecret", "")),
+    )
+    db.add(conn); db.commit()
+    return {"snaptrade_user_id": conn.snaptrade_user_id}
+
+
+@app.get("/snaptrade/auth-url")
+@limiter.limit("10/minute")
+def snaptrade_auth_url(request: Request, broker: str = Query(""), user_id: str = Depends(require_user_id),
+                       db: Session = Depends(get_db)):
+    """Get SnapTrade OAuth redirect URL for a specific broker."""
+    if not _snaptrade_configured():
+        raise HTTPException(503, "SnapTrade not configured")
+    conn = db.query(models.SnaptradeConnection).filter_by(user_id=user_id).first()
+    if not conn:
+        raise HTTPException(400, "Register with SnapTrade first via POST /snaptrade/register")
+    secret = _decrypt(conn.snaptrade_secret)
+
+    path = "/snapTrade/login"
+    params = f"clientId={SNAPTRADE_CLIENT_ID}&userSecret={secret}&userId={conn.snaptrade_user_id}"
+    if broker:
+        params += f"&broker={broker}"
+    headers = _snaptrade_sig(path, query=params)
+    with httpx.Client(timeout=15.0) as c:
+        r = c.get(f"{SNAPTRADE_BASE}{path}?{params}", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+    return {"auth_url": data.get("redirectURI", "")}
+
+
+@app.get("/snaptrade/connections")
+def snaptrade_connections(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """List SnapTrade broker connections for the user."""
+    if not _snaptrade_configured():
+        return {"items": [], "configured": False}
+    conns = db.query(models.SnaptradeConnection).filter_by(user_id=user_id).all()
+    return {"items": [{"id": c.id, "brokerage_name": c.brokerage_name,
+                       "brokerage_id": c.brokerage_id, "status": c.status,
+                       "last_synced": c.last_synced} for c in conns],
+            "configured": True}
+
+
+@app.post("/snaptrade/{conn_id}/sync", response_model=SyncResult)
+def snaptrade_sync(conn_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Import holdings from a SnapTrade broker connection."""
+    if not _snaptrade_configured():
+        raise HTTPException(503, "SnapTrade not configured")
+    st_conn = db.query(models.SnaptradeConnection).filter_by(id=conn_id, user_id=user_id).first()
+    if not st_conn:
+        raise HTTPException(404, "SnapTrade connection not found")
+    secret = _decrypt(st_conn.snaptrade_secret)
+    target_account = db.query(models.Account).filter_by(id=st_conn.account_id).first() if st_conn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account — link this connection to an account first"], status="error")
+
+    imported = skipped = 0; errors = []
+    path = "/holdings"
+    params = f"clientId={SNAPTRADE_CLIENT_ID}&userSecret={secret}&userId={st_conn.snaptrade_user_id}"
+    headers = _snaptrade_sig(path, query=params)
+    try:
+        with httpx.Client(timeout=20.0) as c:
+            r = c.get(f"{SNAPTRADE_BASE}{path}?{params}", headers=headers)
+            r.raise_for_status()
+            accounts_data = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"SnapTrade fetch failed: {e}"], status="error")
+
+    for acct in (accounts_data if isinstance(accounts_data, list) else []):
+        for pos in acct.get("positions", []):
+            sym = (pos.get("symbol", {}).get("symbol") or pos.get("ticker", "")).upper()
+            qty = float(pos.get("units", 0))
+            avg_price = float(pos.get("average_purchase_price", 0))
+            if not sym or qty <= 0: continue
+            try:
+                asset = db.query(models.Asset).filter_by(symbol=sym).first()
+                if not asset:
+                    asset = models.Asset(id=str(uuid4()), symbol=sym, name=sym, asset_class="stock", quote_currency="USD")
+                    db.add(asset); db.flush()
+                holding = db.query(models.Holding).filter_by(account_id=target_account.id, asset_id=asset.id).first()
+                if not holding:
+                    holding = models.Holding(id=str(uuid4()), account_id=target_account.id,
+                                            asset_id=asset.id, quantity=qty, avg_cost=avg_price)
+                    db.add(holding)
+                else:
+                    holding.quantity = qty; holding.avg_cost = avg_price
+                db.commit(); imported += 1
+            except Exception as e:
+                db.rollback(); errors.append(f"{sym}: {e}")
+
+    st_conn.last_synced = _utc_now_iso(); st_conn.status = "active" if not errors else "error"
+    db.commit()
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status=st_conn.status)
+
+
+@app.delete("/snaptrade/{conn_id}")
+def snaptrade_delete(conn_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    conn = db.query(models.SnaptradeConnection).filter_by(id=conn_id, user_id=user_id).first()
+    if not conn: raise HTTPException(404, "Not found")
+    db.delete(conn); db.commit()
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VEZGO — Crypto Exchange Aggregator (Bitpanda, Nexo, Binance US, Bittrex…)
+# Activate by setting VEZGO_CLIENT_ID + VEZGO_CLIENT_SECRET on Railway.
+# ─────────────────────────────────────────────────────────────────────────────
+VEZGO_CLIENT_ID     = os.getenv("VEZGO_CLIENT_ID", "")
+VEZGO_CLIENT_SECRET = os.getenv("VEZGO_CLIENT_SECRET", "")
+VEZGO_BASE          = "https://api.vezgo.com/v1"
+
+
+def _vezgo_configured() -> bool:
+    return bool(VEZGO_CLIENT_ID and VEZGO_CLIENT_SECRET)
+
+
+@app.get("/vezgo/auth-url")
+@limiter.limit("10/minute")
+def vezgo_auth_url(request: Request, user_id: str = Depends(require_user_id)):
+    """Get Vezgo OAuth redirect URL."""
+    if not _vezgo_configured():
+        raise HTTPException(503, "Vezgo not configured — add VEZGO_CLIENT_ID and VEZGO_CLIENT_SECRET")
+    redirect = "ledgervault://vezgo/callback"
+    url = (f"https://connect.vezgo.com/connect?client_id={VEZGO_CLIENT_ID}"
+           f"&redirect_uri={urllib.parse.quote(redirect)}&response_type=code&state={user_id}")
+    return {"auth_url": url}
+
+
+@app.post("/vezgo/callback")
+@limiter.limit("10/minute")
+def vezgo_callback(request: Request, code: str = Query(...), state: str = Query(""),
+                   user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Exchange Vezgo authorization code for tokens and save connection."""
+    if not _vezgo_configured():
+        raise HTTPException(503, "Vezgo not configured")
+    with httpx.Client(timeout=15.0) as c:
+        r = c.post(f"{VEZGO_BASE}/auth/token", json={
+            "grant_type": "authorization_code", "code": code,
+            "client_id": VEZGO_CLIENT_ID, "client_secret": VEZGO_CLIENT_SECRET,
+            "redirect_uri": "ledgervault://vezgo/callback",
+        })
+        r.raise_for_status()
+        tokens = r.json()
+    conn = models.VezgoConnection(
+        id=str(uuid4()), user_id=user_id,
+        vezgo_user_id=tokens.get("user_id", user_id),
+        vezgo_token=_encrypt(tokens.get("access_token", "")),
+    )
+    db.add(conn); db.commit()
+    return {"status": "ok", "id": conn.id}
+
+
+@app.get("/vezgo/connections")
+def vezgo_connections(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    if not _vezgo_configured():
+        return {"items": [], "configured": False}
+    conns = db.query(models.VezgoConnection).filter_by(user_id=user_id).all()
+    return {"items": [{"id": c.id, "account_name": c.account_name, "status": c.status,
+                        "last_synced": c.last_synced} for c in conns], "configured": True}
+
+
+@app.post("/vezgo/{conn_id}/sync", response_model=SyncResult)
+def vezgo_sync(conn_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    if not _vezgo_configured():
+        raise HTTPException(503, "Vezgo not configured")
+    vconn = db.query(models.VezgoConnection).filter_by(id=conn_id, user_id=user_id).first()
+    if not vconn: raise HTTPException(404, "Not found")
+    token = _decrypt(vconn.vezgo_token or "")
+    target_account = db.query(models.Account).filter_by(id=vconn.account_id).first() if vconn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    imported = skipped = 0; errors = []
+    try:
+        with httpx.Client(timeout=20.0) as c:
+            r = c.get(f"{VEZGO_BASE}/accounts/{vconn.vezgo_user_id}/balances",
+                      headers={"Authorization": f"Bearer {token}"})
+            r.raise_for_status(); balances = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Vezgo fetch failed: {e}"], status="error")
+
+    for bal in (balances if isinstance(balances, list) else []):
+        sym = (bal.get("ticker") or bal.get("currency", "")).upper()
+        qty = float(bal.get("amount", 0))
+        fiat_val = float(bal.get("fiat_value", 0))
+        price = fiat_val / qty if qty > 0 else 0
+        if not sym or qty <= 0: continue
+        try:
+            asset = db.query(models.Asset).filter_by(symbol=sym).first()
+            if not asset:
+                asset = models.Asset(id=str(uuid4()), symbol=sym, name=sym, asset_class="crypto", quote_currency="USD")
+                db.add(asset); db.flush()
+            holding = db.query(models.Holding).filter_by(account_id=target_account.id, asset_id=asset.id).first()
+            if not holding:
+                holding = models.Holding(id=str(uuid4()), account_id=target_account.id,
+                                        asset_id=asset.id, quantity=qty, avg_cost=price)
+                db.add(holding)
+            else:
+                holding.quantity = qty; holding.avg_cost = price
+            db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(f"{sym}: {e}")
+
+    vconn.last_synced = _utc_now_iso(); vconn.status = "active" if not errors else "error"
+    db.commit()
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status=vconn.status)
+
+
+@app.delete("/vezgo/{conn_id}")
+def vezgo_delete(conn_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    conn = db.query(models.VezgoConnection).filter_by(id=conn_id, user_id=user_id).first()
+    if not conn: raise HTTPException(404, "Not found")
+    db.delete(conn); db.commit()
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLANKS — European Broker Aggregator (Trade Republic, XTB, Freetrade, Saxo…)
+# Activate by setting FLANKS_API_KEY on Railway.
+# ─────────────────────────────────────────────────────────────────────────────
+FLANKS_API_KEY  = os.getenv("FLANKS_API_KEY", "")
+FLANKS_BASE     = "https://api.flanks.io/v1"
+
+
+def _flanks_configured() -> bool:
+    return bool(FLANKS_API_KEY)
+
+
+def _flanks_headers() -> dict:
+    return {"Authorization": f"Bearer {FLANKS_API_KEY}", "Content-Type": "application/json"}
+
+
+@app.get("/flanks/brokers")
+def flanks_brokers():
+    """Return list of supported Flanks brokers."""
+    if not _flanks_configured():
+        return {"items": [], "configured": False}
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(f"{FLANKS_BASE}/brokers", headers=_flanks_headers())
+            r.raise_for_status()
+            return {"items": r.json(), "configured": True}
+    except Exception as e:
+        return {"items": [], "configured": True, "error": str(e)}
+
+
+@app.post("/flanks/connect")
+@limiter.limit("5/minute")
+def flanks_connect(request: Request, payload: dict, user_id: str = Depends(require_user_id),
+                   db: Session = Depends(get_db)):
+    """Initiate Flanks broker connection (returns redirect URL)."""
+    if not _flanks_configured():
+        raise HTTPException(503, "Flanks not configured — add FLANKS_API_KEY")
+    broker_id = payload.get("broker_id", "")
+    if not broker_id:
+        raise HTTPException(400, "broker_id required")
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(f"{FLANKS_BASE}/connections", headers=_flanks_headers(),
+                       json={"brokerId": broker_id, "userId": user_id,
+                             "redirectUri": "ledgervault://flanks/callback"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        raise HTTPException(500, f"Flanks connect failed: {e}")
+
+    conn = models.FlanksBrokerConnection(
+        id=str(uuid4()), user_id=user_id,
+        broker_id=broker_id, broker_name=data.get("brokerName"),
+        flanks_user_id=data.get("connectionId"),
+    )
+    db.add(conn); db.commit()
+    return {"auth_url": data.get("authorizationUrl", ""), "id": conn.id}
+
+
+@app.get("/flanks/connections")
+def flanks_connections(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    if not _flanks_configured():
+        return {"items": [], "configured": False}
+    conns = db.query(models.FlanksBrokerConnection).filter_by(user_id=user_id).all()
+    return {"items": [{"id": c.id, "broker_id": c.broker_id, "broker_name": c.broker_name,
+                        "status": c.status, "last_synced": c.last_synced} for c in conns],
+            "configured": True}
+
+
+@app.post("/flanks/{conn_id}/sync", response_model=SyncResult)
+def flanks_sync(conn_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    if not _flanks_configured():
+        raise HTTPException(503, "Flanks not configured")
+    fconn = db.query(models.FlanksBrokerConnection).filter_by(id=conn_id, user_id=user_id).first()
+    if not fconn: raise HTTPException(404, "Not found")
+    target_account = db.query(models.Account).filter_by(id=fconn.account_id).first() if fconn.account_id else None
+    if not target_account:
+        return SyncResult(imported=0, skipped=0, errors=["No linked account"], status="error")
+
+    imported = skipped = 0; errors = []
+    try:
+        with httpx.Client(timeout=20.0) as c:
+            r = c.get(f"{FLANKS_BASE}/connections/{fconn.flanks_user_id}/positions",
+                      headers=_flanks_headers())
+            r.raise_for_status(); positions = r.json()
+    except Exception as e:
+        return SyncResult(imported=0, skipped=0, errors=[f"Flanks fetch failed: {e}"], status="error")
+
+    for pos in (positions if isinstance(positions, list) else positions.get("items", [])):
+        sym = (pos.get("ticker") or pos.get("symbol", "")).upper()
+        qty = float(pos.get("quantity", 0))
+        avg_price = float(pos.get("averagePrice", pos.get("avg_price", 0)))
+        if not sym or qty <= 0: continue
+        try:
+            asset = db.query(models.Asset).filter_by(symbol=sym).first()
+            if not asset:
+                asset = models.Asset(id=str(uuid4()), symbol=sym, name=pos.get("name", sym),
+                                    asset_class="stock", quote_currency="EUR")
+                db.add(asset); db.flush()
+            holding = db.query(models.Holding).filter_by(account_id=target_account.id, asset_id=asset.id).first()
+            if not holding:
+                holding = models.Holding(id=str(uuid4()), account_id=target_account.id,
+                                        asset_id=asset.id, quantity=qty, avg_cost=avg_price)
+                db.add(holding)
+            else:
+                holding.quantity = qty; holding.avg_cost = avg_price
+            db.commit(); imported += 1
+        except Exception as e:
+            db.rollback(); errors.append(f"{sym}: {e}")
+
+    fconn.last_synced = _utc_now_iso(); fconn.status = "active" if not errors else "error"
+    db.commit()
+    return SyncResult(imported=imported, skipped=skipped, errors=errors[:10], status=fconn.status)
+
+
+@app.delete("/flanks/{conn_id}")
+def flanks_delete(conn_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    conn = db.query(models.FlanksBrokerConnection).filter_by(id=conn_id, user_id=user_id).first()
+    if not conn: raise HTTPException(404, "Not found")
+    db.delete(conn); db.commit()
+    return {"status": "ok"}

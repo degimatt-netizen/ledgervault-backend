@@ -116,6 +116,50 @@ class BankConnection(Base):
     status_message = Column(String, nullable=True)
 
 
+class SnaptradeConnection(Base):
+    __tablename__ = "snaptrade_connections"
+
+    id                  = Column(String, primary_key=True, index=True)
+    user_id             = Column(String, nullable=False, index=True)
+    snaptrade_user_id   = Column(String, nullable=False)   # userId sent to SnapTrade
+    snaptrade_secret    = Column(String, nullable=False)   # userSecret from SnapTrade (encrypted)
+    brokerage_name      = Column(String, nullable=True)    # e.g. "Alpaca", "Robinhood"
+    brokerage_id        = Column(String, nullable=True)    # SnapTrade brokerage ID
+    authorization_id    = Column(String, nullable=True)    # SnapTrade authorization ID
+    account_id          = Column(String, ForeignKey("accounts.id"), nullable=True)
+    status              = Column(String, nullable=False, default="active")
+    status_message      = Column(String, nullable=True)
+    last_synced         = Column(String, nullable=True)
+
+
+class VezgoConnection(Base):
+    __tablename__ = "vezgo_connections"
+
+    id              = Column(String, primary_key=True, index=True)
+    user_id         = Column(String, nullable=False, index=True)
+    vezgo_user_id   = Column(String, nullable=False)
+    vezgo_token     = Column(String, nullable=True)         # encrypted access token
+    account_name    = Column(String, nullable=True)         # e.g. "Bitpanda"
+    account_id      = Column(String, ForeignKey("accounts.id"), nullable=True)
+    status          = Column(String, nullable=False, default="active")
+    status_message  = Column(String, nullable=True)
+    last_synced     = Column(String, nullable=True)
+
+
+class FlanksBrokerConnection(Base):
+    __tablename__ = "flanks_connections"
+
+    id              = Column(String, primary_key=True, index=True)
+    user_id         = Column(String, nullable=False, index=True)
+    broker_id       = Column(String, nullable=False)        # e.g. "trade-republic"
+    broker_name     = Column(String, nullable=True)
+    flanks_user_id  = Column(String, nullable=True)
+    account_id      = Column(String, ForeignKey("accounts.id"), nullable=True)
+    status          = Column(String, nullable=False, default="active")
+    status_message  = Column(String, nullable=True)
+    last_synced     = Column(String, nullable=True)
+
+
 class RecurringTransaction(Base):
     __tablename__ = "recurring_transactions"
 
