@@ -24,14 +24,7 @@ struct ExchangeConnectionsView: View {
                     ProgressView("Loading…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if connections.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Connections", systemImage: "link.badge.plus")
-                    } description: {
-                        Text("Connect an exchange to auto-import your trade history.")
-                    } actions: {
-                        Button("Add Connection") { showAddSheet = true }
-                            .buttonStyle(.borderedProminent)
-                    }
+                    exchangeEmptyState
                 } else {
                     List {
                         Section {
@@ -88,6 +81,78 @@ struct ExchangeConnectionsView: View {
             .alert("Error", isPresented: .constant(error != nil)) {
                 Button("OK") { error = nil }
             } message: { Text(error ?? "") }
+        }
+    }
+
+    // MARK: - Empty State
+
+    private var exchangeEmptyState: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // Hero
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [Color.orange.opacity(0.25), Color.yellow.opacity(0.18)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 130, height: 130)
+                    Image(systemName: "bitcoinsign.circle.fill")
+                        .font(.system(size: 54))
+                        .foregroundStyle(LinearGradient(
+                            colors: [.orange, .yellow],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                }
+                .padding(.top, 36).padding(.bottom, 22)
+
+                Text("Connect an Exchange")
+                    .font(.title.bold())
+                    .multilineTextAlignment(.center)
+
+                Text("Add a read-only API key from your exchange to auto-import your trade history.")
+                    .font(.subheadline).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32).padding(.top, 8)
+
+                // Exchange grid
+                let cols = [GridItem(.adaptive(minimum: 130), spacing: 12)]
+                LazyVGrid(columns: cols, spacing: 12) {
+                    ForEach(ExchangeConnectionsView.supportedExchanges, id: \.id) { ex in
+                        HStack(spacing: 10) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(ex.color.opacity(0.13))
+                                    .frame(width: 34, height: 34)
+                                Image(systemName: ex.icon)
+                                    .foregroundColor(ex.color)
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            Text(ex.displayName)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.primary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
+                    }
+                }
+                .padding(.horizontal, 20).padding(.top, 24)
+
+                Button { showAddSheet = true } label: {
+                    Label("Connect Exchange", systemImage: "link.badge.plus")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity).padding()
+                        .background(Color.orange)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .padding(.horizontal, 20).padding(.top, 24)
+
+                Text("Use a read-only API key. LedgerVault never trades on your behalf.")
+                    .font(.caption).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32).padding(.top, 10).padding(.bottom, 40)
+            }
         }
     }
 
@@ -165,30 +230,47 @@ struct ExchangeConnectionsView: View {
             .clipShape(Capsule())
     }
 
+    // MARK: - Supported Exchanges
+
+    struct SupportedExchange {
+        let id: String
+        let displayName: String
+        let icon: String
+        let color: Color
+    }
+
+    static let supportedExchanges: [SupportedExchange] = [
+        // ── Tier 1: Major exchanges ──
+        SupportedExchange(id: "binance",    displayName: "Binance",      icon: "bitcoinsign.circle.fill",  color: .yellow),
+        SupportedExchange(id: "coinbase",   displayName: "Coinbase",     icon: "c.circle.fill",            color: .blue),
+        SupportedExchange(id: "kraken",     displayName: "Kraken",       icon: "k.circle.fill",            color: .indigo),
+        SupportedExchange(id: "bybit",      displayName: "Bybit",        icon: "triangle.circle.fill",     color: .orange),
+        SupportedExchange(id: "kucoin",     displayName: "KuCoin",       icon: "square.circle.fill",       color: .green),
+        SupportedExchange(id: "okx",        displayName: "OKX",          icon: "o.circle.fill",            color: .teal),
+        // ── Tier 2 ──
+        SupportedExchange(id: "gate",       displayName: "Gate.io",      icon: "g.circle.fill",            color: .cyan),
+        SupportedExchange(id: "bitfinex",   displayName: "Bitfinex",     icon: "b.circle.fill",            color: .purple),
+        SupportedExchange(id: "gemini",     displayName: "Gemini",       icon: "sparkles",                 color: Color(red: 0.0, green: 0.44, blue: 0.86)),
+        SupportedExchange(id: "htx",        displayName: "HTX",          icon: "h.circle.fill",            color: .red),
+        SupportedExchange(id: "mexc",       displayName: "MEXC",         icon: "m.circle.fill",            color: Color(red: 0.05, green: 0.55, blue: 0.95)),
+        SupportedExchange(id: "cryptocom",  displayName: "Crypto.com",   icon: "creditcard.and.123",       color: .indigo),
+        SupportedExchange(id: "bitstamp",   displayName: "Bitstamp",     icon: "s.circle.fill",            color: Color(red: 0.0, green: 0.49, blue: 0.96)),
+        SupportedExchange(id: "bitmart",    displayName: "BitMart",      icon: "chart.bar.fill",           color: Color(red: 0.18, green: 0.82, blue: 0.50)),
+        SupportedExchange(id: "phemex",     displayName: "Phemex",       icon: "p.circle.fill",            color: Color(red: 0.06, green: 0.60, blue: 0.92)),
+        SupportedExchange(id: "coinex",     displayName: "CoinEx",       icon: "e.circle.fill",            color: Color(red: 0.07, green: 0.72, blue: 0.65)),
+        SupportedExchange(id: "lbank",      displayName: "LBank",        icon: "l.circle.fill",            color: Color(red: 0.78, green: 0.20, blue: 0.95)),
+        // ── Broker ──
+        SupportedExchange(id: "alpaca",     displayName: "Alpaca",       icon: "chart.line.uptrend.xyaxis.circle.fill", color: Color(red: 0.93, green: 0.26, blue: 0.21)),
+    ]
+
     // MARK: - Helpers
 
     private func exchangeIcon(_ exchange: String) -> String {
-        switch exchange {
-        case "binance":  return "bitcoinsign.circle.fill"
-        case "kraken":   return "k.circle.fill"
-        case "coinbase": return "c.circle.fill"
-        case "bybit":    return "triangle.circle.fill"
-        case "kucoin":   return "square.circle.fill"
-        case "okx":      return "o.circle.fill"
-        default:         return "link.circle.fill"
-        }
+        Self.supportedExchanges.first { $0.id == exchange }?.icon ?? "link.circle.fill"
     }
 
     private func exchangeColor(_ exchange: String) -> Color {
-        switch exchange {
-        case "binance":  return .yellow
-        case "kraken":   return .indigo
-        case "coinbase": return .blue
-        case "bybit":    return .orange
-        case "kucoin":   return .green
-        case "okx":      return .teal
-        default:         return .gray
-        }
+        Self.supportedExchanges.first { $0.id == exchange }?.color ?? .gray
     }
 
     private func formatSyncDate(_ iso: String) -> String {
@@ -242,8 +324,9 @@ struct AddExchangeConnectionView: View {
     let accounts: [APIService.Account]
     let onSaved:  () -> Void
 
-    let exchanges       = ["binance", "kraken", "coinbase", "bybit", "kucoin", "okx"]
-    let needsPassphrase = Set(["kucoin", "okx"])
+    let exchanges       = ExchangeConnectionsView.supportedExchanges.map { $0.id }
+    let exchangeNames   = Dictionary(uniqueKeysWithValues: ExchangeConnectionsView.supportedExchanges.map { ($0.id, $0.displayName) })
+    let needsPassphrase = Set(["kucoin", "okx", "gate", "cryptocom", "bitmart"])
 
     @State private var selectedExchange  = "binance"
     @State private var connectionName    = "Binance"
@@ -259,10 +342,14 @@ struct AddExchangeConnectionView: View {
             Form {
                 Section("Exchange") {
                     Picker("Exchange", selection: $selectedExchange) {
-                        ForEach(exchanges, id: \.self) { Text($0.capitalized).tag($0) }
+                        ForEach(exchanges, id: \.self) { id in
+                            Text(exchangeNames[id] ?? id.capitalized).tag(id)
+                        }
                     }
                     .pickerStyle(.menu)
-                    .onChange(of: selectedExchange) { e in connectionName = e.capitalized }
+                    .onChange(of: selectedExchange) { _, e in
+                        connectionName = exchangeNames[e] ?? e.capitalized
+                    }
                 }
 
                 Section("Credentials") {
@@ -274,8 +361,16 @@ struct AddExchangeConnectionView: View {
                         .textInputAutocapitalization(.never)
                         .disableAutocorrection(true)
                     if needsPassphrase.contains(selectedExchange) {
-                        SecureField("Passphrase", text: $passphrase)
+                        let label = selectedExchange == "bitmart" ? "Memo" : "Passphrase"
+                        SecureField(label, text: $passphrase)
                             .textInputAutocapitalization(.never)
+                    }
+                    if selectedExchange == "alpaca" {
+                        Picker("Environment", selection: $passphrase) {
+                            Text("Live Trading").tag("live")
+                            Text("Paper Trading").tag("paper")
+                        }
+                        .onAppear { if passphrase.isEmpty { passphrase = "live" } }
                     }
                 }
 
@@ -306,7 +401,7 @@ struct AddExchangeConnectionView: View {
                             if isSaving {
                                 ProgressView()
                             } else {
-                                Text("Connect \(selectedExchange.capitalized)")
+                                Text("Connect \(exchangeNames[selectedExchange] ?? selectedExchange.capitalized)")
                                     .fontWeight(.semibold)
                                     .foregroundColor(isValid ? .white : .secondary)
                             }

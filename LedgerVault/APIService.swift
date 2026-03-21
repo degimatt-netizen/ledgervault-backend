@@ -6,6 +6,163 @@ final class APIService {
 
     private let baseURL = URL(string: "https://ledgervault-backend-production.up.railway.app")!
 
+    static var authToken: String? { KeychainHelper.read(account: "auth_token") }
+
+    private func makeRequest(url: URL, method: String = "GET", body: Data? = nil) -> URLRequest {
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        if let token = Self.authToken {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        return req
+    }
+
+    // MARK: - Auth Models
+
+    struct AuthResponse: Codable {
+        let status: String
+        let access_token: String?
+        let user_id: String?
+        let email: String?
+        let name: String?
+        let message: String?
+        let is_new_user: Bool?
+        let totp_required: Bool?
+    }
+
+    struct TotpSetupResponse: Codable { let secret: String; let uri: String }
+    struct TotpStatusResponse: Codable { let enabled: Bool }
+
+    struct RegisterRequest: Codable   { let name: String; let email: String; let password: String }
+    struct LoginRequest: Codable      { let email: String; let password: String; let totp_code: String? }
+    struct VerifyEmailRequest: Codable { let email: String; let code: String }
+    struct ResendCodeRequest: Codable  { let email: String }
+    struct ForgotPasswordRequest: Codable { let email: String }
+    struct ResetPasswordRequest: Codable  { let email: String; let code: String; let new_password: String }
+    struct SocialAuthRequest: Codable {
+        let provider: String; let email: String; let name: String
+        let apple_user_id: String; let google_sub: String
+    }
+
+    // MARK: - Auth API
+
+    func register(name: String, email: String, password: String) async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(RegisterRequest(name: name, email: email, password: password))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/register"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func verifyEmail(email: String, code: String) async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(VerifyEmailRequest(email: email, code: code))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/verify-email"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func resendCode(email: String) async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(ResendCodeRequest(email: email))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/resend-code"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func login(email: String, password: String, totpCode: String? = nil) async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(LoginRequest(email: email, password: password, totp_code: totpCode))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/login"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func forgotPassword(email: String) async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(ForgotPasswordRequest(email: email))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/forgot-password"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func resetPassword(email: String, code: String, newPassword: String) async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(ResetPasswordRequest(email: email, code: code, new_password: newPassword))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/reset-password"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func socialAuth(provider: String, email: String, name: String,
+                    appleUserID: String = "", googleSub: String = "") async throws -> AuthResponse {
+        let body = try JSONEncoder().encode(SocialAuthRequest(
+            provider: provider, email: email, name: name,
+            apple_user_id: appleUserID, google_sub: googleSub))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/social"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AuthResponse.self, from: data)
+    }
+
+    func logout() async throws {
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/logout"), method: "POST")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    func deleteAccount() async throws {
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/account"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    // MARK: - TOTP / Two-Factor Auth
+
+    func totpStatus() async throws -> TotpStatusResponse {
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/totp/status"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(TotpStatusResponse.self, from: data)
+    }
+
+    func totpSetup() async throws -> TotpSetupResponse {
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/totp/setup"), method: "POST")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(TotpSetupResponse.self, from: data)
+    }
+
+    func totpEnable(code: String) async throws {
+        struct Req: Encodable { let code: String }
+        let body = try JSONEncoder().encode(Req(code: code))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/totp/enable"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    func totpDisable(code: String) async throws {
+        struct Req: Encodable { let code: String }
+        let body = try JSONEncoder().encode(Req(code: code))
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/totp/disable"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    func updateProfile(phone: String? = nil, name: String? = nil) async throws {
+        var body: [String: String] = [:]
+        if let phone { body["phone"] = phone }
+        if let name  { body["name"]  = name  }
+        let bodyData = try JSONEncoder().encode(body)
+        let req = makeRequest(url: baseURL.appendingPathComponent("auth/profile"), method: "PATCH", body: bodyData)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
     // MARK: - Accounts
 
     struct Account: Codable, Identifiable {
@@ -275,35 +432,31 @@ final class APIService {
     // MARK: - Accounts API
 
     func fetchAccounts() async throws -> [Account] {
-        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("accounts"))
+        let req = makeRequest(url: baseURL.appendingPathComponent("accounts"))
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(AccountList.self, from: data).items
     }
 
     func createAccount(name: String, accountType: String, baseCurrency: String) async throws -> Account {
-        var request = URLRequest(url: baseURL.appendingPathComponent("accounts"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(CreateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency))
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let body = try JSONEncoder().encode(CreateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency))
+        let req = makeRequest(url: baseURL.appendingPathComponent("accounts"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Account.self, from: data)
     }
 
     func updateAccount(id: String, name: String, accountType: String, baseCurrency: String) async throws -> Account {
-        var request = URLRequest(url: baseURL.appendingPathComponent("accounts/\(id)"))
-        request.httpMethod = "PUT"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(UpdateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency))
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let body = try JSONEncoder().encode(UpdateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency))
+        let req = makeRequest(url: baseURL.appendingPathComponent("accounts/\(id)"), method: "PUT", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Account.self, from: data)
     }
 
     func deleteAccount(id: String) async throws {
-        var request = URLRequest(url: baseURL.appendingPathComponent("accounts/\(id)"))
-        request.httpMethod = "DELETE"
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let req = makeRequest(url: baseURL.appendingPathComponent("accounts/\(id)"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
     }
 
@@ -354,7 +507,8 @@ final class APIService {
     // MARK: - Holdings API
 
     func fetchHoldings() async throws -> [Holding] {
-        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("holdings"))
+        let req = makeRequest(url: baseURL.appendingPathComponent("holdings"))
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(HoldingList.self, from: data).items
     }
@@ -362,13 +516,15 @@ final class APIService {
     // MARK: - Transactions API
 
     func fetchTransactionLegs() async throws -> [TransactionLeg] {
-        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("transaction-legs"))
+        let req = makeRequest(url: baseURL.appendingPathComponent("transaction-legs"))
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(TransactionLegList.self, from: data).items
     }
 
     func fetchTransactionEvents() async throws -> [TransactionEvent] {
-        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent("transaction-events"))
+        let req = makeRequest(url: baseURL.appendingPathComponent("transaction-events"))
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(TransactionEventList.self, from: data).items
     }
@@ -376,21 +532,18 @@ final class APIService {
     func createTransactionEvent(eventType: String, category: String?, description: String?,
                                 date: String, note: String?,
                                 legs: [TransactionLegCreate]) async throws -> TransactionEvent {
-        var request = URLRequest(url: baseURL.appendingPathComponent("transaction-events"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(TransactionEventCreateRequest(
+        let body = try JSONEncoder().encode(TransactionEventCreateRequest(
             event_type: eventType, category: category, description: description,
             date: date, note: note, source: "manual", external_id: nil, legs: legs))
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let req = makeRequest(url: baseURL.appendingPathComponent("transaction-events"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(TransactionEvent.self, from: data)
     }
 
     func deleteTransactionEvent(id: String) async throws {
-        var request = URLRequest(url: baseURL.appendingPathComponent("transaction-events/\(id)"))
-        request.httpMethod = "DELETE"
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let req = makeRequest(url: baseURL.appendingPathComponent("transaction-events/\(id)"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
     }
 
@@ -399,7 +552,8 @@ final class APIService {
     func fetchValuation(baseCurrency: String) async throws -> ValuationResponse {
         var components = URLComponents(url: baseURL.appendingPathComponent("valuation"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "base_currency", value: baseCurrency)]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(ValuationResponse.self, from: data)
     }
@@ -410,7 +564,8 @@ final class APIService {
             URLQueryItem(name: "days", value: "\(days)"),
             URLQueryItem(name: "base_currency", value: baseCurrency)
         ]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(PortfolioHistoryResponse.self, from: data)
     }
@@ -424,16 +579,14 @@ final class APIService {
     // MARK: - Reset API
 
     func clearTransactions() async throws {
-        var request = URLRequest(url: baseURL.appendingPathComponent("reset/transactions"))
-        request.httpMethod = "POST"
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let req = makeRequest(url: baseURL.appendingPathComponent("user/transactions"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
     }
 
     func fullReset() async throws {
-        var request = URLRequest(url: baseURL.appendingPathComponent("reset"))
-        request.httpMethod = "POST"
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let req = makeRequest(url: baseURL.appendingPathComponent("user/data"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
     }
 
@@ -472,6 +625,144 @@ final class APIService {
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    // MARK: - SnapTrade API
+
+    struct SnaptradeConnectionResponse: Codable, Identifiable {
+        let id: String
+        let brokerage_name: String?
+        let status: String
+        let status_message: String?
+        let last_synced: String?
+        let account_id: String?
+    }
+    struct SnaptradeConnectionListResponse: Codable { let items: [SnaptradeConnectionResponse] }
+    struct SnaptradeAuthURLResponse: Codable { let auth_url: String; let registered: Bool }
+
+    func snaptradeRegisterAndAuthURL(userID: String) async throws -> SnaptradeAuthURLResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("snaptrade/auth-url"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SnaptradeAuthURLResponse.self, from: data)
+    }
+
+    func fetchSnaptradeConnections(userID: String) async throws -> [SnaptradeConnectionResponse] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("snaptrade/connections"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SnaptradeConnectionListResponse.self, from: data).items
+    }
+
+    func syncSnaptradeConnection(id: String) async throws -> SyncResultResponse {
+        var req = URLRequest(url: baseURL.appendingPathComponent("snaptrade/\(id)/sync"))
+        req.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    func deleteSnaptradeConnection(id: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("snaptrade/\(id)"))
+        req.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    // MARK: - Vezgo API
+
+    struct VezgoConnectionResponse: Codable, Identifiable {
+        let id: String
+        let account_name: String?
+        let status: String
+        let status_message: String?
+        let last_synced: String?
+        let account_id: String?
+    }
+    struct VezgoConnectionListResponse: Codable { let items: [VezgoConnectionResponse] }
+    struct VezgoAuthURLResponse: Codable { let auth_url: String }
+
+    func vezgoAuthURL(userID: String) async throws -> VezgoAuthURLResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("vezgo/auth-url"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(VezgoAuthURLResponse.self, from: data)
+    }
+
+    func fetchVezgoConnections(userID: String) async throws -> [VezgoConnectionResponse] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("vezgo/connections"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(VezgoConnectionListResponse.self, from: data).items
+    }
+
+    func syncVezgoConnection(id: String) async throws -> SyncResultResponse {
+        var req = URLRequest(url: baseURL.appendingPathComponent("vezgo/\(id)/sync"))
+        req.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    func deleteVezgoConnection(id: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("vezgo/\(id)"))
+        req.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
+    // MARK: - Flanks API
+
+    struct FlanksConnectionResponse: Codable, Identifiable {
+        let id: String
+        let broker_name: String?
+        let broker_id: String
+        let status: String
+        let status_message: String?
+        let last_synced: String?
+        let account_id: String?
+    }
+    struct FlanksConnectionListResponse: Codable { let items: [FlanksConnectionResponse] }
+    struct FlanksBrokerResponse: Codable, Identifiable { let id: String; let name: String; let country: String? }
+    struct FlanksBrokerListResponse: Codable { let brokers: [FlanksBrokerResponse] }
+
+    func fetchFlanksBrokers() async throws -> [FlanksBrokerResponse] {
+        let req = makeRequest(url: baseURL.appendingPathComponent("flanks/brokers"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FlanksBrokerListResponse.self, from: data).brokers
+    }
+
+    func fetchFlanksConnections(userID: String) async throws -> [FlanksConnectionResponse] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("flanks/connections"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(FlanksConnectionListResponse.self, from: data).items
+    }
+
+    func syncFlanksConnection(id: String) async throws -> SyncResultResponse {
+        var req = URLRequest(url: baseURL.appendingPathComponent("flanks/\(id)/sync"))
+        req.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    func deleteFlanksConnection(id: String) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("flanks/\(id)"))
+        req.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
     }
 
     // MARK: - Recurring Transactions API
@@ -523,42 +814,74 @@ final class APIService {
     // MARK: - Bank Connections (TrueLayer Open Banking)
 
     struct BankConnectionResponse: Codable, Identifiable {
-        let id:                   String
-        let provider_id:          String
-        let provider_name:        String
-        let account_display_name: String
-        let account_type:         String?
-        let currency:             String?
-        let truelayer_account_id: String
-        let ledger_account_id:    String?
-        let last_synced:          String?
-        let status:               String
-        let status_message:       String?
+        let id:                      String
+        let provider:                String?   // "truelayer" | "saltedge"
+        let provider_id:             String
+        let provider_name:           String
+        let account_display_name:    String
+        let account_type:            String?
+        let currency:                String?
+        let truelayer_account_id:    String?
+        let saltedge_connection_id:  String?
+        let ledger_account_id:       String?
+        let last_synced:             String?
+        let status:                  String
+        let status_message:          String?
     }
 
     struct BankConnectionListResponse: Codable { let items: [BankConnectionResponse] }
+    struct BankConnectionList: Codable { let data: [BankConnectionResponse] }
 
     struct BankAuthUrlResponse: Codable { let auth_url: String; let state: String }
 
     struct BankCallbackResponse: Codable { let items: [BankConnectionResponse] }
 
-    func getBankAuthURL() async throws -> String {
-        let (data, response) = try await URLSession.shared.data(
-            from: baseURL.appendingPathComponent("bank-connections/auth-url"))
+    func getBankAuthURL(sandbox: Bool = false) async throws -> String {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("bank-connections/auth-url"),
+            resolvingAgainstBaseURL: false)!
+        if sandbox { components.queryItems = [URLQueryItem(name: "sandbox", value: "true")] }
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(BankAuthUrlResponse.self, from: data).auth_url
     }
 
-    func completeBankAuth(code: String) async throws -> [BankConnectionResponse] {
+    func completeBankAuth(code: String, sandbox: Bool = false) async throws -> [BankConnectionResponse] {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("bank-connections/callback"),
             resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "code", value: code)]
+        var items = [URLQueryItem(name: "code", value: code)]
+        if sandbox { items.append(URLQueryItem(name: "sandbox", value: "true")) }
+        components.queryItems = items
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(BankCallbackResponse.self, from: data).items
+    }
+
+    // MARK: - Salt Edge
+
+    func getSaltEdgeAuthURL() async throws -> String {
+        let url = baseURL.appendingPathComponent("bank-connections-saltedge/auth-url")
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(BankAuthUrlResponse.self, from: data).auth_url
+    }
+
+    func fetchSaltEdgeConnections() async throws -> [BankConnectionResponse] {
+        let url = baseURL.appendingPathComponent("bank-connections-saltedge")
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(BankConnectionListResponse.self, from: data).items
+    }
+
+    func syncSaltEdgeConnection(id: String) async throws -> SyncResultResponse {
+        var request = URLRequest(url: baseURL.appendingPathComponent("bank-connections-saltedge/\(id)/sync"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
     }
 
     func fetchBankConnections() async throws -> [BankConnectionResponse] {
@@ -593,6 +916,81 @@ final class APIService {
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    // MARK: - Plaid
+
+    struct PlaidAuthURLResponse: Codable {
+        let auth_url:   String
+        let link_token: String
+    }
+
+    struct PlaidExchangeResponse: Codable {
+        let status:      String
+        let connected:   Int
+        let institution: String
+    }
+
+    func plaidAuthURL(userID: String = "default_user") async throws -> PlaidAuthURLResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("bank-connections-plaid/auth-url"),
+                                       resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(PlaidAuthURLResponse.self, from: data)
+    }
+
+    func plaidExchangeToken(publicToken: String, userID: String = "default_user") async throws -> PlaidExchangeResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("bank-connections-plaid/exchange"),
+                                       resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "public_token", value: publicToken),
+            URLQueryItem(name: "user_id",      value: userID),
+        ]
+        let req = makeRequest(url: components.url!, method: "POST")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(PlaidExchangeResponse.self, from: data)
+    }
+
+    func fetchPlaidConnections() async throws -> [BankConnectionResponse] {
+        let req = makeRequest(url: baseURL.appendingPathComponent("bank-connections-plaid"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        let wrapper = try JSONDecoder().decode(BankConnectionList.self, from: data)
+        return wrapper.data
+    }
+
+    func syncPlaidConnection(id: String) async throws -> SyncResultResponse {
+        var req = URLRequest(url: baseURL.appendingPathComponent("bank-connections-plaid/\(id)/sync"))
+        req.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SyncResultResponse.self, from: data)
+    }
+
+    // MARK: - Wallet Scan
+
+    struct WalletScanResult: Codable, Identifiable {
+        var id: String { "\(chain):\(address)" }
+        let address:   String
+        let chain:     String
+        let balance:   Double
+        let symbol:    String
+        let usd_value: Double?
+    }
+
+    func scanWalletAddress(address: String, chain: String) async throws -> WalletScanResult {
+        var components = URLComponents(url: baseURL.appendingPathComponent("wallet-scan"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "address", value: address),
+            URLQueryItem(name: "chain",   value: chain),
+        ]
+        let req = makeRequest(url: components.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(WalletScanResult.self, from: data)
     }
 
     // MARK: - Error Handling
