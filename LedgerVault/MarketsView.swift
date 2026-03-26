@@ -527,32 +527,41 @@ struct MarketsView: View {
                                 Section {
                                     ForEach(held) { q in
                                         MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 3)
                                             .listRowBackground(Color.clear)
                                             .listRowSeparator(.hidden)
-                                            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
+                                            .listRowInsets(EdgeInsets())
                                     }
                                 } header: {
                                     MarketSectionHeader(title: "My Holdings", count: held.count)
+                                        .padding(.horizontal, 16)
                                         .listRowInsets(EdgeInsets())
+                                        .listRowBackground(Color.clear)
                                 }
                             }
                             if !watchOnly.isEmpty {
                                 Section {
                                     ForEach(watchOnly) { q in
                                         MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 3)
                                             .listRowBackground(Color.clear)
                                             .listRowSeparator(.hidden)
-                                            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
+                                            .listRowInsets(EdgeInsets())
                                     }
                                 } header: {
                                     MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
+                                        .padding(.horizontal, 16)
                                         .listRowInsets(EdgeInsets())
+                                        .listRowBackground(Color.clear)
                                 }
                             }
                             if sorted.isEmpty {
                                 emptyState
                                     .listRowBackground(Color.clear)
                                     .listRowSeparator(.hidden)
+                                    .listRowInsets(EdgeInsets())
                             }
                         }
                         .listStyle(.plain)
