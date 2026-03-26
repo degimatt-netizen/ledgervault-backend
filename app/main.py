@@ -94,6 +94,14 @@ for _stmt in [
         last_synced VARCHAR
     )""",
     "CREATE INDEX IF NOT EXISTS ix_flanks_connections_user_id ON flanks_connections (user_id)",
+    """CREATE TABLE IF NOT EXISTS watchlist (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        symbol VARCHAR NOT NULL,
+        added_at VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_watchlist_user_id ON watchlist (user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_watchlist_user_symbol ON watchlist (user_id, symbol)",
 ]:
     try:
         with engine.connect() as _conn:
@@ -4313,3 +4321,201 @@ def flanks_delete(conn_id: str, user_id: str = Depends(require_user_id), db: Ses
     if not conn: raise HTTPException(404, "Not found")
     db.delete(conn); db.commit()
     return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MARKETS  —  live quotes, sparklines, watchlist
+# ─────────────────────────────────────────────────────────────────────────────
+
+_QUOTE_CACHE: dict[str, dict] = {}   # symbol → {quote dict, ts}
+_QUOTE_CACHE_TTL = 60  # seconds
+
+
+def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
+    """Batch-fetch quotes from Yahoo Finance v7 API. Returns symbol→quote dict."""
+    if not symbols:
+        return {}
+    joined = ",".join(s.upper() for s in symbols)
+    url = (
+        f"https://query1.finance.yahoo.com/v7/finance/quote"
+        f"?symbols={joined}&fields=regularMarketPrice,regularMarketChange,"
+        f"regularMarketChangePercent,regularMarketVolume,bid,ask,shortName,"
+        f"longName,regularMarketPreviousClose,currency,marketState,exchange"
+    )
+    try:
+        with httpx.Client(timeout=10.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+            results = r.json().get("quoteResponse", {}).get("result", [])
+    except Exception as e:
+        logger.warning(f"Yahoo batch quote failed: {e}")
+        return {}
+    out = {}
+    for q in results:
+        sym = q.get("symbol", "").upper()
+        price = float(q.get("regularMarketPrice", 0))
+        prev  = float(q.get("regularMarketPreviousClose", price) or price)
+        change = float(q.get("regularMarketChange", price - prev))
+        chg_pct = float(q.get("regularMarketChangePercent", 0))
+        out[sym] = {
+            "symbol":      sym,
+            "name":        q.get("shortName") or q.get("longName") or sym,
+            "last":        price,
+            "bid":         float(q.get("bid", 0)) or None,
+            "ask":         float(q.get("ask", 0)) or None,
+            "change":      round(change, 4),
+            "change_pct":  round(chg_pct, 2),
+            "volume":      q.get("regularMarketVolume"),
+            "currency":    q.get("currency", "USD"),
+            "market_state": q.get("marketState", "CLOSED"),
+            "exchange":    q.get("exchange", ""),
+        }
+    return out
+
+
+def _fetch_sparkline(symbol: str) -> list[float]:
+    """Fetch ~30 intraday data points for sparkline (1-day, 5-min interval)."""
+    sym = symbol.upper()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=5m&range=1d"
+    try:
+        with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+            data = r.json()
+        closes = data["chart"]["result"][0]["indicators"]["quote"][0].get("close", [])
+        # filter None values, keep up to 30 points, evenly sampled
+        closes = [float(p) for p in closes if p is not None]
+        if len(closes) > 30:
+            step = len(closes) // 30
+            closes = closes[::step][:30]
+        return closes
+    except Exception:
+        return []
+
+
+@app.post("/market/quotes")
+def market_quotes(
+    payload: dict,
+    user_id: str = Depends(require_user_id),
+):
+    """Batch-fetch live quotes for a list of symbols."""
+    symbols = [s.upper() for s in payload.get("symbols", []) if s][:50]
+    if not symbols:
+        return {"quotes": []}
+    now = time.time()
+    # check cache
+    fresh = {s: _QUOTE_CACHE[s] for s in symbols if s in _QUOTE_CACHE and now - _QUOTE_CACHE[s]["_ts"] < _QUOTE_CACHE_TTL}
+    stale = [s for s in symbols if s not in fresh]
+    if stale:
+        fetched = _fetch_yahoo_quotes(stale)
+        for sym, q in fetched.items():
+            q["_ts"] = now
+            _QUOTE_CACHE[sym] = q
+            fresh[sym] = q
+    return {"quotes": [v for k, v in fresh.items() if not k.startswith("_")]}
+
+
+@app.get("/market/sparkline/{symbol}")
+def market_sparkline(symbol: str, user_id: str = Depends(require_user_id)):
+    """Return intraday sparkline data points for a symbol."""
+    return {"symbol": symbol.upper(), "prices": _fetch_sparkline(symbol)}
+
+
+@app.get("/market/data")
+def market_data(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """
+    Returns live quotes for all user's held symbols + watchlist,
+    merged with their position quantity and avg cost.
+    """
+    # 1. Holdings
+    accounts = db.query(models.Account).filter_by(user_id=user_id).all()
+    account_ids = [a.id for a in accounts]
+    holdings = (
+        db.query(models.Holding, models.Asset)
+        .join(models.Asset, models.Holding.asset_id == models.Asset.id)
+        .filter(models.Holding.account_id.in_(account_ids))
+        .all()
+    )
+    # map symbol → {qty, avg_cost}
+    position_map: dict[str, dict] = {}
+    for h, asset in holdings:
+        sym = asset.symbol.upper()
+        if h.quantity and abs(h.quantity) > 1e-8:
+            if sym in position_map:
+                position_map[sym]["quantity"] += h.quantity
+            else:
+                position_map[sym] = {"quantity": h.quantity, "avg_cost": h.avg_cost or 0.0}
+
+    # 2. Watchlist
+    wl_items = db.query(models.WatchlistItem).filter_by(user_id=user_id).all()
+    watchlist_syms = [w.symbol.upper() for w in wl_items]
+
+    # 3. Union
+    all_symbols = list({*position_map.keys(), *watchlist_syms})
+    # exclude pure fiat (3-letter ISO that are likely currency codes, not tickers)
+    fiat_like = {"USD", "EUR", "GBP", "CHF", "JPY", "AUD", "CAD", "SGD", "HKD", "NZD",
+                 "NOK", "SEK", "DKK", "CZK", "PLN", "HUF", "RON", "BGN", "HRK", "TRY",
+                 "ZAR", "BRL", "MXN", "INR", "CNY", "KRW", "AED", "SAR", "QAR", "KWD"}
+    all_symbols = [s for s in all_symbols if s not in fiat_like]
+
+    if not all_symbols:
+        return {"quotes": [], "watchlist": watchlist_syms}
+
+    # 4. Fetch quotes
+    now = time.time()
+    fresh = {s: _QUOTE_CACHE[s] for s in all_symbols if s in _QUOTE_CACHE and now - _QUOTE_CACHE[s]["_ts"] < _QUOTE_CACHE_TTL}
+    stale = [s for s in all_symbols if s not in fresh]
+    if stale:
+        fetched = _fetch_yahoo_quotes(stale)
+        for sym, q in fetched.items():
+            q["_ts"] = now
+            _QUOTE_CACHE[sym] = q
+            fresh[sym] = q
+
+    # 5. Merge positions
+    quotes = []
+    for sym in all_symbols:
+        q = fresh.get(sym)
+        if not q:
+            continue
+        out = {k: v for k, v in q.items() if not k.startswith("_")}
+        if sym in position_map:
+            out["position"]  = position_map[sym]["quantity"]
+            out["avg_price"] = position_map[sym]["avg_cost"]
+        else:
+            out["position"]  = None
+            out["avg_price"] = None
+        out["in_watchlist"] = sym in watchlist_syms
+        quotes.append(out)
+
+    quotes.sort(key=lambda q: q["symbol"])
+    return {"quotes": quotes, "watchlist": watchlist_syms}
+
+
+@app.get("/market/watchlist")
+def get_watchlist(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    items = db.query(models.WatchlistItem).filter_by(user_id=user_id).order_by(models.WatchlistItem.added_at).all()
+    return {"symbols": [i.symbol for i in items]}
+
+
+@app.post("/market/watchlist")
+def add_watchlist(payload: dict, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    symbol = payload.get("symbol", "").upper().strip()
+    if not symbol:
+        raise HTTPException(400, "symbol required")
+    existing = db.query(models.WatchlistItem).filter_by(user_id=user_id, symbol=symbol).first()
+    if existing:
+        return {"status": "exists", "symbol": symbol}
+    item = models.WatchlistItem(
+        id=str(uuid4()), user_id=user_id, symbol=symbol,
+        added_at=datetime.now(timezone.utc).isoformat()
+    )
+    db.add(item); db.commit()
+    return {"status": "added", "symbol": symbol}
+
+
+@app.delete("/market/watchlist/{symbol}")
+def remove_watchlist(symbol: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    item = db.query(models.WatchlistItem).filter_by(user_id=user_id, symbol=symbol.upper()).first()
+    if not item:
+        raise HTTPException(404, "Not in watchlist")
+    db.delete(item); db.commit()
+    return {"status": "removed", "symbol": symbol.upper()}

@@ -188,3 +188,12 @@ class RecurringTransaction(Base):
     next_run_date = Column(String, nullable=False)
 
     enabled = Column(Boolean, nullable=False, default=True)
+
+
+class WatchlistItem(Base):
+    __tablename__ = "watchlist"
+
+    id        = Column(String, primary_key=True, index=True)
+    user_id   = Column(String, nullable=False, index=True)
+    symbol    = Column(String, nullable=False)
+    added_at  = Column(String, nullable=True)
