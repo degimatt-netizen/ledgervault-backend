@@ -154,19 +154,37 @@ struct MarketRowView: View {
     let quote: APIService.MarketQuote
     let onRemove: () -> Void
 
-    private var up: Bool      { quote.change_pct >= 0 }
+    private var up: Bool           { quote.change_pct >= 0 }
     private var changeColor: Color { up ? Color(red: 0.2, green: 0.85, blue: 0.4) : Color(red: 1, green: 0.3, blue: 0.3) }
-    private var excInfo: (flag: String, name: String) { exchangeInfo(quote.exchange) }
-    private var mktBadge: (label: String, color: Color) { marketStateBadge(quote.market_state) }
+    private var excInfo:           (flag: String, name: String) { exchangeInfo(quote.exchange) }
+    private var mktBadge:          (label: String, color: Color) { marketStateBadge(quote.market_state) }
+    private var isHeld: Bool       { (quote.position ?? 0) != 0 }
+
+    // Unrealised P&L
+    private var unrealisedPnL: Double? {
+        guard let pos = quote.position, let avg = quote.avg_price, abs(pos) > 1e-8, avg > 0
+        else { return nil }
+        return (quote.last - avg) * pos
+    }
+    private var unrealisedPct: Double? {
+        guard let pnl = unrealisedPnL, let avg = quote.avg_price, avg > 0,
+              let pos = quote.position, abs(pos) > 1e-8
+        else { return nil }
+        return pnl / (avg * abs(pos)) * 100
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+
+            // ── Main row ──────────────────────────────────────────────────
+            HStack(alignment: .top, spacing: 12) {
+
                 // Logo
                 SymbolLogo(symbol: quote.symbol)
 
-                // Left: symbol + company + badges
+                // Left info
                 VStack(alignment: .leading, spacing: 4) {
+                    // Symbol + market state
                     HStack(spacing: 6) {
                         Text(quote.symbol)
                             .font(.system(size: 15, weight: .bold, design: .monospaced))
@@ -175,89 +193,130 @@ struct MarketRowView: View {
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(mktBadge.color)
                     }
+                    // Company name
                     Text(quote.name)
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.4))
                         .lineLimit(1)
+                    // Exchange + country
                     HStack(spacing: 4) {
                         if !excInfo.flag.isEmpty {
-                            Text(excInfo.flag)
-                                .font(.system(size: 11))
+                            Text(excInfo.flag).font(.system(size: 11))
                             Text(excInfo.name)
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.white.opacity(0.35))
                         }
-                        if let pos = quote.position, abs(pos) > 1e-8 {
-                            Text("HELD")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 5).padding(.vertical, 2)
-                                .background(Color.orange.opacity(0.15))
-                                .cornerRadius(4)
-                        }
                     }
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 4)
 
                 // Sparkline
                 SparklineView(symbol: quote.symbol)
+                    .padding(.top, 4)
 
                 // Right: price + change
                 VStack(alignment: .trailing, spacing: 5) {
-                    Text(formatPrice(quote.last, currency: quote.currency))
+                    // Last price
+                    Text(fmtPrice(quote.last, ccy: quote.currency))
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.white)
 
-                    HStack(spacing: 3) {
-                        Image(systemName: up ? "arrow.up.right" : "arrow.down.right")
-                            .font(.system(size: 8, weight: .bold))
-                        Text(formatPct(quote.change_pct))
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    // Change $ + Change %
+                    VStack(alignment: .trailing, spacing: 2) {
+                        let sign = quote.change >= 0 ? "+" : ""
+                        Text("\(sign)\(fmtPrice(quote.change, ccy: quote.currency))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(changeColor)
+                        HStack(spacing: 3) {
+                            Image(systemName: up ? "arrow.up.right" : "arrow.down.right")
+                                .font(.system(size: 8, weight: .bold))
+                            Text(fmtPct(quote.change_pct))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundStyle(changeColor)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(changeColor.opacity(0.12))
+                        .cornerRadius(6)
                     }
-                    .foregroundStyle(changeColor)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(changeColor.opacity(0.12))
-                    .cornerRadius(7)
                 }
-                .frame(width: 86, alignment: .trailing)
+                .frame(width: 88, alignment: .trailing)
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
 
-            // Secondary row: Bid / Ask / Change / Position
-            HStack(spacing: 0) {
-                Spacer().frame(width: 52)  // align under symbol text
-                if let bid = quote.bid, let ask = quote.ask, bid > 0, ask > 0 {
-                    Text("B \(formatPrice(bid, currency: quote.currency))")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text("  ·  ").foregroundStyle(.white.opacity(0.15)).font(.system(size: 10))
-                    Text("A \(formatPrice(ask, currency: quote.currency))")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text("  ·  ").foregroundStyle(.white.opacity(0.15)).font(.system(size: 10))
+            // ── Bid / Ask row ─────────────────────────────────────────────
+            if let bid = quote.bid, let ask = quote.ask, bid > 0, ask > 0 {
+                HStack(spacing: 0) {
+                    Spacer().frame(width: 52)
+                    dataChip(label: "BID", value: fmtPrice(bid, ccy: quote.currency))
+                    Text("  ·  ").foregroundStyle(.white.opacity(0.12)).font(.caption2)
+                    dataChip(label: "ASK", value: fmtPrice(ask, ccy: quote.currency))
+                    Spacer()
                 }
-                let chgSign = quote.change >= 0 ? "+" : ""
-                Text("\(chgSign)\(formatPrice(abs(quote.change), currency: nil))")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(changeColor.opacity(0.8))
-                if let pos = quote.position, abs(pos) > 1e-8 {
-                    Text("  ·  ").foregroundStyle(.white.opacity(0.15)).font(.system(size: 10))
-                    Text("\(formatQty(pos)) @ \(quote.avg_price.map { formatPrice($0, currency: quote.currency) } ?? "—")")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.orange.opacity(0.8))
-                }
-                Spacer()
+                .padding(.horizontal, 14).padding(.top, 6)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 10)
-            .padding(.top, 3)
+
+            // ── Position row (only for held stocks) ───────────────────────
+            if isHeld {
+                Divider()
+                    .background(Color.white.opacity(0.06))
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+
+                HStack(spacing: 12) {
+                    // Position
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("POSITION")
+                            .font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.35)).tracking(0.5)
+                        Text(fmtQty(quote.position ?? 0))
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Avg Price
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AVG PRICE")
+                            .font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.35)).tracking(0.5)
+                        Text(quote.avg_price.map { fmtPrice($0, ccy: quote.currency) } ?? "—")
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Unrealised P&L
+                    if let pnl = unrealisedPnL, let pct = unrealisedPct {
+                        let pnlColor: Color = pnl >= 0 ? Color(red: 0.2, green: 0.85, blue: 0.4) : Color(red: 1, green: 0.3, blue: 0.3)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("UNREALISED")
+                                .font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.35)).tracking(0.5)
+                            Text("\(pnl >= 0 ? "+" : "")\(fmtPrice(pnl, ccy: quote.currency))")
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(pnlColor)
+                            Text("\(pct >= 0 ? "+" : "")\(String(format: "%.2f", pct))%")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(pnlColor.opacity(0.8))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.orange.opacity(0.04))
+            } else {
+                Spacer().frame(height: 10)
+            }
         }
-        .background(Color.white.opacity(0.04))
+        .background(Color.white.opacity(isHeld ? 0.055 : 0.04))
         .cornerRadius(14)
+        .overlay(
+            isHeld ?
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.orange.opacity(0.15), lineWidth: 1) : nil
+        )
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            if quote.in_watchlist == true, (quote.position ?? 0) == 0 {
+            if quote.in_watchlist == true, !isHeld {
                 Button(role: .destructive, action: onRemove) {
                     Label("Remove", systemImage: "minus.circle")
                 }
@@ -265,18 +324,30 @@ struct MarketRowView: View {
         }
     }
 
+    @ViewBuilder
+    private func dataChip(label: String, value: String) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white.opacity(0.3))
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+    }
+
     // MARK: Formatters
-    private func formatPrice(_ v: Double, currency: String?) -> String {
-        let s = currency == "GBP" ? "£" : currency == "EUR" ? "€" : ""
-        if v >= 1000 { return "\(s)\(String(format: "%.2f", v))" }
-        if v >= 1    { return "\(s)\(String(format: "%.2f", v))" }
-        return "\(s)\(String(format: "%.4f", v))"
+    private func fmtPrice(_ v: Double, ccy: String?) -> String {
+        let s = ccy == "GBP" ? "£" : ccy == "EUR" ? "€" : "$"
+        let abs = Swift.abs(v)
+        let sign = v < 0 ? "-" : ""
+        if abs >= 1000 { return "\(sign)\(s)\(String(format: "%.2f", abs))" }
+        if abs >= 1    { return "\(sign)\(s)\(String(format: "%.2f", abs))" }
+        return "\(sign)\(s)\(String(format: "%.4f", abs))"
     }
-    private func formatPct(_ v: Double) -> String {
-        "\(v >= 0 ? "+" : "")\(String(format: "%.2f", v))%"
-    }
-    private func formatQty(_ v: Double) -> String {
-        v == v.rounded() && abs(v) < 1_000_000 ? String(format: "%.0f", v) : String(format: "%.4f", v)
+    private func fmtPct(_ v: Double) -> String { "\(v >= 0 ? "+" : "")\(String(format: "%.2f", v))%" }
+    private func fmtQty(_ v: Double) -> String {
+        v == v.rounded() && Swift.abs(v) < 1_000_000 ? String(format: "%.0f", v) : String(format: "%.4f", v)
     }
 }
 
