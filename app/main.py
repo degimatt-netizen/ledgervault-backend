@@ -4332,33 +4332,51 @@ _QUOTE_CACHE_TTL = 60  # seconds
 
 
 def _fetch_single_quote(symbol: str) -> dict | None:
-    """Fetch a single quote via the proven v8 chart API, returning a quote dict."""
+    """Fetch a single quote via Yahoo Finance, returning a full quote dict including bid/ask."""
     sym = symbol.upper()
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
+    # Primary: v8 chart API (reliable price + meta)
+    url_chart = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
+    # Secondary: v7 detail for bid/ask/exchange (best-effort, may fail)
+    url_detail = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=price"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
-            r = c.get(url); r.raise_for_status()
+        with httpx.Client(timeout=8.0, headers=headers) as c:
+            r = c.get(url_chart); r.raise_for_status()
             data = r.json()
         result = data["chart"]["result"][0]
         meta = result["meta"]
-        price  = float(meta.get("regularMarketPrice", 0))
-        prev   = float(meta.get("chartPreviousClose", price) or price)
-        change = price - prev
+        price   = float(meta.get("regularMarketPrice", 0))
+        prev    = float(meta.get("chartPreviousClose", price) or price)
+        change  = price - prev
         chg_pct = (change / prev * 100) if prev else 0.0
-        # bid/ask from quote indicators if available
-        quotes_block = result.get("indicators", {}).get("quote", [{}])[0]
+
+        bid = ask = None
+        # Try bid/ask from quoteSummary
+        try:
+            with httpx.Client(timeout=5.0, headers=headers) as c2:
+                r2 = c2.get(url_detail)
+                if r2.status_code == 200:
+                    p = r2.json().get("quoteSummary", {}).get("result", [{}])[0].get("price", {})
+                    bid_raw = p.get("bid", {})
+                    ask_raw = p.get("ask", {})
+                    if isinstance(bid_raw, dict): bid = bid_raw.get("raw")
+                    if isinstance(ask_raw, dict): ask = ask_raw.get("raw")
+        except Exception:
+            pass
+
+        exch_code = meta.get("exchangeName", "")
         return {
             "symbol":       sym,
             "name":         meta.get("shortName", sym),
             "last":         price,
-            "bid":          None,
-            "ask":          None,
+            "bid":          float(bid) if bid and float(bid) > 0 else None,
+            "ask":          float(ask) if ask and float(ask) > 0 else None,
             "change":       round(change, 4),
             "change_pct":   round(chg_pct, 2),
             "volume":       meta.get("regularMarketVolume"),
             "currency":     meta.get("currency", "USD"),
             "market_state": meta.get("marketState", "CLOSED"),
-            "exchange":     meta.get("exchangeName", ""),
+            "exchange":     exch_code,
         }
     except Exception as e:
         logger.warning(f"Yahoo quote fetch failed for {sym}: {e}")
