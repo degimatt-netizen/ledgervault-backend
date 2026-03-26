@@ -217,7 +217,7 @@ struct AddWatchlistSheet: View {
                     if results.isEmpty && !query.isEmpty && !isSearching {
                         VStack(spacing: 8) {
                             Image(systemName: "magnifyingglass").font(.largeTitle).foregroundStyle(.secondary)
-                            Text("No results for "\(query)"")
+                            Text("No results for \"\(query)\"")
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.top, 60)
