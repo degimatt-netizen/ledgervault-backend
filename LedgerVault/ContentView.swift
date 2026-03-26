@@ -9,6 +9,9 @@ struct ContentView: View {
             TransactionsView()
                 .tabItem { Label("Transactions", systemImage: "arrow.left.arrow.right") }
 
+            MarketsView()
+                .tabItem { Label("Markets", systemImage: "chart.bar.fill") }
+
             InvestmentDashboardView()
                 .tabItem { Label("Dashboard", systemImage: "chart.line.uptrend.xyaxis") }
 

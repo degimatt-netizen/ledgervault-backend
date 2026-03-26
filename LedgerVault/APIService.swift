@@ -993,6 +993,73 @@ final class APIService {
         return try JSONDecoder().decode(WalletScanResult.self, from: data)
     }
 
+    // MARK: - Markets
+
+    struct MarketQuote: Codable, Identifiable {
+        var id: String { symbol }
+        let symbol: String
+        let name: String
+        let last: Double
+        let bid: Double?
+        let ask: Double?
+        let change: Double
+        let change_pct: Double
+        let volume: Int?
+        let currency: String?
+        let market_state: String?
+        let exchange: String?
+        let position: Double?
+        let avg_price: Double?
+        let in_watchlist: Bool?
+    }
+
+    struct MarketDataResponse: Codable {
+        let quotes: [MarketQuote]
+        let watchlist: [String]
+    }
+
+    struct SparklineResponse: Codable {
+        let symbol: String
+        let prices: [Double]
+    }
+
+    struct WatchlistResponse: Codable {
+        let symbols: [String]
+    }
+
+    struct WatchlistStatusResponse: Codable {
+        let status: String
+        let symbol: String
+    }
+
+    func fetchMarketData() async throws -> MarketDataResponse {
+        let req = makeRequest(url: baseURL.appendingPathComponent("market/data"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(MarketDataResponse.self, from: data)
+    }
+
+    func fetchSparkline(symbol: String) async throws -> SparklineResponse {
+        let req = makeRequest(url: baseURL.appendingPathComponent("market/sparkline/\(symbol)"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(SparklineResponse.self, from: data)
+    }
+
+    func addToWatchlist(symbol: String) async throws -> WatchlistStatusResponse {
+        let body = try JSONEncoder().encode(["symbol": symbol])
+        let req = makeRequest(url: baseURL.appendingPathComponent("market/watchlist"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(WatchlistStatusResponse.self, from: data)
+    }
+
+    func removeFromWatchlist(symbol: String) async throws {
+        let req = makeRequest(url: baseURL.appendingPathComponent("market/watchlist/\(symbol)"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+    }
+
     // MARK: - Error Handling
 
     private func validate(response: URLResponse, data: Data) throws {
