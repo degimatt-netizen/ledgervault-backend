@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 
 struct HomeView: View {
-    @AppStorage("baseCurrency") private var baseCurrency = "EUR"
+    @AppStorage("baseCurrency") private var baseCurrency = "USD"
 
     @State private var valuation: APIService.ValuationResponse?
     @State private var accounts: [APIService.Account] = []
@@ -66,9 +66,6 @@ struct HomeView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     netWorthHero
-                    if let history = portfolioHistory, history.points.count > 1 {
-                        performanceChart(history)
-                    }
                     accountGrid
                     if !investmentPositions.isEmpty { topHoldingsSection }
                     recentActivitySection
@@ -275,19 +272,27 @@ struct HomeView: View {
                 }
             }
 
-            // Compute change — use live total as "now", history for the start point
-            let first = history.points.first(where: { $0.total > 0 })?.total ?? 0
-            let change = total - first
+            // Compute change from first to last history point
+            let points = history.points.filter { $0.total > 0 }
+            let first   = points.first?.total ?? 0
+            let current = points.last?.total ?? first
+            let change = current - first
             let changePct = first > 0 ? (change / first) * 100 : 0
             let isUp = change >= 0
 
             HStack(spacing: 6) {
-                Text(fmt(total))
-                    .font(.subheadline.bold())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(fmt(current))
+                        .font(.subheadline.bold())
+                    Text("from \(fmt(first))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
                 HStack(spacing: 3) {
                     Image(systemName: isUp ? "arrow.up.right" : "arrow.down.right")
                         .font(.caption2)
-                    Text("\(isUp ? "+" : "")\(changePct.formatted(.number.precision(.fractionLength(2))))%")
+                    Text("\(change >= 0 ? "+" : "")\(fmt(abs(change))) (\(isUp ? "+" : "")\(changePct.formatted(.number.precision(.fractionLength(2))))%)")
                         .font(.caption.bold())
                 }
                 .foregroundColor(isUp ? .green : .red)
@@ -297,7 +302,6 @@ struct HomeView: View {
             }
 
             // Line chart
-            let points = history.points.filter { $0.total > 0 }
             if !points.isEmpty {
                 Chart {
                     ForEach(Array(points.enumerated()), id: \.element.id) { idx, point in
@@ -337,27 +341,35 @@ struct HomeView: View {
 
     @ViewBuilder
     private var accountGrid: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
                 NavigationLink(destination: BanksView()) {
                     accountTile(title: "Cash", subtitle: "Bank accounts",
-                                icon: "banknote.fill", amount: cash, color: .blue)
+                                icon: "banknote.fill", amount: cash,
+                                gradientColors: [Color(red: 0.20, green: 0.48, blue: 0.98),
+                                                 Color(red: 0.07, green: 0.22, blue: 0.76)])
                 }.buttonStyle(.plain)
 
                 NavigationLink(destination: StablecoinsView()) {
                     accountTile(title: "Stablecoins", subtitle: "USDT · USDC",
-                                icon: "link.circle.fill", amount: stablecoins, color: .teal)
+                                icon: "link.circle.fill", amount: stablecoins,
+                                gradientColors: [Color(red: 0.05, green: 0.74, blue: 0.74),
+                                                 Color(red: 0.02, green: 0.48, blue: 0.58)])
                 }.buttonStyle(.plain)
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 NavigationLink(destination: StocksView()) {
                     accountTile(title: "Stocks", subtitle: "Equities & ETFs",
-                                icon: "chart.bar.fill", amount: stocks, color: .green)
+                                icon: "chart.bar.fill", amount: stocks,
+                                gradientColors: [Color(red: 0.16, green: 0.82, blue: 0.44),
+                                                 Color(red: 0.04, green: 0.54, blue: 0.26)])
                 }.buttonStyle(.plain)
 
                 NavigationLink(destination: CryptoStocksView()) {
                     accountTile(title: "Crypto", subtitle: "BTC · ETH · SOL",
-                                icon: "bitcoinsign.circle.fill", amount: crypto, color: .orange)
+                                icon: "bitcoinsign.circle.fill", amount: crypto,
+                                gradientColors: [Color(red: 1.00, green: 0.60, blue: 0.12),
+                                                 Color(red: 0.88, green: 0.32, blue: 0.04)])
                 }.buttonStyle(.plain)
             }
         }
@@ -365,43 +377,65 @@ struct HomeView: View {
 
     @ViewBuilder
     private func accountTile(title: String, subtitle: String, icon: String,
-                             amount: Double, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+                             amount: Double, gradientColors: [Color]) -> some View {
+        let pct       = total > 0 && amount > 0 ? Int((amount / total) * 100) : 0
+        let shadowClr = gradientColors.first ?? .clear
+
+        VStack(alignment: .leading, spacing: 0) {
+
+            // ── Top row: icon + allocation badge ──
             HStack(alignment: .top) {
                 ZStack {
-                    Circle().fill(color.opacity(0.15)).frame(width: 40, height: 40)
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.white.opacity(0.22))
+                        .frame(width: 40, height: 40)
                     Image(systemName: icon)
                         .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(color)
+                        .foregroundStyle(.white)
                 }
                 Spacer()
-                if total > 0 && amount > 0 {
-                    Text("\(Int((amount / total) * 100))%")
-                        .font(.caption2.bold())
-                        .foregroundColor(color)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(color.opacity(0.12))
+                if pct > 0 {
+                    Text("\(pct)%")
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.white.opacity(0.22))
                         .clipShape(Capsule())
                 }
             }
+
+            Spacer()
+
+            // ── Amount ──
             Text(fmt(amount))
-                .font(.title3.bold())
-                .foregroundColor(.primary)
+                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(subtitle).font(.caption2).foregroundColor(.secondary)
-            }
+                .minimumScaleFactor(0.55)
+                .padding(.top, 18)
+
+            // ── Labels ──
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.top, 5)
+
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.72))
+                .padding(.top, 2)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(20)
-        .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(color.opacity(0.18), lineWidth: 1)
-        )
+        .frame(maxWidth: .infinity, minHeight: 148, alignment: .leading)
+        .background {
+            LinearGradient(
+                colors: gradientColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .shadow(color: shadowClr.opacity(0.38), radius: 12, x: 0, y: 6)
     }
 
     // MARK: - Top Holdings

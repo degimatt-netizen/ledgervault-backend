@@ -229,9 +229,10 @@ struct BrokerDetailView: View {
 
 // ── StocksView ────────────────────────────────────────────────────────────────
 struct StocksView: View {
-    @AppStorage("baseCurrency") private var baseCurrency = "EUR"
+    @AppStorage("baseCurrency") private var baseCurrency = "USD"
     @State private var accounts: [APIService.Account] = []
     @State private var valuation: APIService.ValuationResponse?
+    @State private var fxRates: [String: Double] = [:]
     @State private var showAdd = false
     @State private var showAddStock = false
     @State private var selectedAccount: APIService.Account?
@@ -245,6 +246,17 @@ struct StocksView: View {
         valuation?.portfolio
             .filter { $0.account_id == broker.id && $0.quantity > 0.000001 }
             .reduce(0) { $0 + $1.value_in_base } ?? 0
+    }
+
+    /// Converts a value already in `baseCurrency` into the account's native currency.
+    private func nativeAccountValue(_ valueInBase: Double, for account: APIService.Account) -> Double {
+        let base   = baseCurrency.uppercased()
+        let target = account.base_currency.uppercased()
+        guard base != target else { return valueInBase }
+        let usdPerBase   = fxRates[base]   ?? 1.0
+        let usdPerTarget = fxRates[target] ?? 1.0
+        guard usdPerTarget > 0 else { return valueInBase }
+        return (valueInBase * usdPerBase) / usdPerTarget
     }
 
     private func holdingCount(for broker: APIService.Account) -> Int {
@@ -307,9 +319,9 @@ struct StocksView: View {
                                     }
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 4) {
-                                        let value = accountValue(for: broker)
+                                        let value = nativeAccountValue(accountValue(for: broker), for: broker)
                                         if value > 0 {
-                                            Text(fmtValue(value, currency: baseCurrency))
+                                            Text(fmtValue(value, currency: broker.base_currency))
                                                 .font(.subheadline.bold()).foregroundColor(.primary)
                                         }
                                         Image(systemName: "chevron.right")
@@ -356,8 +368,14 @@ struct StocksView: View {
         do {
             async let accFetch = APIService.shared.fetchAccounts()
             async let valFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
-            accounts  = try await accFetch
-            valuation = try await valFetch
+            async let fxFetch  = APIService.shared.fetchRates()
+            let (accs, val, rates) = try await (accFetch, valFetch, fxFetch)
+            accounts  = accs
+            valuation = val
+            var merged: [String: Double] = [:]
+            for (k, v) in rates.fx_to_usd { merged[k.uppercased()] = v }
+            for (k, v) in rates.prices    { merged[k.uppercased()] = v }
+            fxRates = merged
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
     }

@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import LocalAuthentication
 
 // ── Country data ──────────────────────────────────────────────────────────────
 struct Country: Identifiable, Hashable {
@@ -90,12 +91,21 @@ struct ProfileView: View {
     @AppStorage("profile_dial_id")   private var dialId    = "MT"
     @AppStorage("baseCurrency")      private var currency  = "EUR"
 
+    @AppStorage("isSignedIn")        private var isSignedIn   = false
+    @AppStorage("profile_dob_locked")  private var dobLocked  = false
+    @AppStorage("profile_phone_locked")private var phoneLocked = false
+
     @State private var selectedPhoto: PhotosPickerItem?
-    @State private var showSavedBanner = false
-    @State private var showCountryPicker = false
-    @State private var showDialPicker    = false
-    @State private var countrySearch     = ""
-    @State private var dialSearch        = ""
+    @State private var showSavedBanner    = false
+    @State private var showCountryPicker  = false
+    @State private var showDialPicker     = false
+    @State private var countrySearch      = ""
+    @State private var dialSearch         = ""
+    @State private var showSignOutConfirm = false
+    @State private var showValidationAlert = false
+    @State private var validationMessage   = ""
+    @State private var dobError   = false
+    @State private var phoneError = false
 
     private let currencies = ["EUR","USD","GBP","CHF","CAD","AUD","JPY","PLN","SEK","NOK"]
 
@@ -128,36 +138,40 @@ struct ProfileView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
+            VStack(spacing: 0) {
 
-                    // ── Avatar + Name ────────────────────────────────────
-                    VStack(spacing: 10) {
-                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                            ZStack(alignment: .bottomTrailing) {
-                                avatarCircle
-                                Circle()
-                                    .fill(Color.blue)
-                                    .frame(width: 30, height: 30)
-                                    .overlay(Image(systemName: "camera.fill").font(.caption2).foregroundColor(.white))
-                            }
-                        }
-                        .onChange(of: selectedPhoto) { _, item in
-                            Task {
-                                if let data = try? await item?.loadTransferable(type: Data.self) {
-                                    UserDefaults.standard.set(data, forKey: "profile_avatar")
-                                }
-                            }
-                        }
+                ScrollView {
+                  VStack(spacing: 16) {
 
-                        Text(name.isEmpty ? "Your Name" : name)
-                            .font(.title2.weight(.bold))
-                        Text(nickname.isEmpty ? "tap to set nickname" : "@\(nickname)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                // ── Avatar + Name ────────────────────────────────────────
+                VStack(spacing: 10) {
+                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                        ZStack(alignment: .bottomTrailing) {
+                            avatarCircle
+                            Circle()
+                                .fill(Color.blue)
+                                .frame(width: 24, height: 24)
+                                .overlay(Image(systemName: "camera.fill").font(.system(size: 10)).foregroundColor(.white))
+                        }
                     }
-                    .padding(.top, 12)
+                    .onChange(of: selectedPhoto) { _, item in
+                        Task {
+                            if let data = try? await item?.loadTransferable(type: Data.self) {
+                                UserDefaults.standard.set(data, forKey: "profile_avatar")
+                            }
+                        }
+                    }
 
+                    Text(name.isEmpty ? "Your Name" : name)
+                        .font(.title3.weight(.bold))
+                    Text(nickname.isEmpty ? "tap to set nickname" : "@\(nickname)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 4)
+                .padding(.horizontal)
+
+                VStack(spacing: 16) {
                     // ── Personal Details ──────────────────────────────────
                     VStack(spacing: 0) {
                         profileField("Full Name",   "person.fill",    $name,    "Matthew Degiorgio")
@@ -181,44 +195,76 @@ struct ProfileView: View {
                                 }
                             }
                         }
-                        .padding(16)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
 
                         Divider().padding(.leading, 52)
                         profileField("Email",        "envelope.fill",  $email,   "you@example.com")
                         Divider().padding(.leading, 52)
 
                         // Phone with country dial code picker
-                        HStack(spacing: 14) {
-                            Image(systemName: "phone.fill").foregroundColor(.blue).frame(width: 28)
+                        HStack(alignment: .top, spacing: 14) {
+                            Image(systemName: "phone.fill")
+                                .foregroundColor(phoneLocked ? .secondary : .blue)
+                                .frame(width: 28)
+                                .padding(.top, 2)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Phone").font(.caption).foregroundColor(.secondary)
-                                HStack(spacing: 8) {
-                                    Button {
-                                        dialSearch = ""
-                                        showDialPicker = true
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Text(selectedDial.flag)
-                                            Text(selectedDial.dialCode)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundColor(.primary)
-                                            Image(systemName: "chevron.down")
-                                                .font(.caption2).foregroundColor(.secondary)
-                                        }
-                                        .padding(.horizontal, 8).padding(.vertical, 4)
-                                        .background(Color(.systemGray5))
-                                        .cornerRadius(8)
+                                HStack(spacing: 4) {
+                                    Text("Mobile Number").font(.caption).foregroundColor(.secondary)
+                                    if !phoneLocked {
+                                        Text("*").font(.caption).foregroundColor(.red)
                                     }
-                                    TextField("9999 9999", text: $phone)
+                                    if phoneLocked {
+                                        Image(systemName: "lock.fill")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                                if phoneLocked {
+                                    Text("\(selectedDial.flag) \(selectedDial.dialCode) \(phone)")
                                         .font(.subheadline)
-                                        .keyboardType(.phonePad)
+                                        .foregroundColor(.secondary)
+                                        .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                                } else {
+                                    HStack(spacing: 8) {
+                                        Button {
+                                            dialSearch = ""
+                                            showDialPicker = true
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Text(selectedDial.flag)
+                                                Text(selectedDial.dialCode)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundColor(.primary)
+                                                Image(systemName: "chevron.down")
+                                                    .font(.caption2).foregroundColor(.secondary)
+                                            }
+                                            .padding(.horizontal, 8).padding(.vertical, 4)
+                                            .background(Color(.systemGray5))
+                                            .cornerRadius(8)
+                                        }
+                                        TextField("9999 9999", text: $phone)
+                                            .font(.subheadline)
+                                            .keyboardType(.phonePad)
+                                    }
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(16)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(phoneError ? Color.red.opacity(0.05) : Color.clear)
+                        .overlay(
+                            phoneError
+                                ? RoundedRectangle(cornerRadius: 0)
+                                    .stroke(Color.red.opacity(0.4), lineWidth: 1)
+                                    .padding(.horizontal, 8)
+                                : nil
+                        )
 
                         Divider().padding(.leading, 52)
-                        profileField("Date of Birth","calendar",       $dobStr,  "DD/MM/YYYY")
+                        lockedOrEditableField(
+                            label: "Date of Birth", icon: "calendar",
+                            binding: $dobStr, placeholder: "DD/MM/YYYY",
+                            isLocked: dobLocked, hasError: dobError
+                        )
                         Divider().padding(.leading, 52)
 
                         // Country picker
@@ -241,7 +287,7 @@ struct ProfileView: View {
                                 }
                             }
                         }
-                        .padding(16)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
                     }
                     .background(Color(.systemBackground))
                     .cornerRadius(16)
@@ -253,30 +299,74 @@ struct ProfileView: View {
                             .foregroundColor(.green).frame(width: 28)
                         Text("Preferred Currency").font(.subheadline)
                         Spacer()
-                        Picker("", selection: $currency) {
-                            ForEach(currencies, id: \.self) { Text($0).tag($0) }
+                        Menu {
+                            ForEach(currencies, id: \.self) { cur in
+                                Button {
+                                    currency = cur
+                                } label: {
+                                    Label(cur, systemImage: currency == cur ? "checkmark" : "")
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(currency)
+                                    .font(.subheadline.bold())
+                                    .foregroundColor(.blue)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2)
+                                    .foregroundColor(.blue)
+                            }
                         }
-                        .pickerStyle(.menu)
                     }
-                    .padding(16)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
                     .background(Color(.systemBackground))
                     .cornerRadius(16)
                     .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
+                }
+                .padding(.horizontal)
 
-                    // Save button
-                    Button {
-                        save()
-                    } label: {
+                  } // end inner VStack
+                  .padding(.bottom, 16)
+                } // end ScrollView
+
+                // ── Fixed bottom buttons ───────────────────────────────
+                Divider()
+                HStack(spacing: 10) {
+                    Button { save() } label: {
                         Text("Save Profile")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity)
-                            .padding()
+                            .frame(height: 38)
                             .background(Color.blue)
                             .foregroundColor(.white)
-                            .cornerRadius(14)
+                            .cornerRadius(10)
+                    }
+
+                    Button { showSignOutConfirm = true } label: {
+                        Text("Sign Out")
+                            .font(.subheadline.weight(.medium))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 38)
+                            .background(Color.primary.opacity(0.07))
+                            .foregroundColor(.primary)
+                            .cornerRadius(10)
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.1), lineWidth: 1))
                     }
                 }
-                .padding()
+                .padding(.horizontal)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
+            } // end outer VStack
+            .alert("Sign Out?", isPresented: $showSignOutConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Sign Out", role: .destructive) { signOut() }
+            } message: {
+                Text("You'll need to sign back in to access your account.")
+            }
+            .alert("Required Fields", isPresented: $showValidationAlert) {
+                Button("OK") {}
+            } message: {
+                Text(validationMessage)
             }
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)
@@ -317,15 +407,15 @@ struct ProfileView: View {
         if let img = avatarImage {
             Image(uiImage: img)
                 .resizable().scaledToFill()
-                .frame(width: 100, height: 100)
+                .frame(width: 76, height: 76)
                 .clipShape(Circle())
         } else {
             Circle()
                 .fill(Color.blue.opacity(0.15))
-                .frame(width: 100, height: 100)
+                .frame(width: 76, height: 76)
                 .overlay(
                     Text(initials.isEmpty ? "?" : initials)
-                        .font(.system(size: 36, weight: .bold))
+                        .font(.system(size: 28, weight: .bold))
                         .foregroundColor(.blue)
                 )
         }
@@ -344,16 +434,111 @@ struct ProfileView: View {
                     .onSubmit { save() }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func lockedOrEditableField(
+        label: String, icon: String,
+        binding: Binding<String>, placeholder: String,
+        isLocked: Bool, hasError: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .foregroundColor(isLocked ? .secondary : .blue)
+                .frame(width: 28)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(label).font(.caption).foregroundColor(.secondary)
+                    if !isLocked {
+                        Text("*").font(.caption).foregroundColor(.red)
+                    }
+                    if isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+                if isLocked {
+                    Text(binding.wrappedValue)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .frame(minHeight: 22)
+                } else {
+                    TextField(placeholder, text: binding)
+                        .font(.subheadline)
+                        .frame(minHeight: 22)
+                        .onSubmit { save() }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(hasError ? Color.red.opacity(0.05) : Color.clear)
+        .overlay(
+            hasError
+                ? RoundedRectangle(cornerRadius: 0)
+                    .stroke(Color.red.opacity(0.4), lineWidth: 1)
+                    .padding(.horizontal, 8)
+                : nil
+        )
     }
 
     private func save() {
+        // Validate required fields
+        dobError   = dobStr.trimmingCharacters(in: .whitespaces).isEmpty
+        phoneError = phone.trimmingCharacters(in: .whitespaces).isEmpty
+
+        if dobError || phoneError {
+            var missing: [String] = []
+            if dobError   { missing.append("Date of Birth") }
+            if phoneError { missing.append("Mobile Number") }
+            validationMessage = "Please enter your \(missing.joined(separator: " and ")) before saving."
+            showValidationAlert = true
+            return
+        }
+
         // Auto-set nickname if empty
         if nickname.isEmpty && !name.isEmpty {
             nickname = generateNickname(from: name)
         }
-        showSavedBanner = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSavedBanner = false }
+
+        // Sync phone & name to backend — catches duplicate phone (409)
+        Task {
+            do {
+                try await APIService.shared.updateProfile(phone: phone, name: name)
+                await MainActor.run {
+                    dobLocked   = true
+                    phoneLocked = true
+                    showSavedBanner = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSavedBanner = false }
+                }
+            } catch {
+                await MainActor.run {
+                    let msg = error.localizedDescription
+                    if msg.lowercased().contains("already in use") || msg.lowercased().contains("409") {
+                        validationMessage = "This mobile number is already linked to another account."
+                        phoneError = true
+                    } else {
+                        validationMessage = msg
+                    }
+                    showValidationAlert = true
+                }
+            }
+        }
+    }
+
+    private func signOut() {
+        // Tell the server to revoke the token (fire-and-forget)
+        Task { try? await APIService.shared.logout() }
+        // Clear local state
+        KeychainHelper.delete(account: "auth_token")
+        if let domain = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: domain)
+        }
+        AlertsManager.shared.alerts = []
+        isSignedIn = false
+        dismiss()
     }
 }
 

@@ -2,7 +2,7 @@ import SwiftUI
 import AuthenticationServices
 
 // ── Presentation context provider for ASWebAuthenticationSession ──────────────
-private class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
+class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -11,8 +11,163 @@ private class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContext
     }
 }
 
+// ── BankProviderPickerView ────────────────────────────────────────────────────
+struct BankProviderPickerView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+
+                    VStack(spacing: 6) {
+                        Text("Open Banking")
+                            .font(.largeTitle.bold())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Choose how you want to connect your bank accounts.")
+                            .font(.subheadline).foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+
+                    // ── TrueLayer (Production) ───────────────────────────
+                    NavigationLink {
+                        BankConnectionsView(sandbox: false)
+                    } label: {
+                        providerCard(
+                            icon: "building.columns.fill",
+                            iconColors: [.blue, .purple],
+                            title: "TrueLayer",
+                            badge: "Live",
+                            badgeColor: .green,
+                            description: "Connect your real bank accounts via TrueLayer Open Banking. Supports Revolut, Wise, Monzo, HSBC and 100+ banks across Europe.",
+                            details: [
+                                ("lock.shield.fill",         "Read-only · No payment access"),
+                                ("building.2.fill",          "Revolut, Wise, Monzo, HSBC, Starling + 100 more"),
+                                ("arrow.triangle.2.circlepath", "Auto-sync transactions"),
+                            ],
+                            buttonLabel: "Connect Live Bank",
+                            buttonColor: .blue
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    // ── Sandbox (Test) ────────────────────────────────────
+                    NavigationLink {
+                        BankConnectionsView(sandbox: true)
+                    } label: {
+                        providerCard(
+                            icon: "testtube.2",
+                            iconColors: [.orange, .yellow],
+                            title: "Sandbox",
+                            badge: "Test",
+                            badgeColor: .orange,
+                            description: "Use simulated test bank data without touching real accounts. Perfect for trying out the integration before going live.",
+                            details: [
+                                ("exclamationmark.triangle.fill", "No real bank credentials needed"),
+                                ("arrow.triangle.2.circlepath",   "Simulated transactions & accounts"),
+                                ("checkmark.shield.fill",          "Safe to test — no real data"),
+                            ],
+                            buttonLabel: "Connect Sandbox Bank",
+                            buttonColor: .orange
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Text("Both modes use the same TrueLayer infrastructure. Switch to Live when you're ready for real data.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, 32)
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+            }
+        }
+    }
+
+    private func providerCard(
+        icon: String, iconColors: [Color],
+        title: String, badge: String, badgeColor: Color,
+        description: String,
+        details: [(String, String)],
+        buttonLabel: String, buttonColor: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: iconColors.map { $0.opacity(0.20) },
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 52, height: 52)
+                    Image(systemName: icon)
+                        .font(.system(size: 24))
+                        .foregroundStyle(LinearGradient(
+                            colors: iconColors,
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(title).font(.headline)
+                        Text(badge)
+                            .font(.caption2.bold())
+                            .foregroundColor(badgeColor)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(badgeColor.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    Text(description)
+                        .font(.caption).foregroundColor(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16).padding(.top, 16)
+
+            Divider().padding(.horizontal, 16).padding(.top, 14)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(details, id: \.0) { icon, text in
+                    HStack(spacing: 8) {
+                        Image(systemName: icon)
+                            .font(.caption2).foregroundColor(.secondary)
+                            .frame(width: 16)
+                        Text(text).font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.top, 12)
+
+            HStack {
+                Spacer()
+                HStack(spacing: 4) {
+                    Text(buttonLabel).font(.subheadline.bold())
+                    Image(systemName: "chevron.right").font(.caption.bold())
+                }
+                .foregroundColor(buttonColor)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 14)
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(18)
+        .padding(.horizontal, 16)
+    }
+}
+
 // ── BankConnectionsView ───────────────────────────────────────────────────────
 struct BankConnectionsView: View {
+    let sandbox: Bool
+
+    init(sandbox: Bool = false) {
+        self.sandbox = sandbox
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var connections: [APIService.BankConnectionResponse] = []
     @State private var accounts: [APIService.Account] = []
@@ -24,6 +179,9 @@ struct BankConnectionsView: View {
     @State private var successMessage: String?
 
     private let presenter = WebAuthPresenter()
+
+    private var modeTitle: String { sandbox ? "Sandbox Banking" : "Open Banking" }
+    private var modeAccent: Color  { sandbox ? .orange : .blue }
 
     var body: some View {
         NavigationStack {
@@ -55,16 +213,27 @@ struct BankConnectionsView: View {
                     .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle("Open Banking")
+            .navigationTitle(modeTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading)  { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if isConnecting {
-                        ProgressView().scaleEffect(0.8)
-                    } else {
-                        Button { Task { await connect() } } label: {
-                            Image(systemName: "plus.circle.fill").font(.title2)
+                    HStack(spacing: 8) {
+                        if sandbox {
+                            Text("SANDBOX")
+                                .font(.caption2.bold())
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background(Color.orange.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                        if isConnecting {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Button { Task { await connect() } } label: {
+                                Image(systemName: "plus.circle.fill").font(.title2)
+                                    .foregroundColor(modeAccent)
+                            }
                         }
                     }
                 }
@@ -88,54 +257,165 @@ struct BankConnectionsView: View {
 
     // ── Empty state ───────────────────────────────────────────────────────────
     private var emptyState: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            ZStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.1))
-                    .frame(width: 90, height: 90)
-                Image(systemName: "building.columns.fill")
-                    .font(.system(size: 38))
-                    .foregroundColor(.blue)
-            }
-            Text("Connect Your Bank").font(.title2.bold())
-            Text("Securely connect via Open Banking to auto-import transactions.\nSupports Revolut, Wise, Monzo, Starling, HSBC and 100+ banks.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
+        ScrollView {
+            VStack(spacing: 24) {
+                Spacer(minLength: 24)
 
-            // Supported bank logos row
-            HStack(spacing: 12) {
-                ForEach(["Revolut", "Wise", "Monzo", "Starling"], id: \.self) { name in
-                    Text(name)
-                        .font(.caption2.bold())
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Color(.systemGray5))
-                        .clipShape(Capsule())
+                // Hero icon
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [Color.blue.opacity(0.18), Color.indigo.opacity(0.18)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 110, height: 110)
+                    Image(systemName: "building.columns.fill")
+                        .font(.system(size: 46))
+                        .foregroundStyle(LinearGradient(
+                            colors: [.blue, .indigo],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
                 }
-            }
 
-            if isConnecting {
-                ProgressView("Connecting…").padding(.top, 8)
-            } else {
+                VStack(spacing: 8) {
+                    Text("Connect via TrueLayer")
+                        .font(.title2.bold())
+                    Text("Access 100+ banks across the UK and Europe via Open Banking.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+
+                // Feature list
+                VStack(spacing: 0) {
+                    ForEach(tlFeatureRows, id: \.title) { row in
+                        HStack(spacing: 14) {
+                            Image(systemName: row.icon)
+                                .foregroundColor(.blue)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.title).font(.subheadline.weight(.medium))
+                                Text(row.subtitle).font(.caption).foregroundColor(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 20).padding(.vertical, 12)
+                        if row.title != tlFeatureRows.last?.title {
+                            Divider().padding(.leading, 62)
+                        }
+                    }
+                }
+                .background(Color(.secondarySystemGroupedBackground))
+                .cornerRadius(16)
+                .padding(.horizontal, 16)
+
+                // Connect button
                 Button {
                     Task { await connect() }
                 } label: {
-                    Label("Connect Bank Account", systemImage: "link")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    Group {
+                        if isConnecting {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Connect a Bank")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        LinearGradient(colors: [.blue, .indigo],
+                                       startPoint: .leading, endPoint: .trailing)
+                    )
+                    .cornerRadius(14)
                 }
-                .padding(.horizontal, 32)
-                .padding(.top, 8)
+                .padding(.horizontal, 16)
+                .disabled(isConnecting)
+
+                // Fine print
+                Label("Read-only access · No payment permissions", systemImage: "lock.fill")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                Spacer(minLength: 40)
             }
-            Spacer()
         }
+        .background(Color(.systemGroupedBackground))
     }
+
+    private let tlFeatureRows: [(icon: String, title: String, subtitle: String)] = [
+        (icon: "building.columns.fill",
+         title: "100+ Banks",
+         subtitle: "Revolut, Monzo, Wise, HSBC, Barclays, Starling and many more"),
+        (icon: "flag.fill",
+         title: "UK & EU Coverage",
+         subtitle: "Full Open Banking support across the UK and Europe"),
+        (icon: "arrow.triangle.2.circlepath",
+         title: "Auto Transaction Sync",
+         subtitle: "Import 90 days of history and sync new transactions"),
+        (icon: "checkmark.shield.fill",
+         title: "Bank-level Security",
+         subtitle: "Read-only access — TrueLayer cannot move funds"),
+    ]
+
+    @ViewBuilder
+    private func accountTypeRow(_ title: String, icon: String, color: Color) -> some View {
+        Button { Task { await connect() } } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(color.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: icon)
+                        .foregroundColor(color)
+                        .font(.system(size: 19))
+                }
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.primary)
+                Spacer()
+                if isConnecting {
+                    ProgressView().scaleEffect(0.75)
+                        .frame(width: 28, height: 28)
+                } else {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.primary)
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+        .disabled(isConnecting)
+    }
+
+    private static let faqItems: [BankFAQItem] = [
+        BankFAQItem(
+            question: "I can't find my bank on the list.",
+            answer: "We support 100+ banks via TrueLayer. If yours isn't listed yet, you can add transactions manually in the meantime. We're always adding new providers."),
+        BankFAQItem(
+            question: "How long does it take for transactions to sync?",
+            answer: "Most banks sync within a few seconds. Occasionally it can take up to a minute depending on your bank's response time."),
+        BankFAQItem(
+            question: "Will my data be shared with other companies?",
+            answer: "No. Your banking credentials are handled by TrueLayer, a regulated open banking provider. LedgerVault only receives read-only transaction data — we never see your passwords."),
+        BankFAQItem(
+            question: "How much transaction history is imported?",
+            answer: "We import up to 90 days of transaction history on the first sync. Subsequent syncs pick up from where the last one left off."),
+        BankFAQItem(
+            question: "Can money be transferred from my bank account?",
+            answer: "No. The connection is read-only. LedgerVault cannot initiate any payments or transfers."),
+        BankFAQItem(
+            question: "I've added transactions manually — will I get duplicates?",
+            answer: "We use the bank's transaction ID to detect duplicates, so existing manual entries won't be doubled up as long as the descriptions match."),
+        BankFAQItem(
+            question: "Can I remove my imported data?",
+            answer: "Yes. You can delete any connection from the Open Banking screen, and remove individual imported transactions from the Transactions tab."),
+    ]
 
     // ── Connect button (inside list) ──────────────────────────────────────────
     private var connectButton: some View {
@@ -254,8 +534,8 @@ struct BankConnectionsView: View {
         defer { isConnecting = false }
 
         do {
-            // 1. Get auth URL from backend
-            let authURL = try await APIService.shared.getBankAuthURL()
+            // 1. Get auth URL from backend (with sandbox flag)
+            let authURL = try await APIService.shared.getBankAuthURL(sandbox: sandbox)
             guard let url = URL(string: authURL) else {
                 errorMessage = "Invalid auth URL"; return
             }
@@ -278,7 +558,6 @@ struct BankConnectionsView: View {
                 session.presentationContextProvider = presenter
                 session.prefersEphemeralWebBrowserSession = true
                 session.start()
-                // Hold reference so session lives until callback
                 _ = session
             }
 
@@ -291,7 +570,7 @@ struct BankConnectionsView: View {
             }
 
             // 4. Exchange code with backend
-            let newConns = try await APIService.shared.completeBankAuth(code: code)
+            let newConns = try await APIService.shared.completeBankAuth(code: code, sandbox: sandbox)
             connections = try await APIService.shared.fetchBankConnections()
             successMessage = "Connected \(newConns.count) account\(newConns.count == 1 ? "" : "s")"
 
@@ -377,6 +656,50 @@ struct BankConnectionsView: View {
         let rel = RelativeDateTimeFormatter()
         rel.unitsStyle = .abbreviated
         return "synced " + rel.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// ── FAQ helpers ───────────────────────────────────────────────────────────────
+struct BankFAQItem {
+    let question: String
+    let answer: String
+}
+
+struct BankFAQRow: View {
+    let item: BankFAQItem
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(item.question)
+                        .font(.subheadline)
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .padding(.top, 2)
+                }
+                .padding(16)
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                Text(item.answer)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
+            }
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(12)
     }
 }
 

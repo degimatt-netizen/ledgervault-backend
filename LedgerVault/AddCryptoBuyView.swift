@@ -245,8 +245,10 @@ struct AddCryptoBuyView: View {
                     Button(isSaving ? "Saving…" : "Save") { Task { await save() } }
                         .disabled(isSaving || selectedResult == nil || amountToDeduct == nil || purchasePricePerUnit == nil || selectedPlatformId.isEmpty || selectedDeductId.isEmpty)
                 }
-                ToolbarItem(placement: .keyboard) {
-                    HStack { Spacer(); Button("Done") { focusedField = nil }.font(.body.bold()) }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .font(.body.bold())
                 }
             }
             .task { await loadAccounts() }

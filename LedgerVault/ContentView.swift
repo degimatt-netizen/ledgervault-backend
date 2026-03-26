@@ -9,6 +9,9 @@ struct ContentView: View {
             TransactionsView()
                 .tabItem { Label("Transactions", systemImage: "arrow.left.arrow.right") }
 
+            InvestmentDashboardView()
+                .tabItem { Label("Dashboard", systemImage: "chart.line.uptrend.xyaxis") }
+
             MoreView()
                 .tabItem { Label("More", systemImage: "ellipsis.circle.fill") }
         }
@@ -17,18 +20,18 @@ struct ContentView: View {
 
 // ── More tab ──────────────────────────────────────────────────────────────────
 struct MoreView: View {
-    @State private var showAnalysis     = false
-    @State private var showAlerts       = false
-    @State private var showMarket       = false
-    @State private var showSettings     = false
-    @State private var showProfile      = false
-    @State private var showExportImport = false
-    @State private var showSecurity     = false
-    @State private var showExchanges    = false
-    @State private var showBanking      = false
-    @State private var showRecurring    = false
-    @State private var showReset        = false
-    @State private var showFAQ          = false
+    @State private var showAnalysis      = false
+    @State private var showAlerts        = false
+    @State private var showMarket        = false
+    @State private var showSettings      = false
+    @State private var showProfile       = false
+    @State private var showExportImport  = false
+    @State private var showSecurity      = false
+    @State private var showIntegrations  = false
+    @State private var showRecurring     = false
+    @State private var showReset         = false
+    @State private var showFAQ           = false
+    @State private var showPrivacy       = false
 
     @StateObject private var alertsManager = AlertsManager.shared
     private var alertBadge: Int {
@@ -51,8 +54,7 @@ struct MoreView: View {
                 }
 
                 Section("Integrations") {
-                    moreRow("Exchange Connections", "link.circle.fill",        .indigo, badge: nil) { showExchanges = true }
-                    moreRow("Open Banking",         "building.columns.fill",   .blue,   badge: nil) { showBanking   = true }
+                    moreRow("Integrations", "puzzlepiece.extension.fill", .indigo, badge: nil) { showIntegrations = true }
                 }
 
                 Section("Account") {
@@ -62,8 +64,9 @@ struct MoreView: View {
                 }
 
                 Section("Data") {
-                    moreRow("FAQ",        "questionmark.circle.fill", .mint, badge: nil) { showFAQ   = true }
-                    moreRow("Reset Data", "trash.fill",               .red,  badge: nil) { showReset = true }
+                    moreRow("FAQ",             "questionmark.circle.fill", .mint,  badge: nil) { showFAQ     = true }
+                    moreRow("Privacy & Legal", "hand.raised.fill",         .blue,  badge: nil) { showPrivacy = true }
+                    moreRow("Reset Data",      "trash.fill",               .red,   badge: nil) { showReset   = true }
                 }
             }
             .navigationTitle("More")
@@ -74,11 +77,11 @@ struct MoreView: View {
             .sheet(isPresented: $showProfile)      { ProfileView() }
             .sheet(isPresented: $showExportImport) { ExportImportView() }
             .sheet(isPresented: $showSecurity)     { SecurityView() }
-            .sheet(isPresented: $showExchanges)    { ExchangeConnectionsView() }
-            .sheet(isPresented: $showBanking)      { BankConnectionsView() }
+            .sheet(isPresented: $showIntegrations) { IntegrationsHubView() }
             .sheet(isPresented: $showRecurring)    { RecurringTransactionsView() }
             .sheet(isPresented: $showReset)        { ResetDataView() }
             .sheet(isPresented: $showFAQ)          { FAQView() }
+            .sheet(isPresented: $showPrivacy)      { PrivacyPoliciesView() }
         }
     }
 

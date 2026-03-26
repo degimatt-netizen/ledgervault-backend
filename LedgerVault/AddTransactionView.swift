@@ -95,10 +95,7 @@ struct AddTransactionView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color(UIColor.systemGroupedBackground).ignoresSafeArea()
-
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
 
                 // ── Header ──────────────────────────────────────────────
                 HStack {
@@ -303,7 +300,7 @@ struct AddTransactionView: View {
                                     .padding(.horizontal, 20)
                             }
 
-                            Color.clear.frame(height: 240)
+                            Color.clear.frame(height: 40)
                         }
                     }
                     .scrollDismissesKeyboard(.interactively)
@@ -329,8 +326,8 @@ struct AddTransactionView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 30)
                 .background(Color(UIColor.systemGroupedBackground))
-            }
         }
+        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
         .task { await loadAccounts() }
         .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { focusedField = .amount } }
         .toolbar {

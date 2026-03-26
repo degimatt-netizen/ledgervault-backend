@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict/>
+	<key>NSFaceIDUsageDescription</key>
+	<string>LedgerVault uses Face ID to protect access to your financial data.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

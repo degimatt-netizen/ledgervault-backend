@@ -13,29 +13,20 @@ struct StablecoinsView: View {
         accounts.filter { ["cash", "stablecoin_wallet"].contains($0.account_type) }
     }
 
-    // Net balance of an account in baseCurrency
+    // Native balance (in the account's own currency — no FX conversion)
     private func accountBalance(for account: APIService.Account) -> Double {
-        let native = account.base_currency.uppercased()
-        let base   = baseCurrency.uppercased()
-        let nativeBalance = legs
-            .filter { $0.account_id == account.id }
-            .reduce(0.0) { $0 + $1.quantity }
-        guard native != base else { return nativeBalance }
-        let usdPerNative = fxRates[native] ?? 1.0
-        let usdPerBase   = fxRates[base]   ?? 1.0
-        guard usdPerBase > 0 else { return nativeBalance }
-        return (nativeBalance * usdPerNative) / usdPerBase
+        legs.filter { $0.account_id == account.id }.reduce(0.0) { $0 + $1.quantity }
     }
 
     private func txCount(for account: APIService.Account) -> Int {
         Set(legs.filter { $0.account_id == account.id }.map { $0.event_id }).count
     }
 
-    private func fmtBalance(_ v: Double) -> String {
-        switch baseCurrency.uppercased() {
+    private func fmtBalance(_ v: Double, currency: String) -> String {
+        switch currency.uppercased() {
         case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
         case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
-        default:    return "€\(v.formatted(.number.precision(.fractionLength(2))))"
+        default:    return "\(currency) \(v.formatted(.number.precision(.fractionLength(2))))"
         }
     }
 
@@ -82,7 +73,7 @@ struct StablecoinsView: View {
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 4) {
                                         let bal = accountBalance(for: wallet)
-                                        Text(fmtBalance(bal))
+                                        Text(fmtBalance(bal, currency: wallet.base_currency))
                                             .font(.subheadline.bold())
                                             .foregroundColor(bal >= 0 ? .primary : .red)
                                         Image(systemName: "chevron.right")

@@ -334,15 +334,17 @@ struct TransactionsView: View {
     @State private var errorMessage: String?
     @State private var filterType   = "All"
     @State private var filterPeriod = "All"
+    @State private var customStart: Date = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
+    @State private var customEnd:   Date = Date()
+    @State private var showDateRangePicker = false
 
     let filters = ["All", "Income", "Expense", "Transfer", "Trade"]
     let periods: [(label: String, key: String)] = [
-        ("All time", "All"),
+        ("All Time", "All"),
         ("Today",    "Today"),
-        ("This week", "Week"),
-        ("This month", "Month"),
-        ("Last month", "LastMonth"),
-        ("This year",  "Year")
+        ("Week",     "Week"),
+        ("Month",    "Month"),
+        ("Period",   "Custom")
     ]
 
     // ── Period date range helper ───────────────────────────────────────────────
@@ -354,25 +356,25 @@ struct TransactionsView: View {
     private var periodStart: Date? {
         let cal = Calendar.current; let now = Date()
         switch filterPeriod {
-        case "Today":     return cal.startOfDay(for: now)
-        case "Week":      return cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))
-        case "Month":     return cal.date(from: cal.dateComponents([.year, .month], from: now))
-        case "LastMonth":
-            let start = cal.date(from: cal.dateComponents([.year, .month], from: now))!
-            return cal.date(byAdding: .month, value: -1, to: start)
-        case "Year":      return cal.date(from: cal.dateComponents([.year], from: now))
-        default:          return nil
+        case "Today":  return cal.startOfDay(for: now)
+        case "Week":   return cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now))
+        case "Month":  return cal.date(from: cal.dateComponents([.year, .month], from: now))
+        case "Custom": return cal.startOfDay(for: customStart)
+        default:       return nil
         }
     }
     private var periodEnd: Date? {
-        let cal = Calendar.current; let now = Date()
-        guard filterPeriod == "LastMonth" else { return nil }
-        return cal.date(from: cal.dateComponents([.year, .month], from: now))
+        guard filterPeriod == "Custom" else { return nil }
+        return Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEnd))
+    }
+
+    private var customRangeLabel: String {
+        let fmt = DateFormatter(); fmt.dateFormat = "d MMM"
+        return "\(fmt.string(from: customStart)) – \(fmt.string(from: customEnd))"
     }
 
     var filtered: [APIService.TransactionEvent] {
         var base = transactions
-        // Apply period filter
         if let start = periodStart {
             base = base.filter {
                 guard let d = parseTxDate($0.date) else { return false }
@@ -380,7 +382,6 @@ struct TransactionsView: View {
                 return d >= start
             }
         }
-        // Apply type filter
         if filterType != "All" {
             base = base.filter { $0.event_type.lowercased() == filterType.lowercased() }
         }
@@ -427,122 +428,127 @@ struct TransactionsView: View {
         }
     }
 
+    // ── Filter header (pinned) ─────────────────────────────────────────────────
+    private var filterHeader: some View {
+        VStack(spacing: 0) {
+            // Type pills
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(filters, id: \.self) { f in
+                        let count = f == "All" ? filtered.count
+                            : filtered.filter { $0.event_type.lowercased() == f.lowercased() }.count
+                        Button {
+                            withAnimation(.spring(duration: 0.2)) { filterType = f }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(f).font(.subheadline.weight(.semibold))
+                                if count > 0 {
+                                    Text("\(count)")
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(filterType == f
+                                                    ? Color.white.opacity(0.22)
+                                                    : Color(.systemGray4))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .background(filterType == f ? Color.primary : Color(.systemGray6))
+                            .foregroundColor(filterType == f ? Color(.systemBackground) : .primary)
+                            .clipShape(Capsule())
+                        }
+                    }
+                }
+                .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 6)
+            }
+
+            // Period pills — fixed row, no scroll bounce
+            HStack(spacing: 6) {
+                ForEach(periods, id: \.key) { period in
+                    Button {
+                        filterPeriod = period.key
+                        if period.key == "Custom" { showDateRangePicker = true }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if period.key == "Custom" {
+                                Image(systemName: "calendar.badge.clock")
+                                    .font(.caption2.bold())
+                            }
+                            Text(filterPeriod == "Custom" && period.key == "Custom"
+                                 ? customRangeLabel : period.label)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(filterPeriod == period.key ? Color.blue.opacity(0.15) : Color(.systemGray6))
+                        .foregroundColor(filterPeriod == period.key ? .blue : .secondary)
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().stroke(
+                                filterPeriod == period.key ? Color.blue.opacity(0.4) : Color.clear,
+                                lineWidth: 1)
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 8)
+
+            // Income / Expense summary strip
+            if filterType == "All" || filterType == "Income" || filterType == "Expense" {
+                HStack(spacing: 10) {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(Color.green.opacity(0.12)).frame(width: 32, height: 32)
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundColor(.green).font(.system(size: 14))
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Income").font(.caption2).foregroundColor(.secondary)
+                            Text(totalIncome > 0
+                                 ? "+\(baseCurrencySymbol)\(totalIncome.formatted(.number.precision(.fractionLength(2))))"
+                                 : "—")
+                                .font(.subheadline.bold())
+                                .foregroundColor(totalIncome > 0 ? .green : .secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(12)
+
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle().fill(Color.red.opacity(0.12)).frame(width: 32, height: 32)
+                            Image(systemName: "arrow.up.circle.fill")
+                                .foregroundColor(.red).font(.system(size: 14))
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Expenses").font(.caption2).foregroundColor(.secondary)
+                            Text(totalExpenses > 0
+                                 ? "-\(baseCurrencySymbol)\(totalExpenses.formatted(.number.precision(.fractionLength(2))))"
+                                 : "—")
+                                .font(.subheadline.bold())
+                                .foregroundColor(totalExpenses > 0 ? .red : .secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(12)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+            }
+
+            Divider()
+        }
+        .background(Color(.systemGroupedBackground))
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-
-                // ── Type filter pills ──────────────────────────────────────────
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(filters, id: \.self) { f in
-                            let count = f == "All" ? filtered.count
-                                : filtered.filter { $0.event_type.lowercased() == f.lowercased() }.count
-                            Button {
-                                withAnimation(.spring(duration: 0.2)) { filterType = f }
-                            } label: {
-                                HStack(spacing: 5) {
-                                    Text(f).font(.subheadline.weight(.semibold))
-                                    if count > 0 {
-                                        Text("\(count)")
-                                            .font(.caption2.bold())
-                                            .padding(.horizontal, 5).padding(.vertical, 1)
-                                            .background(filterType == f
-                                                        ? Color.white.opacity(0.22)
-                                                        : Color(.systemGray4))
-                                            .clipShape(Capsule())
-                                    }
-                                }
-                                .padding(.horizontal, 14).padding(.vertical, 8)
-                                .background(filterType == f ? Color.primary : Color(.systemGray6))
-                                .foregroundColor(filterType == f ? Color(.systemBackground) : .primary)
-                                .clipShape(Capsule())
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 6)
-                }
-
-                // ── Period filter pills ────────────────────────────────────────
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(periods, id: \.key) { period in
-                            Button {
-                                withAnimation(.spring(duration: 0.2)) { filterPeriod = period.key }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    if period.key != "All" {
-                                        Image(systemName: "calendar")
-                                            .font(.caption2.bold())
-                                    }
-                                    Text(period.label).font(.caption.weight(.semibold))
-                                }
-                                .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(filterPeriod == period.key
-                                            ? Color.blue.opacity(0.15)
-                                            : Color(.systemGray6))
-                                .foregroundColor(filterPeriod == period.key ? .blue : .secondary)
-                                .clipShape(Capsule())
-                                .overlay(
-                                    Capsule()
-                                        .stroke(filterPeriod == period.key ? Color.blue.opacity(0.4) : Color.clear, lineWidth: 1)
-                                )
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16).padding(.bottom, 10)
-                }
-
-                // ── Income / Expense summary strip ─────────────────────────────
-                if filterType == "All" || filterType == "Income" || filterType == "Expense" {
-                    HStack(spacing: 10) {
-                        // Income card
-                        HStack(spacing: 10) {
-                            ZStack {
-                                Circle().fill(Color.green.opacity(0.12)).frame(width: 34, height: 34)
-                                Image(systemName: "arrow.down.circle.fill")
-                                    .foregroundColor(.green).font(.system(size: 15))
-                            }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Income").font(.caption2).foregroundColor(.secondary)
-                                Text(totalIncome > 0
-                                     ? "+\(baseCurrencySymbol)\(totalIncome.formatted(.number.precision(.fractionLength(2))))"
-                                     : "—")
-                                    .font(.subheadline.bold())
-                                    .foregroundColor(totalIncome > 0 ? .green : .secondary)
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-
-                        // Expenses card
-                        HStack(spacing: 10) {
-                            ZStack {
-                                Circle().fill(Color.red.opacity(0.12)).frame(width: 34, height: 34)
-                                Image(systemName: "arrow.up.circle.fill")
-                                    .foregroundColor(.red).font(.system(size: 15))
-                            }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Expenses").font(.caption2).foregroundColor(.secondary)
-                                Text(totalExpenses > 0
-                                     ? "-\(baseCurrencySymbol)\(totalExpenses.formatted(.number.precision(.fractionLength(2))))"
-                                     : "—")
-                                    .font(.subheadline.bold())
-                                    .foregroundColor(totalExpenses > 0 ? .red : .secondary)
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .cornerRadius(12)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color(.systemGroupedBackground))
-                }
-
-                // ── List or empty state ────────────────────────────────────────
+            Group {
                 if filtered.isEmpty {
                     VStack(spacing: 14) {
                         Spacer()
@@ -558,6 +564,7 @@ struct TransactionsView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .background(Color(.systemGroupedBackground))
+                    .safeAreaInset(edge: .top, spacing: 0) { filterHeader }
                 } else {
                     List {
                         ForEach(groupedTransactions, id: \.0) { dateStr, txs in
@@ -589,11 +596,12 @@ struct TransactionsView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .safeAreaInset(edge: .top, spacing: 0) { filterHeader }
                 }
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Transactions")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAdd = true } label: {
@@ -616,6 +624,36 @@ struct TransactionsView: View {
                     cryptoImages: cryptoImages,
                     onDeleted: { Task { await load() } }
                 )
+            }
+            .sheet(isPresented: $showDateRangePicker) {
+                NavigationStack {
+                    Form {
+                        Section("Date Range") {
+                            DatePicker("From", selection: $customStart, in: ...customEnd, displayedComponents: .date)
+                            DatePicker("To",   selection: $customEnd,   in: customStart...,  displayedComponents: .date)
+                        }
+                        Section {
+                            Text("Showing transactions from \(customRangeLabel)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .navigationTitle("Custom Range")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showDateRangePicker = false }
+                                .fontWeight(.semibold)
+                        }
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                filterPeriod = "All"
+                                showDateRangePicker = false
+                            }
+                        }
+                    }
+                }
+                .presentationDetents([.medium])
             }
             .refreshable { await load() }
         }

@@ -239,10 +239,8 @@ struct BankDetailView: View {
 
 // ── BanksView ─────────────────────────────────────────────────────────────────
 struct BanksView: View {
-    @AppStorage("baseCurrency") private var baseCurrency = "EUR"
     @State private var accounts: [APIService.Account] = []
     @State private var legs: [APIService.TransactionLeg] = []
-    @State private var fxRates: [String: Double] = [:]
     @State private var showAddAccount = false
     @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
@@ -251,29 +249,23 @@ struct BanksView: View {
         accounts.filter { $0.account_type == "bank" }
     }
 
-    // Net balance of an account in baseCurrency
+    // Net balance always in the account's own native currency
     private func accountBalance(for account: APIService.Account) -> Double {
-        let native = account.base_currency.uppercased()
-        let base   = baseCurrency.uppercased()
-        let nativeBalance = legs
+        legs
             .filter { $0.account_id == account.id }
             .reduce(0.0) { $0 + $1.quantity }
-        guard native != base else { return nativeBalance }
-        let usdPerNative = fxRates[native] ?? 1.0
-        let usdPerBase   = fxRates[base]   ?? 1.0
-        guard usdPerBase > 0 else { return nativeBalance }
-        return (nativeBalance * usdPerNative) / usdPerBase
     }
 
     private func txCount(for account: APIService.Account) -> Int {
         Set(legs.filter { $0.account_id == account.id }.map { $0.event_id }).count
     }
 
-    private func fmtBalance(_ v: Double) -> String {
-        switch baseCurrency.uppercased() {
+    private func fmtBalance(_ v: Double, currency: String) -> String {
+        switch currency.uppercased() {
         case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
         case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
-        default:    return "€\(v.formatted(.number.precision(.fractionLength(2))))"
+        case "EUR": return "€\(v.formatted(.number.precision(.fractionLength(2))))"
+        default:    return "\(currency) \(v.formatted(.number.precision(.fractionLength(2))))"
         }
     }
 
@@ -320,7 +312,7 @@ struct BanksView: View {
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 4) {
                                         let bal = accountBalance(for: account)
-                                        Text(fmtBalance(bal))
+                                        Text(fmtBalance(bal, currency: account.base_currency))
                                             .font(.subheadline.bold())
                                             .foregroundColor(bal >= 0 ? .primary : .red)
                                         Image(systemName: "chevron.right")
@@ -363,14 +355,9 @@ struct BanksView: View {
         do {
             async let accFetch  = APIService.shared.fetchAccounts()
             async let legsFetch = APIService.shared.fetchTransactionLegs()
-            async let fxFetch   = APIService.shared.fetchRates()
-            let (accs, ls, rates) = try await (accFetch, legsFetch, fxFetch)
+            let (accs, ls) = try await (accFetch, legsFetch)
             accounts = accs
             legs     = ls
-            var merged: [String: Double] = [:]
-            for (k, v) in rates.fx_to_usd { merged[k.uppercased()] = v }
-            for (k, v) in rates.prices    { merged[k.uppercased()] = v }
-            fxRates = merged
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
     }

@@ -1,108 +1,78 @@
 import SwiftUI
 
-// ── LV Monogram Logo ──────────────────────────────────────────────────────────
-// The "L" and "V" share a central vertical stroke — they interlock
-// into a single unified glyph, not two separate letters.
+// ── LV Shield Logo ────────────────────────────────────────────────────────────
 struct LVMonogram: View {
     var size: CGFloat = 90
 
+    private func shieldPath(in rect: CGSize) -> Path {
+        Path { p in
+            let w = rect.width
+            let h = rect.height
+            let topY    = h * 0.06
+            let sideBot = h * 0.60
+            let tipY    = h * 0.95
+            let r       = w * 0.10
+
+            p.move(to: CGPoint(x: w * 0.10 + r, y: topY))
+            p.addLine(to: CGPoint(x: w * 0.90 - r, y: topY))
+            p.addQuadCurve(to:    CGPoint(x: w * 0.90, y: topY + r),
+                           control: CGPoint(x: w * 0.90, y: topY))
+            p.addLine(to: CGPoint(x: w * 0.90, y: sideBot))
+            p.addQuadCurve(to:    CGPoint(x: w * 0.50, y: tipY),
+                           control: CGPoint(x: w * 0.90, y: h * 0.90))
+            p.addQuadCurve(to:    CGPoint(x: w * 0.10, y: sideBot),
+                           control: CGPoint(x: w * 0.10, y: h * 0.90))
+            p.addLine(to: CGPoint(x: w * 0.10, y: topY + r))
+            p.addQuadCurve(to:    CGPoint(x: w * 0.10 + r, y: topY),
+                           control: CGPoint(x: w * 0.10, y: topY))
+            p.closeSubpath()
+        }
+    }
+
     var body: some View {
         ZStack {
-            // Outer ring
-            Circle()
-                .fill(
+            GeometryReader { geo in
+                let sz = CGSize(width: geo.size.width, height: geo.size.height)
+                let path = shieldPath(in: sz)
+
+                // Black fill
+                path.fill(Color.black)
+
+                // Subtle inner depth gradient
+                path.fill(
                     LinearGradient(
-                        colors: [Color(hex: "1a2a4a"), Color(hex: "0d1b35")],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                        colors: [Color.white.opacity(0.07), Color.clear],
+                        startPoint: .top,
+                        endPoint: UnitPoint(x: 0.5, y: 0.5)
                     )
                 )
-                .frame(width: size, height: size)
-                .shadow(color: .blue.opacity(0.4), radius: 12, x: 0, y: 4)
 
-            // Subtle ring border
-            Circle()
-                .strokeBorder(
+                // Dark gold border
+                path.stroke(
                     LinearGradient(
-                        colors: [Color.blue.opacity(0.6), Color.cyan.opacity(0.3)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                        colors: [Color(hex: "C9A227"), Color(hex: "7A5C00")],
+                        startPoint: .top,
+                        endPoint: .bottom
                     ),
-                    lineWidth: size * 0.025
-                )
-                .frame(width: size, height: size)
-
-            // LV monogram drawn as a single interlocked path
-            Canvas { ctx, _ in
-                let s  = size * 0.52          // scale factor
-                let cx = size / 2             // center x
-                let cy = size / 2             // center y
-
-                // ── L stroke ──────────────────────────────────────
-                // Vertical bar of L
-                let lPath = Path { p in
-                    let lx = cx - s * 0.30    // left edge of L vertical bar
-                    let rx = cx - s * 0.08    // right edge of L vertical bar
-                    let ty = cy - s * 0.42    // top of L
-                    let by = cy + s * 0.42    // bottom of L
-                    let fw = s * 0.48         // foot width of L
-
-                    p.move(to:    CGPoint(x: lx, y: ty))
-                    p.addLine(to: CGPoint(x: rx, y: ty))
-                    p.addLine(to: CGPoint(x: rx, y: by - s * 0.04))
-                    // L foot
-                    p.addLine(to: CGPoint(x: lx + fw, y: by - s * 0.04))
-                    p.addLine(to: CGPoint(x: lx + fw, y: by))
-                    p.addLine(to: CGPoint(x: lx,      y: by))
-                    p.closeSubpath()
-                }
-
-                // ── V stroke ──────────────────────────────────────
-                // V shares the right edge of L's vertical bar as its left leg
-                let vPath = Path { p in
-                    let vLx  = cx - s * 0.08   // left leg of V  (same as L right edge → interlock)
-                    let vRx  = cx + s * 0.36   // right leg of V outer edge
-                    let thick = s * 0.18       // leg thickness
-                    let ty   = cy - s * 0.42   // top
-                    let by   = cy + s * 0.42   // bottom tip y
-
-                    // Left leg of V (descends right)
-                    p.move(to:    CGPoint(x: vLx,         y: ty))
-                    p.addLine(to: CGPoint(x: vLx + thick, y: ty))
-                    p.addLine(to: CGPoint(x: cx + s * 0.06, y: by))  // tip inner
-                    p.addLine(to: CGPoint(x: cx - s * 0.06, y: by))  // tip outer
-                    p.closeSubpath()
-
-                    // Right leg of V (descends left)
-                    p.move(to:    CGPoint(x: vRx,          y: ty))
-                    p.addLine(to: CGPoint(x: vRx - thick,  y: ty))
-                    p.addLine(to: CGPoint(x: cx + s * 0.06, y: by))  // tip inner
-                    p.addLine(to: CGPoint(x: cx + s * 0.24, y: by + s * 0.02)) // outer tip
-                    p.closeSubpath()
-                }
-
-                // Draw L with gradient fill
-                ctx.fill(
-                    lPath,
-                    with: .linearGradient(
-                        Gradient(colors: [Color(hex: "4A9EFF"), Color(hex: "0066FF")]),
-                        startPoint: CGPoint(x: size * 0.2, y: size * 0.1),
-                        endPoint:   CGPoint(x: size * 0.2, y: size * 0.9)
-                    )
-                )
-
-                // Draw V with gradient fill (slightly lighter to distinguish)
-                ctx.fill(
-                    vPath,
-                    with: .linearGradient(
-                        Gradient(colors: [Color(hex: "7BBEFF"), Color(hex: "2288FF")]),
-                        startPoint: CGPoint(x: size * 0.6, y: size * 0.1),
-                        endPoint:   CGPoint(x: size * 0.6, y: size * 0.9)
-                    )
+                    lineWidth: sz.width * 0.032
                 )
             }
-            .frame(width: size, height: size)
+
+            // LV text in dark gold
+            Text("LV")
+                .font(.system(size: size * 0.36, weight: .black, design: .serif))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color(hex: "E8C040"), Color(hex: "A87800")],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .shadow(color: Color(hex: "C9A227").opacity(0.5), radius: 4, x: 0, y: 0)
+                .offset(y: -size * 0.05)
         }
+        .frame(width: size, height: size)
+        .shadow(color: Color(hex: "C9A227").opacity(0.3), radius: size * 0.12, x: 0, y: size * 0.04)
     }
 }
 
@@ -110,10 +80,10 @@ struct LVMonogram: View {
 #Preview {
     ZStack {
         Color.black.ignoresSafeArea()
-        VStack(spacing: 24) {
-            LVMonogram(size: 100)
-            LVMonogram(size: 60)
-            LVMonogram(size: 36)
+        VStack(spacing: 28) {
+            LVMonogram(size: 120)
+            LVMonogram(size: 80)
+            LVMonogram(size: 44)
         }
     }
 }

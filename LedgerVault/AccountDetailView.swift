@@ -10,12 +10,18 @@ struct AccountDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("baseCurrency") private var baseCurrency = "EUR"
 
+    @State private var liveAccount:  APIService.Account
     @State private var transactions: [APIService.TransactionEvent] = []
     @State private var holdings:     [APIService.ValuationPortfolioItem] = []
     @State private var isLoading     = false
     @State private var showEdit      = false
     @State private var showDeleteAlert = false
     @State private var errorMessage: String?
+
+    init(account: APIService.Account) {
+        self.account = account
+        _liveAccount = State(initialValue: account)
+    }
 
     // ── Derived totals ────────────────────────────────────────────────────────
     private var holdingsValue: Double {
@@ -31,7 +37,7 @@ struct AccountDetailView: View {
     }
 
     private var accountColor: Color {
-        switch account.account_type {
+        switch liveAccount.account_type {
         case "bank":              return .blue
         case "cash", "stablecoin_wallet": return .indigo
         case "broker":            return .green
@@ -41,7 +47,7 @@ struct AccountDetailView: View {
     }
 
     private var accountIcon: String {
-        switch account.account_type {
+        switch liveAccount.account_type {
         case "bank":              return "building.columns.fill"
         case "cash", "stablecoin_wallet": return "link.circle.fill"
         case "broker":            return "chart.bar.fill"
@@ -51,13 +57,13 @@ struct AccountDetailView: View {
     }
 
     private var accountLabel: String {
-        switch account.account_type {
+        switch liveAccount.account_type {
         case "bank":              return "Bank Account"
         case "cash":              return "Cash Wallet"
         case "stablecoin_wallet": return "Stablecoin Wallet"
         case "broker":            return "Broker Account"
         case "crypto_wallet":     return "Crypto Wallet"
-        default:                  return account.account_type.replacingOccurrences(of: "_", with: " ").capitalized
+        default:                  return liveAccount.account_type.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 
@@ -80,7 +86,7 @@ struct AccountDetailView: View {
                 }
                 .padding()
             }
-            .navigationTitle(account.name)
+            .navigationTitle(liveAccount.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -108,7 +114,7 @@ struct AccountDetailView: View {
             }
             .task { await load() }
             .sheet(isPresented: $showEdit) {
-                EditAccountView(account: account) {
+                EditAccountView(account: liveAccount) {
                     Task { await load() }
                 }
             }
@@ -121,7 +127,7 @@ struct AccountDetailView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This will permanently delete \(account.name) and all associated data.")
+                Text("This will permanently delete \(liveAccount.name) and all associated data.")
             }
         }
     }
@@ -139,14 +145,14 @@ struct AccountDetailView: View {
                         .foregroundColor(accountColor)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(account.name)
+                    Text(liveAccount.name)
                         .font(.title3.bold())
                     Text(accountLabel)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Text(account.base_currency)
+                Text(liveAccount.base_currency)
                     .font(.headline)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
@@ -321,16 +327,18 @@ struct AccountDetailView: View {
         errorMessage = nil
 
         do {
-            // Load both in parallel
             async let txFetch       = APIService.shared.fetchTransactionEvents()
             async let valuationFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
+            async let accFetch      = APIService.shared.fetchAccounts()
 
-            let (allTx, valuation) = try await (txFetch, valuationFetch)
+            let (allTx, valuation, allAccounts) = try await (txFetch, valuationFetch, accFetch)
 
-            // All events (we can't filter server-side; show all for now)
+            // Refresh account data so edits (name, currency, type) are reflected
+            if let updated = allAccounts.first(where: { $0.id == account.id }) {
+                liveAccount = updated
+            }
+
             transactions = allTx
-
-            // Filter portfolio items to this account only
             holdings = valuation.portfolio.filter { $0.account_id == account.id }
         } catch {
             errorMessage = error.localizedDescription
