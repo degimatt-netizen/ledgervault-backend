@@ -159,6 +159,7 @@ struct MarketRowView: View {
     private var excInfo:           (flag: String, name: String) { exchangeInfo(quote.exchange) }
     private var mktBadge:          (label: String, color: Color) { marketStateBadge(quote.market_state) }
     private var isHeld: Bool       { (quote.position ?? 0) != 0 }
+    private var canRemove: Bool    { quote.in_watchlist == true && !isHeld }
 
     // Unrealised P&L
     private var unrealisedPnL: Double? {
@@ -184,7 +185,7 @@ struct MarketRowView: View {
 
                 // Left info
                 VStack(alignment: .leading, spacing: 4) {
-                    // Symbol + market state
+                    // Symbol + market state + remove button
                     HStack(spacing: 6) {
                         Text(quote.symbol)
                             .font(.system(size: 15, weight: .bold, design: .monospaced))
@@ -192,6 +193,15 @@ struct MarketRowView: View {
                         Text(mktBadge.label)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(mktBadge.color)
+                        Spacer()
+                        if canRemove {
+                            Button(action: onRemove) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(.white.opacity(0.25))
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     // Company name
                     Text(quote.name)
@@ -208,8 +218,6 @@ struct MarketRowView: View {
                         }
                     }
                 }
-
-                Spacer(minLength: 4)
 
                 // Sparkline
                 SparklineView(symbol: quote.symbol)
@@ -315,10 +323,10 @@ struct MarketRowView: View {
                 RoundedRectangle(cornerRadius: 14)
                     .stroke(Color.orange.opacity(0.15), lineWidth: 1) : nil
         )
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            if quote.in_watchlist == true, !isHeld {
+        .contextMenu {
+            if canRemove {
                 Button(role: .destructive, action: onRemove) {
-                    Label("Remove", systemImage: "minus.circle")
+                    Label("Remove from Watchlist", systemImage: "minus.circle")
                 }
             }
         }
