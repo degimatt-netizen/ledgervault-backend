@@ -314,10 +314,10 @@ struct MarketRowView: View {
                 RoundedRectangle(cornerRadius: 14)
                     .stroke(Color.orange.opacity(0.15), lineWidth: 1) : nil
         )
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        .contextMenu {
             if canRemove {
                 Button(role: .destructive, action: onRemove) {
-                    Label("Remove", systemImage: "minus.circle")
+                    Label("Remove from Watchlist", systemImage: "trash")
                 }
             }
         }
@@ -522,50 +522,25 @@ struct MarketsView: View {
                         }.padding()
                         Spacer()
                     } else {
-                        List {
-                            if !held.isEmpty {
-                                Section {
+                        ScrollView {
+                            LazyVStack(spacing: 6) {
+                                if !held.isEmpty {
+                                    MarketSectionHeader(title: "My Holdings", count: held.count)
                                     ForEach(held) { q in
                                         MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 3)
-                                            .listRowBackground(Color.clear)
-                                            .listRowSeparator(.hidden)
-                                            .listRowInsets(EdgeInsets())
                                     }
-                                } header: {
-                                    MarketSectionHeader(title: "My Holdings", count: held.count)
-                                        .padding(.horizontal, 16)
-                                        .listRowInsets(EdgeInsets())
-                                        .listRowBackground(Color.clear)
                                 }
-                            }
-                            if !watchOnly.isEmpty {
-                                Section {
+                                if !watchOnly.isEmpty {
+                                    MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
                                     ForEach(watchOnly) { q in
                                         MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 3)
-                                            .listRowBackground(Color.clear)
-                                            .listRowSeparator(.hidden)
-                                            .listRowInsets(EdgeInsets())
                                     }
-                                } header: {
-                                    MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
-                                        .padding(.horizontal, 16)
-                                        .listRowInsets(EdgeInsets())
-                                        .listRowBackground(Color.clear)
                                 }
+                                if sorted.isEmpty { emptyState }
                             }
-                            if sorted.isEmpty {
-                                emptyState
-                                    .listRowBackground(Color.clear)
-                                    .listRowSeparator(.hidden)
-                                    .listRowInsets(EdgeInsets())
-                            }
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 24)
                         }
-                        .listStyle(.plain)
-                        .scrollContentBackground(.hidden)
                         .refreshable { await loadData() }
                     }
                 }
