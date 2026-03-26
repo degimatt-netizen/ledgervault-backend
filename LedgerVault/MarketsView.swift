@@ -185,7 +185,7 @@ struct MarketRowView: View {
 
                 // Left info
                 VStack(alignment: .leading, spacing: 4) {
-                    // Symbol + market state + remove button
+                    // Symbol + market state
                     HStack(spacing: 6) {
                         Text(quote.symbol)
                             .font(.system(size: 15, weight: .bold, design: .monospaced))
@@ -193,15 +193,6 @@ struct MarketRowView: View {
                         Text(mktBadge.label)
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(mktBadge.color)
-                        Spacer()
-                        if canRemove {
-                            Button(action: onRemove) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 16))
-                                    .foregroundStyle(.white.opacity(0.25))
-                            }
-                            .buttonStyle(.plain)
-                        }
                     }
                     // Company name
                     Text(quote.name)
@@ -323,10 +314,10 @@ struct MarketRowView: View {
                 RoundedRectangle(cornerRadius: 14)
                     .stroke(Color.orange.opacity(0.15), lineWidth: 1) : nil
         )
-        .contextMenu {
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             if canRemove {
                 Button(role: .destructive, action: onRemove) {
-                    Label("Remove from Watchlist", systemImage: "minus.circle")
+                    Label("Remove", systemImage: "minus.circle")
                 }
             }
         }
@@ -531,24 +522,41 @@ struct MarketsView: View {
                         }.padding()
                         Spacer()
                     } else {
-                        ScrollView {
-                            LazyVStack(spacing: 6) {
-                                if !held.isEmpty {
-                                    MarketSectionHeader(title: "My Holdings", count: held.count)
+                        List {
+                            if !held.isEmpty {
+                                Section {
                                     ForEach(held) { q in
                                         MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                                            .listRowBackground(Color.clear)
+                                            .listRowSeparator(.hidden)
+                                            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
                                     }
+                                } header: {
+                                    MarketSectionHeader(title: "My Holdings", count: held.count)
+                                        .listRowInsets(EdgeInsets())
                                 }
-                                if !watchOnly.isEmpty {
-                                    MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
+                            }
+                            if !watchOnly.isEmpty {
+                                Section {
                                     ForEach(watchOnly) { q in
                                         MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                                            .listRowBackground(Color.clear)
+                                            .listRowSeparator(.hidden)
+                                            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
                                     }
+                                } header: {
+                                    MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
+                                        .listRowInsets(EdgeInsets())
                                 }
-                                if sorted.isEmpty { emptyState }
                             }
-                            .padding(.horizontal, 12).padding(.bottom, 24)
+                            if sorted.isEmpty {
+                                emptyState
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                            }
                         }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
                         .refreshable { await loadData() }
                     }
                 }
