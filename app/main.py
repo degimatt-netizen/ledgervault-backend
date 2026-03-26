@@ -4331,44 +4331,52 @@ _QUOTE_CACHE: dict[str, dict] = {}   # symbol → {quote dict, ts}
 _QUOTE_CACHE_TTL = 60  # seconds
 
 
+def _fetch_single_quote(symbol: str) -> dict | None:
+    """Fetch a single quote via the proven v8 chart API, returning a quote dict."""
+    sym = symbol.upper()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
+    try:
+        with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+            data = r.json()
+        result = data["chart"]["result"][0]
+        meta = result["meta"]
+        price  = float(meta.get("regularMarketPrice", 0))
+        prev   = float(meta.get("chartPreviousClose", price) or price)
+        change = price - prev
+        chg_pct = (change / prev * 100) if prev else 0.0
+        # bid/ask from quote indicators if available
+        quotes_block = result.get("indicators", {}).get("quote", [{}])[0]
+        return {
+            "symbol":       sym,
+            "name":         meta.get("shortName", sym),
+            "last":         price,
+            "bid":          None,
+            "ask":          None,
+            "change":       round(change, 4),
+            "change_pct":   round(chg_pct, 2),
+            "volume":       meta.get("regularMarketVolume"),
+            "currency":     meta.get("currency", "USD"),
+            "market_state": meta.get("marketState", "CLOSED"),
+            "exchange":     meta.get("exchangeName", ""),
+        }
+    except Exception as e:
+        logger.warning(f"Yahoo quote fetch failed for {sym}: {e}")
+        return None
+
+
 def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
-    """Batch-fetch quotes from Yahoo Finance v7 API. Returns symbol→quote dict."""
+    """Parallel-fetch quotes for multiple symbols using the proven v8 chart API."""
     if not symbols:
         return {}
-    joined = ",".join(s.upper() for s in symbols)
-    url = (
-        f"https://query1.finance.yahoo.com/v7/finance/quote"
-        f"?symbols={joined}&fields=regularMarketPrice,regularMarketChange,"
-        f"regularMarketChangePercent,regularMarketVolume,bid,ask,shortName,"
-        f"longName,regularMarketPreviousClose,currency,marketState,exchange"
-    )
-    try:
-        with httpx.Client(timeout=10.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
-            r = c.get(url); r.raise_for_status()
-            results = r.json().get("quoteResponse", {}).get("result", [])
-    except Exception as e:
-        logger.warning(f"Yahoo batch quote failed: {e}")
-        return {}
-    out = {}
-    for q in results:
-        sym = q.get("symbol", "").upper()
-        price = float(q.get("regularMarketPrice", 0))
-        prev  = float(q.get("regularMarketPreviousClose", price) or price)
-        change = float(q.get("regularMarketChange", price - prev))
-        chg_pct = float(q.get("regularMarketChangePercent", 0))
-        out[sym] = {
-            "symbol":      sym,
-            "name":        q.get("shortName") or q.get("longName") or sym,
-            "last":        price,
-            "bid":         float(q.get("bid", 0)) or None,
-            "ask":         float(q.get("ask", 0)) or None,
-            "change":      round(change, 4),
-            "change_pct":  round(chg_pct, 2),
-            "volume":      q.get("regularMarketVolume"),
-            "currency":    q.get("currency", "USD"),
-            "market_state": q.get("marketState", "CLOSED"),
-            "exchange":    q.get("exchange", ""),
-        }
+    out: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(len(symbols), 10)) as ex:
+        futures = {ex.submit(_fetch_single_quote, s): s.upper() for s in symbols}
+        for fut in as_completed(futures):
+            sym = futures[fut]
+            result = fut.result()
+            if result:
+                out[sym] = result
     return out
 
 
