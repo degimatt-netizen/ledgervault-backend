@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 // ── InvestmentDashboardView ───────────────────────────────────────────────────
 struct InvestmentDashboardView: View {
@@ -94,6 +95,7 @@ struct InvestmentDashboardView: View {
                     ScrollView {
                         VStack(spacing: 20) {
                             totalCard
+                            allocationChart
                             allocationCards
                             if !stockItems.isEmpty {
                                 holdingsSection(title: "Stocks", items: stockItems, isStock: true)
@@ -173,6 +175,90 @@ struct InvestmentDashboardView: View {
                 .padding(.horizontal, 32)
             Spacer()
         }
+    }
+
+    // ── Allocation donut chart ────────────────────────────────────────────────
+    private struct SliceData: Identifiable {
+        let id    = UUID()
+        let label: String
+        let value: Double
+        let color: Color
+    }
+
+    private var allocationChart: some View {
+        // Build up to top-5 holdings + "Other" slice
+        let topN   = 5
+        let sorted = allItems.sorted { $0.value_in_base > $1.value_in_base }
+        var slices: [SliceData] = []
+
+        // Assign a colour to each of the top-N holdings
+        let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal, .indigo, .yellow]
+        for (i, item) in sorted.prefix(topN).enumerated() {
+            slices.append(SliceData(
+                label: item.symbol,
+                value: item.value_in_base,
+                color: palette[i % palette.count]
+            ))
+        }
+        let otherValue = sorted.dropFirst(topN).reduce(0) { $0 + $1.value_in_base }
+        if otherValue > 0 {
+            slices.append(SliceData(label: "Other", value: otherValue, color: .secondary))
+        }
+
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Allocation")
+                .font(.headline)
+                .padding(.horizontal, 2)
+
+            HStack(alignment: .center, spacing: 20) {
+                // Donut
+                Chart(slices) { slice in
+                    SectorMark(
+                        angle: .value("Value", slice.value),
+                        innerRadius: .ratio(0.58),
+                        angularInset: 1.5
+                    )
+                    .foregroundStyle(slice.color)
+                    .cornerRadius(4)
+                }
+                .frame(width: 130, height: 130)
+                .overlay {
+                    VStack(spacing: 2) {
+                        Text(fmtValue(totalValue))
+                            .font(.caption2.bold())
+                            .minimumScaleFactor(0.6)
+                            .lineLimit(1)
+                        Text("Total")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(8)
+                }
+
+                // Legend
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(slices) { slice in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(slice.color)
+                                .frame(width: 10, height: 10)
+                            Text(slice.label)
+                                .font(.caption.bold())
+                                .lineLimit(1)
+                            Spacer()
+                            Text(totalValue > 0
+                                 ? String(format: "%.1f%%", (slice.value / totalValue) * 100)
+                                 : "—")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(16)
     }
 
     // ── Total portfolio card ───────────────────────────────────────────────────
