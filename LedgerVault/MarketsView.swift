@@ -145,7 +145,7 @@ private func marketStateBadge(_ state: String?) -> (label: String, color: Color)
     case "REGULAR": return ("● OPEN",     .green)
     case "PRE":     return ("● PRE-MKT",  Color(red: 1, green: 0.8, blue: 0))
     case "POST":    return ("● POST-MKT", .orange)
-    default:        return ("● CLOSED",   Color.white.opacity(0.3))
+    default:        return ("● CLOSED",   Color.secondary)
     }
 }
 
@@ -187,21 +187,21 @@ struct MarketRowView: View {
                     HStack(spacing: 5) {
                         Text(quote.symbol)
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.primary)
                         Text(mktBadge.label)
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(mktBadge.color)
                     }
                     Text(quote.name)
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                     if !excInfo.flag.isEmpty {
                         HStack(spacing: 3) {
                             Text(excInfo.flag).font(.system(size: 10))
                             Text(excInfo.name)
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.3))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -215,7 +215,7 @@ struct MarketRowView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(fmtPrice(quote.last, ccy: quote.currency))
                         .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                     let sign = quote.change >= 0 ? "+" : ""
                     Text("\(sign)\(fmtPrice(quote.change, ccy: quote.currency))")
                         .font(.system(size: 11, design: .monospaced))
@@ -234,28 +234,28 @@ struct MarketRowView: View {
 
             // ── Position strip (held only) ─────────────────────────────────
             if isHeld {
-                Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+                Rectangle().fill(Color(UIColor.separator)).frame(height: 1)
                     .padding(.horizontal, 12)
 
                 HStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("POSITION").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.3)).tracking(0.5)
+                        Text("POSITION").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary).tracking(0.5)
                         Text(fmtQty(quote.position ?? 0))
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(.white)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(.primary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("AVG PRICE").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.3)).tracking(0.5)
+                        Text("AVG PRICE").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary).tracking(0.5)
                         Text(quote.avg_price.map { fmtPrice($0, ccy: quote.currency) } ?? "—")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(.white)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(.primary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     if let pnl = unrealisedPnL, let pct = unrealisedPct {
                         let c: Color = pnl >= 0 ? Color(red: 0.2, green: 0.85, blue: 0.4) : Color(red: 1, green: 0.3, blue: 0.3)
                         VStack(alignment: .trailing, spacing: 1) {
-                            Text("UNREALISED").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.3)).tracking(0.5)
+                            Text("UNREALISED").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary).tracking(0.5)
                             Text("\(pnl >= 0 ? "+" : "")\(fmtPrice(pnl, ccy: quote.currency))")
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(c)
                             Text("\(pct >= 0 ? "+" : "")\(String(format: "%.2f", pct))%")
@@ -268,10 +268,10 @@ struct MarketRowView: View {
                 .padding(.vertical, 7)
             }
         }
-        .background(Color.white.opacity(isHeld ? 0.055 : 0.04))
+        .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(12)
         .overlay(
-            isHeld ? RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.12), lineWidth: 1) : nil
+            isHeld ? RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.25), lineWidth: 1) : nil
         )
         .contextMenu {
             if canRemove {
@@ -407,11 +407,11 @@ struct MarketSectionHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.4)).tracking(1)
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary).tracking(1)
             Text("\(count)")
-                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.25))
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
                 .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(Color.white.opacity(0.07)).cornerRadius(5)
+                .background(Color(UIColor.tertiarySystemFill)).cornerRadius(5)
             Spacer()
         }
         .padding(.horizontal, 4).padding(.top, 18).padding(.bottom, 6)
@@ -468,15 +468,15 @@ struct ForexRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(pair.display_name ?? pair.symbol)
                     .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                 Text("FOREX").font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.3))
+                    .foregroundStyle(.secondary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
                 Text(String(format: "%.4f", pair.last))
                     .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                 let sign = pair.change >= 0 ? "+" : ""
                 Text("\(sign)\(String(format: "%.4f", pair.change))")
                     .font(.system(size: 11, design: .monospaced))
@@ -491,7 +491,7 @@ struct ForexRowView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color.white.opacity(0.04))
+        .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(12)
     }
 }
@@ -519,8 +519,8 @@ struct NewsArticleRow: View {
                             case .success(let img):
                                 img.resizable().scaledToFill()
                             default:
-                                Color.white.opacity(0.07)
-                                    .overlay(Image(systemName: "newspaper").foregroundStyle(.white.opacity(0.3)))
+                                Color(UIColor.tertiarySystemFill)
+                                    .overlay(Image(systemName: "newspaper").foregroundStyle(.secondary))
                             }
                         }
                     } else {
@@ -535,26 +535,26 @@ struct NewsArticleRow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(article.title)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .lineLimit(3)
                         .multilineTextAlignment(.leading)
                     HStack(spacing: 5) {
                         Text(article.publisher)
                             .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.4))
-                        Text("·").foregroundStyle(.white.opacity(0.2))
+                            .foregroundStyle(.secondary)
+                        Text("·").foregroundStyle(.secondary)
                         Text(timeAgo)
                             .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(.secondary)
                     }
                     if let syms = article.symbols, !syms.isEmpty {
                         HStack(spacing: 4) {
                             ForEach(syms.prefix(3), id: \.self) { s in
                                 Text(s)
                                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.5))
+                                    .foregroundStyle(.secondary)
                                     .padding(.horizontal, 5).padding(.vertical, 2)
-                                    .background(Color.white.opacity(0.07))
+                                    .background(Color(UIColor.tertiarySystemFill))
                                     .cornerRadius(4)
                             }
                         }
@@ -564,7 +564,7 @@ struct NewsArticleRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(Color.white.opacity(0.04))
+            .background(Color(UIColor.secondarySystemGroupedBackground))
             .cornerRadius(12)
         }
     }
@@ -593,10 +593,10 @@ struct MarketNewsView: View {
             } else if articles.isEmpty {
                 Spacer()
                 VStack(spacing: 12) {
-                    Image(systemName: "newspaper").font(.system(size: 48)).foregroundStyle(.white.opacity(0.15))
-                    Text("No news yet").font(.title3.weight(.semibold)).foregroundStyle(.white.opacity(0.6))
+                    Image(systemName: "newspaper").font(.system(size: 48)).foregroundStyle(.secondary)
+                    Text("No news yet").font(.title3.weight(.semibold)).foregroundStyle(.primary)
                     Text("Add symbols to your watchlist to see relevant news.")
-                        .font(.subheadline).foregroundStyle(.white.opacity(0.3)).multilineTextAlignment(.center)
+                        .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
                 .padding(.horizontal, 32).padding(.top, 60)
                 Spacer()
@@ -654,6 +654,7 @@ struct MarketNewsView: View {
 
 // MARK: - Main View
 struct MarketsView: View {
+    @AppStorage("theme") private var theme = "dark"
     @State private var quotes:      [APIService.MarketQuote] = []
     @State private var forexPairs:  [APIService.ForexPair]   = []
     @State private var isLoading    = false
@@ -687,7 +688,7 @@ struct MarketsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(red: 0.06, green: 0.06, blue: 0.09).ignoresSafeArea()
+                Color(UIColor.systemGroupedBackground).ignoresSafeArea()
                 VStack(spacing: 0) {
                     // Tab picker
                     Picker("", selection: $selectedTab) {
@@ -712,7 +713,7 @@ struct MarketsView: View {
             )
             .navigationTitle("Markets")
             .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarColorScheme(theme == "dark" ? .dark : nil, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAdd = true } label: {
@@ -722,7 +723,7 @@ struct MarketsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { Task { await loadData() } } label: {
                         Image(systemName: "arrow.clockwise")
-                            .foregroundStyle(isLoading ? .white.opacity(0.3) : .white.opacity(0.7))
+                            .foregroundStyle(isLoading ? Color.secondary.opacity(0.4) : Color.secondary)
                     }.disabled(isLoading)
                 }
             }
@@ -731,7 +732,7 @@ struct MarketsView: View {
             }
             .task { await loadData() }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(theme == "light" ? .light : theme == "dark" ? .dark : nil)
     }
 
     // MARK: Markets tab content
@@ -789,7 +790,7 @@ struct MarketsView: View {
             sortBtn("CHG %", .changePct, leading: false).frame(width: 88)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
-        .background(Color.white.opacity(0.04))
+        .background(Color(UIColor.systemBackground).opacity(0.8))
     }
 
     private func sortBtn(_ label: String, _ field: MarketSortField, leading: Bool) -> some View {
@@ -798,10 +799,10 @@ struct MarketsView: View {
         } label: {
             HStack(spacing: 2) {
                 Text(label).font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(sortField == field ? .white : .white.opacity(0.3))
+                    .foregroundStyle(sortField == field ? Color.primary : Color.secondary)
                 if sortField == field {
                     Image(systemName: sortAsc ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 7, weight: .bold)).foregroundStyle(.white)
+                        .font(.system(size: 7, weight: .bold)).foregroundStyle(Color.primary)
                 }
             }
         }
@@ -809,10 +810,10 @@ struct MarketsView: View {
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "chart.line.uptrend.xyaxis").font(.system(size: 52)).foregroundStyle(.white.opacity(0.15))
-            Text("No instruments yet").font(.title3.weight(.semibold)).foregroundStyle(.white.opacity(0.6))
+            Image(systemName: "chart.line.uptrend.xyaxis").font(.system(size: 52)).foregroundStyle(.secondary)
+            Text("No instruments yet").font(.title3.weight(.semibold)).foregroundStyle(.primary)
             Text("Connect a broker or exchange to see your holdings,\nor tap + to add symbols to your watchlist.")
-                .font(.subheadline).foregroundStyle(.white.opacity(0.3)).multilineTextAlignment(.center)
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button { showAdd = true } label: {
                 Label("Add Symbol", systemImage: "plus")
                     .font(.subheadline.weight(.semibold))
