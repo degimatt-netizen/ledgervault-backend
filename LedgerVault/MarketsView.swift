@@ -664,6 +664,10 @@ struct MarketsView: View {
     @State private var sortAsc      = true
     @State private var searchText   = ""
     @State private var selectedTab  = 0   // 0=Markets, 1=News
+    @State private var lastUpdated: Date? = nil
+
+    // Auto-refresh every 5 s (backend cache prevents hammering Yahoo Finance)
+    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     private var sorted: [APIService.MarketQuote] {
         let base = searchText.isEmpty ? quotes : quotes.filter {
@@ -731,6 +735,9 @@ struct MarketsView: View {
                 AddWatchlistSheet { sym in await addToWatchlist(sym) }
             }
             .task { await loadData() }
+            .onReceive(timer) { _ in
+                Task { await silentRefresh() }
+            }
         }
         .preferredColorScheme(theme == "light" ? .light : theme == "dark" ? .dark : nil)
     }
@@ -786,11 +793,28 @@ struct MarketsView: View {
         HStack(spacing: 0) {
             sortBtn("INSTRUMENT", .symbol, leading: true)
             Spacer()
+            // Live indicator
+            if let ts = lastUpdated {
+                HStack(spacing: 4) {
+                    Circle().fill(Color.green).frame(width: 5, height: 5)
+                    Text(relativeTime(ts))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.trailing, 6)
+            }
             sortBtn("LAST", .last, leading: false)
             sortBtn("CHG %", .changePct, leading: false).frame(width: 88)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
         .background(Color(UIColor.systemBackground).opacity(0.8))
+    }
+
+    private func relativeTime(_ date: Date) -> String {
+        let s = Int(Date().timeIntervalSince(date))
+        if s < 5  { return "LIVE" }
+        if s < 60 { return "\(s)s ago" }
+        return "\(s / 60)m ago"
     }
 
     private func sortBtn(_ label: String, _ field: MarketSortField, leading: Bool) -> some View {
@@ -827,16 +851,29 @@ struct MarketsView: View {
     // MARK: Data
     private func loadData() async {
         isLoading = true; error = nil
-        async let quotesTask  = APIService.shared.fetchMarketData()
-        async let forexTask   = APIService.shared.fetchForexRates()
+        async let quotesTask = APIService.shared.fetchMarketData()
+        async let forexTask  = APIService.shared.fetchForexRates()
         do {
             let (qResp, fResp) = try await (quotesTask, forexTask)
             quotes     = qResp.quotes
             forexPairs = fResp.pairs
+            lastUpdated = Date()
         } catch {
             self.error = error.localizedDescription
         }
         isLoading = false
+    }
+
+    /// Silent background refresh — no loading spinner, preserves existing data
+    private func silentRefresh() async {
+        guard !isLoading else { return }
+        async let quotesTask = APIService.shared.fetchMarketData()
+        async let forexTask  = APIService.shared.fetchForexRates()
+        if let (qResp, fResp) = try? await (quotesTask, forexTask) {
+            quotes     = qResp.quotes
+            forexPairs = fResp.pairs
+            lastUpdated = Date()
+        }
     }
 
     private func addToWatchlist(_ sym: String) async {
