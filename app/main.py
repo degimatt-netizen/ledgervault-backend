@@ -334,7 +334,7 @@ def _fetch_crypto_prices() -> dict:
 # ─────────────────────────────────────────────
 # STOCK PRICES  (Yahoo Finance — free, no key)
 # ─────────────────────────────────────────────
-STOCK_CACHE_TTL = int(os.getenv("STOCK_CACHE_TTL_SECONDS", "300"))
+STOCK_CACHE_TTL = int(os.getenv("STOCK_CACHE_TTL_SECONDS", "30"))
 
 # ── Wallet explorer API keys (free tiers — optional but improves rate limits) ─
 ETHERSCAN_KEY   = os.getenv("ETHERSCAN_API_KEY",   "")
@@ -2354,8 +2354,21 @@ def reset_database(admin_key: str = Query(...)):
     expected = os.getenv("ADMIN_KEY", "")
     if not expected or admin_key != expected:
         raise HTTPException(status_code=403, detail="Forbidden")
+    # Drop + recreate ORM-managed tables
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    # Also clear raw-SQL tables (not managed by ORM so drop_all misses them)
+    raw_tables = [
+        "watchlist", "crypto_wallets",
+        "snaptrade_connections", "vezgo_connections", "flanks_connections",
+    ]
+    with engine.connect() as conn:
+        for tbl in raw_tables:
+            try:
+                conn.execute(text(f"DELETE FROM {tbl}"))
+            except Exception:
+                pass   # table may not exist yet on a fresh DB
+        conn.commit()
     return {"status": "ok"}
 
 @app.post("/reset/transactions")
