@@ -208,6 +208,7 @@ struct LockScreenView: View {
             DispatchQueue.main.async {
                 isAuthenticating = false
                 if success {
+                    hapticSuccess()
                     withAnimation(.easeOut(duration: 0.25)) { isLocked = false }
                     authError = nil
                 } else {

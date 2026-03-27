@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // MARK: - LVFormatting
 // Single source of truth for all currency / number formatting across the app.
@@ -47,6 +48,21 @@ func fmtPrice(_ p: Double) -> String {
 func pctStr(_ v: Double) -> String {
     (v >= 0 ? "+" : "") + v.formatted(.number.precision(.fractionLength(2))) + "%"
 }
+
+// MARK: - Haptics
+
+/// Light tap — selection changes, toggles, row taps.
+func hapticLight()   { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+/// Medium tap — primary action confirms (save, add).
+func hapticMedium()  { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+/// Success — operation completed successfully.
+func hapticSuccess() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+/// Warning — destructive action about to happen.
+func hapticWarning() { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
+/// Error — operation failed.
+func hapticError()   { UINotificationFeedbackGenerator().notificationOccurred(.error) }
+
+// MARK: - Number formatting
 
 /// Strips unnecessary trailing zeros from a decimal string representation.
 /// e.g. smartNum(100.0)  →  "100", smartNum(1.50)  →  "1.5"

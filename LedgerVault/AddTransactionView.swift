@@ -151,6 +151,7 @@ struct AddTransactionView: View {
                 HStack(spacing: 8) {
                     ForEach(types, id: \.self) { t in
                         Button {
+                            hapticLight()
                             withAnimation(.spring(response: 0.3)) {
                                 type = t
                                 if let first = currentCategories.first { category = first.0 }
@@ -459,9 +460,11 @@ struct AddTransactionView: View {
                 note: note.isEmpty ? nil : note,
                 legs: legs
             )
+            hapticSuccess()
             onSaved()
             dismiss()
         } catch {
+            hapticError()
             errorMessage = error.localizedDescription
         }
     }

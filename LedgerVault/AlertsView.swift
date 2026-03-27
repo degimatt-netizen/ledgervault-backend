@@ -41,9 +41,9 @@ class AlertsManager: ObservableObject {
         }
     }
 
-    func add(_ alert: PriceAlert) { alerts.insert(alert, at: 0); save() }
+    func add(_ alert: PriceAlert) { hapticSuccess(); alerts.insert(alert, at: 0); save() }
 
-    func delete(at offsets: IndexSet) { alerts.remove(atOffsets: offsets); save() }
+    func delete(at offsets: IndexSet) { hapticWarning(); alerts.remove(atOffsets: offsets); save() }
 
     func toggle(_ id: String) {
         if let i = alerts.firstIndex(where: { $0.id == id }) {
@@ -58,11 +58,13 @@ class AlertsManager: ObservableObject {
         if let i = alerts.firstIndex(where: { $0.id == id }) {
             alerts[i].triggered = false
             alerts[i].isActive  = true
+            hapticSuccess()
             save()
         }
     }
 
     func deleteById(_ id: String) {
+        hapticWarning()
         alerts.removeAll { $0.id == id }
         save()
     }

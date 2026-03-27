@@ -632,8 +632,8 @@ struct AddStockView: View {
                 date: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day()),
                 note: note.isEmpty ? nil : note, legs: legs)
 
-            onSaved(); dismiss()
-        } catch { errorMessage = error.localizedDescription }
+            hapticSuccess(); onSaved(); dismiss()
+        } catch { hapticError(); errorMessage = error.localizedDescription }
     }
 
     // MARK: - Currency helpers
