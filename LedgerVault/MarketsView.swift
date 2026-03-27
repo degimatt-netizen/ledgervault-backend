@@ -158,6 +158,10 @@ struct MarketRowView: View {
     let isEditMode: Bool
     let onRemove: () -> Void
 
+    // Price flash state
+    @State private var flashColor: Color? = nil
+    @State private var prevPrice: Double  = 0
+
     private var up: Bool           { quote.change_pct >= 0 }
     private var changeColor: Color { up ? Color(red: 0.2, green: 0.85, blue: 0.4) : Color(red: 1, green: 0.3, blue: 0.3) }
     private var excInfo:           (flag: String, name: String) { exchangeInfo(quote.exchange) }
@@ -242,6 +246,23 @@ struct MarketRowView: View {
                         .cornerRadius(5)
                 }
                 .frame(width: 82, alignment: .trailing)
+                .padding(.horizontal, 6).padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(flashColor?.opacity(0.25) ?? Color.clear)
+                        .animation(.easeOut(duration: 0.5), value: flashColor)
+                )
+                .onChange(of: quote.last) { oldVal, newVal in
+                    guard prevPrice != 0 else { prevPrice = newVal; return }
+                    flashColor = newVal > oldVal
+                        ? Color(red: 0.2, green: 0.85, blue: 0.4)
+                        : Color(red: 1, green: 0.3, blue: 0.3)
+                    prevPrice = newVal
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                        withAnimation(.easeOut(duration: 0.4)) { flashColor = nil }
+                    }
+                }
+                .onAppear { prevPrice = quote.last }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)

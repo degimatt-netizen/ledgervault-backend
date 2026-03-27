@@ -673,28 +673,40 @@ final class APIService {
     }
 
     func fetchWallets() async throws -> [CryptoWallet] {
-        let data = try await get("/wallets")
+        let req = makeRequest(url: baseURL.appendingPathComponent("wallets"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
         return try JSONDecoder().decode(WalletListResponse.self, from: data).wallets
     }
 
     func addWallet(chain: String, address: String, label: String?) async throws -> CryptoWallet {
-        var body: [String: Any] = ["chain": chain, "address": address]
-        if let l = label, !l.isEmpty { body["label"] = l }
-        let data = try await post("/wallets", body: body)
+        var bodyDict: [String: Any] = ["chain": chain, "address": address]
+        if let l = label, !l.isEmpty { bodyDict["label"] = l }
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
+        let req = makeRequest(url: baseURL.appendingPathComponent("wallets"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
         return try JSONDecoder().decode(CryptoWallet.self, from: data)
     }
 
     func deleteWallet(id: String) async throws {
-        _ = try await delete("/wallets/\(id)")
+        let req = makeRequest(url: baseURL.appendingPathComponent("wallets/\(id)"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
     }
 
     func syncWallet(id: String) async throws -> WalletSyncResponse {
-        let data = try await post("/wallets/\(id)/sync", body: [:])
+        let body = try JSONSerialization.data(withJSONObject: [:])
+        let req = makeRequest(url: baseURL.appendingPathComponent("wallets/\(id)/sync"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
         return try JSONDecoder().decode(WalletSyncResponse.self, from: data)
     }
 
     func fetchAllWalletBalances() async throws -> AllWalletBalancesResponse {
-        let data = try await get("/wallets/balances")
+        let req = makeRequest(url: baseURL.appendingPathComponent("wallets/balances"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
         return try JSONDecoder().decode(AllWalletBalancesResponse.self, from: data)
     }
 
