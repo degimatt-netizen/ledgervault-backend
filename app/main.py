@@ -4332,69 +4332,101 @@ _QUOTE_CACHE_TTL = 10  # seconds
 
 
 def _fetch_single_quote(symbol: str) -> dict | None:
-    """Fetch a single quote via Yahoo Finance, returning a full quote dict including bid/ask."""
-    sym = symbol.upper()
-    # Primary: v8 chart API (reliable price + meta)
-    url_chart = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
-    # Secondary: v7 detail for bid/ask/exchange (best-effort, may fail)
-    url_detail = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=price"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        with httpx.Client(timeout=8.0, headers=headers) as c:
-            r = c.get(url_chart); r.raise_for_status()
-            data = r.json()
-        result = data["chart"]["result"][0]
-        meta = result["meta"]
-        price   = float(meta.get("regularMarketPrice", 0))
-        prev    = float(meta.get("chartPreviousClose", price) or price)
-        change  = price - prev
-        chg_pct = (change / prev * 100) if prev else 0.0
-
-        bid = ask = None
-        # Try bid/ask from quoteSummary
-        try:
-            with httpx.Client(timeout=5.0, headers=headers) as c2:
-                r2 = c2.get(url_detail)
-                if r2.status_code == 200:
-                    p = r2.json().get("quoteSummary", {}).get("result", [{}])[0].get("price", {})
-                    bid_raw = p.get("bid", {})
-                    ask_raw = p.get("ask", {})
-                    if isinstance(bid_raw, dict): bid = bid_raw.get("raw")
-                    if isinstance(ask_raw, dict): ask = ask_raw.get("raw")
-        except Exception:
-            pass
-
-        exch_code = meta.get("exchangeName", "")
-        return {
-            "symbol":       sym,
-            "name":         meta.get("shortName", sym),
-            "last":         price,
-            "bid":          float(bid) if bid and float(bid) > 0 else None,
-            "ask":          float(ask) if ask and float(ask) > 0 else None,
-            "change":       round(change, 4),
-            "change_pct":   round(chg_pct, 2),
-            "volume":       meta.get("regularMarketVolume"),
-            "currency":     meta.get("currency", "USD"),
-            "market_state": meta.get("marketState", "CLOSED"),
-            "exchange":     exch_code,
-        }
-    except Exception as e:
-        logger.warning(f"Yahoo quote fetch failed for {sym}: {e}")
-        return None
+    """Fetch a single quote — delegates to batch fetcher."""
+    results = _fetch_yahoo_quotes([symbol])
+    return results.get(symbol.upper())
 
 
 def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
-    """Parallel-fetch quotes for multiple symbols using the proven v8 chart API."""
+    """
+    Batch-fetch live quotes via Yahoo Finance v7 quote API.
+    Returns accurate real-time marketState for all exchanges worldwide
+    (DFM, Euronext, NYSE, NASDAQ, LSE etc.).
+    Falls back per-symbol to v8 chart API on partial failure.
+    """
     if not symbols:
         return {}
+
+    headers = {"User-Agent": "Mozilla/5.0"}
     out: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=min(len(symbols), 10)) as ex:
-        futures = {ex.submit(_fetch_single_quote, s): s.upper() for s in symbols}
-        for fut in as_completed(futures):
-            sym = futures[fut]
-            result = fut.result()
-            if result:
-                out[sym] = result
+
+    # ── v7 batch (up to 50 symbols per request) ──────────────────────────────
+    BATCH = 50
+    for i in range(0, len(symbols), BATCH):
+        batch = [s.upper() for s in symbols[i:i + BATCH]]
+        joined = ",".join(batch)
+        url = (
+            f"https://query1.finance.yahoo.com/v7/finance/quote"
+            f"?symbols={joined}"
+            f"&fields=regularMarketPrice,regularMarketPreviousClose,"
+            f"regularMarketChange,regularMarketChangePercent,"
+            f"regularMarketVolume,bid,ask,currency,marketState,"
+            f"fullExchangeName,shortName"
+        )
+        try:
+            with httpx.Client(timeout=10.0, headers=headers) as c:
+                r = c.get(url); r.raise_for_status()
+            for q in r.json().get("quoteResponse", {}).get("result", []):
+                sym   = q.get("symbol", "").upper()
+                price = float(q.get("regularMarketPrice", 0) or 0)
+                prev  = float(q.get("regularMarketPreviousClose", price) or price)
+                chg   = float(q.get("regularMarketChange", price - prev) or (price - prev))
+                pct   = float(q.get("regularMarketChangePercent", 0) or 0)
+                bid   = q.get("bid")
+                ask   = q.get("ask")
+                out[sym] = {
+                    "symbol":       sym,
+                    "name":         q.get("shortName", sym),
+                    "last":         price,
+                    "bid":          float(bid) if bid and float(bid) > 0 else None,
+                    "ask":          float(ask) if ask and float(ask) > 0 else None,
+                    "change":       round(chg, 4),
+                    "change_pct":   round(pct, 4),
+                    "volume":       q.get("regularMarketVolume"),
+                    "currency":     q.get("currency", "USD"),
+                    "market_state": q.get("marketState", "CLOSED"),
+                    "exchange":     q.get("fullExchangeName", ""),
+                }
+        except Exception as e:
+            logger.warning(f"Yahoo v7 batch fetch failed for {batch}: {e}")
+
+    # ── Fallback: v8 chart API for any symbols that failed ───────────────────
+    missing = [s.upper() for s in symbols if s.upper() not in out]
+    if missing:
+        def _chart_fallback(sym: str) -> dict | None:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
+            try:
+                with httpx.Client(timeout=8.0, headers=headers) as c:
+                    r = c.get(url); r.raise_for_status()
+                meta = r.json()["chart"]["result"][0]["meta"]
+                price = float(meta.get("regularMarketPrice", 0))
+                prev  = float(meta.get("chartPreviousClose", price) or price)
+                chg   = price - prev
+                pct   = (chg / prev * 100) if prev else 0.0
+                return {
+                    "symbol":       sym,
+                    "name":         meta.get("shortName", sym),
+                    "last":         price,
+                    "bid":          None,
+                    "ask":          None,
+                    "change":       round(chg, 4),
+                    "change_pct":   round(pct, 2),
+                    "volume":       meta.get("regularMarketVolume"),
+                    "currency":     meta.get("currency", "USD"),
+                    "market_state": meta.get("marketState", "CLOSED"),
+                    "exchange":     meta.get("exchangeName", ""),
+                }
+            except Exception as e2:
+                logger.warning(f"Yahoo chart fallback failed for {sym}: {e2}")
+                return None
+
+        with ThreadPoolExecutor(max_workers=min(len(missing), 10)) as ex:
+            futures = {ex.submit(_chart_fallback, s): s for s in missing}
+            for fut in as_completed(futures):
+                result = fut.result()
+                if result:
+                    out[result["symbol"]] = result
+
     return out
 
 
