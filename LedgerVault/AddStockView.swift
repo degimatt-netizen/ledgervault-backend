@@ -98,264 +98,440 @@ struct AddStockView: View {
         }
     }
 
+    // MARK: - Body
+
     var body: some View {
         NavigationStack {
-            Form {
-
-                // ── Search ────────────────────────────────────────────────
-                Section("Search Stocks & ETFs") {
-                    HStack {
-                        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                        TextField("Symbol or company (AAPL, Tesla…)", text: $searchText)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.characters)
-                            .onChange(of: searchText) { _, new in triggerSearch(new) }
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        assetCard
+                        accountsCard
+                        if (amountToDeduct != nil || !selectedDeductId.isEmpty) { amountCard }
+                        if selectedResult != nil { priceCard }
+                        if !note.isEmpty || selectedResult != nil { noteCard }
+                        if let err = errorMessage {
+                            Text(err)
+                                .font(.caption).foregroundStyle(.red)
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.red.opacity(0.08)).cornerRadius(12)
+                        }
+                        Spacer().frame(height: 100)
                     }
-                    if isSearching {
-                        HStack {
-                            ProgressView().scaleEffect(0.8)
-                            Text("Searching…").foregroundColor(.secondary).font(.caption)
+                    .padding(16)
+                }
+                saveBanner
+            }
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            .navigationTitle("Buy Stock")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }.font(.body.bold())
+                }
+            }
+            .task { await loadAccounts() }
+            .task { await startLivePriceLoop() }
+            .onChange(of: lockToLivePrice) { _, v in if v { Task { await refreshPrice() } } }
+        }
+    }
+
+    // MARK: - Asset card
+
+    private var assetCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("WHAT ARE YOU BUYING?")
+                .font(.caption.bold()).foregroundStyle(.secondary)
+
+            if let result = selectedResult {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12))
+                            .frame(width: 46, height: 46)
+                        AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(result.symbol)?format=jpg")) { phase in
+                            if case .success(let img) = phase {
+                                img.resizable().scaledToFill()
+                                    .frame(width: 38, height: 38).clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Text(String(result.symbol.prefix(3))).font(.caption.bold()).foregroundColor(.green)
+                            }
                         }
                     }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(result.symbol).font(.headline.bold())
+                        Text(result.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        HStack(spacing: 5) {
+                            if let exch = result.exchange, !exch.isEmpty {
+                                Text(exch).font(.caption2.bold())
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.12)).foregroundColor(.blue)
+                                    .clipShape(Capsule())
+                            }
+                            Label(marketStateLabel, systemImage: marketStateIcon)
+                                .font(.caption2.bold()).labelStyle(.titleAndIcon)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(marketStateColor.opacity(0.12)).foregroundColor(marketStateColor)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        selectedResult = nil; liveQuote = nil; searchText = ""; purchasePricePerUnit = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Color(.tertiaryLabel)).font(.title3)
+                    }
                 }
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Symbol or company (AAPL, Tesla…)", text: $searchText)
+                        .autocorrectionDisabled().textInputAutocapitalization(.characters)
+                        .onChange(of: searchText) { _, new in triggerSearch(new) }
+                    if isSearching { ProgressView().scaleEffect(0.8) }
+                }
+                .padding(11)
+                .background(Color(.tertiarySystemFill))
+                .cornerRadius(10)
 
-                // ── Results ───────────────────────────────────────────────
-                if !searchResults.isEmpty && selectedResult == nil {
-                    Section("Results") {
-                        ForEach(searchResults) { result in
-                            Button { selectResult(result) } label: {
-                                HStack(spacing: 12) {
+                if !searchResults.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(searchResults.prefix(6).enumerated()), id: \.offset) { idx, r in
+                            Button { selectResult(r) } label: {
+                                HStack(spacing: 10) {
                                     ZStack {
-                                        RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.12)).frame(width: 36, height: 36)
-                                        AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(result.symbol)?format=jpg")) { phase in
-                                            switch phase {
-                                            case .success(let img):
+                                        RoundedRectangle(cornerRadius: 7).fill(Color.green.opacity(0.10))
+                                            .frame(width: 32, height: 32)
+                                        AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(r.symbol)?format=jpg")) { phase in
+                                            if case .success(let img) = phase {
                                                 img.resizable().scaledToFill()
-                                                    .frame(width: 28, height: 28)
-                                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                            default:
-                                                Text(String(result.symbol.prefix(3)))
-                                                    .font(.caption2.bold()).foregroundColor(.green)
+                                                    .frame(width: 26, height: 26).clipShape(RoundedRectangle(cornerRadius: 5))
+                                            } else {
+                                                Text(String(r.symbol.prefix(2))).font(.caption2.bold()).foregroundColor(.green)
                                             }
                                         }
                                     }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(result.symbol).font(.headline).foregroundColor(.primary)
-                                            if let exch = result.exchange, !exch.isEmpty {
-                                                Text(exch)
-                                                    .font(.caption2.bold())
-                                                    .padding(.horizontal, 5).padding(.vertical, 2)
-                                                    .background(Color.blue.opacity(0.12))
-                                                    .foregroundColor(.blue)
-                                                    .clipShape(Capsule())
-                                            }
-                                            if let type = result.type {
-                                                Text(type)
-                                                    .font(.caption2)
-                                                    .padding(.horizontal, 5).padding(.vertical, 2)
-                                                    .background(Color.gray.opacity(0.12))
-                                                    .foregroundColor(.secondary)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        HStack(spacing: 5) {
+                                            Text(r.symbol).font(.subheadline.bold()).foregroundStyle(.primary)
+                                            if let exch = r.exchange, !exch.isEmpty {
+                                                Text(exch).font(.caption2.bold())
+                                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                                    .background(Color.blue.opacity(0.10)).foregroundColor(.blue)
                                                     .clipShape(Capsule())
                                             }
                                         }
-                                        Text(result.name).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                                        Text(r.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer()
-                                    if let price = result.price_usd {
-                                        VStack(alignment: .trailing, spacing: 2) {
-                                            Text("$\(price.formatted(.number.precision(.fractionLength(2))))")
-                                                .font(.subheadline.bold()).foregroundColor(.primary)
-                                            if let chg = result.change_pct {
-                                                Text((chg >= 0 ? "+" : "") + "\(chg.formatted(.number.precision(.fractionLength(2))))%")
+                                    if let price = r.price_usd {
+                                        VStack(alignment: .trailing, spacing: 1) {
+                                            Text("$\(smartNum(price, maxDec: 2))").font(.subheadline.bold()).foregroundStyle(.primary)
+                                            if let chg = r.change_pct {
+                                                Text((chg >= 0 ? "+" : "") + "\(smartNum(chg))%")
                                                     .font(.caption2.bold())
                                                     .foregroundColor(chg >= 0 ? .green : .red)
                                             }
                                         }
                                     }
                                 }
+                                .padding(.horizontal, 12).padding(.vertical, 9)
+                            }
+                            if idx < min(searchResults.count, 6) - 1 {
+                                Divider().padding(.leading, 54)
                             }
                         }
                     }
+                    .background(Color(.tertiarySystemFill))
+                    .cornerRadius(10)
                 }
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
 
-                // ── Selected stock ────────────────────────────────────────
-                if let result = selectedResult {
-                    Section {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12)).frame(width: 44, height: 44)
-                                AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(result.symbol)?format=jpg")) { phase in
-                                    switch phase {
-                                    case .success(let img):
-                                        img.resizable().scaledToFill()
-                                            .frame(width: 36, height: 36)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    default:
-                                        Text(String(result.symbol.prefix(3)))
-                                            .font(.caption.bold()).foregroundColor(.green)
-                                    }
-                                }
-                            }
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(result.symbol).font(.title3.bold())
-                                Text(result.name).font(.caption).foregroundColor(.secondary).lineLimit(1)
-                                HStack(spacing: 6) {
-                                    if let exch = result.exchange, !exch.isEmpty {
-                                        Label(exch, systemImage: "building.2.fill")
-                                            .font(.caption2.bold())
-                                            .padding(.horizontal, 6).padding(.vertical, 2)
-                                            .background(Color.blue.opacity(0.1))
-                                            .foregroundColor(.blue)
-                                            .clipShape(Capsule())
-                                    }
-                                    Label(marketStateLabel, systemImage: marketStateIcon)
-                                        .font(.caption2.bold())
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(marketStateColor.opacity(0.1))
-                                        .foregroundColor(marketStateColor)
-                                        .clipShape(Capsule())
-                                        .labelStyle(.titleAndIcon)
-                                }
-                            }
-                            Spacer()
-                            Button {
-                                selectedResult = nil
-                                liveQuote = nil
-                                searchText = ""
-                                purchasePricePerUnit = nil
-                            } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
-                            }
-                        }
+    // MARK: - Accounts card
 
-                        if let quote = liveQuote {
-                            HStack {
-                                Label("LIVE PRICE", systemImage: "circle.fill")
-                                    .font(.caption.bold()).foregroundColor(.green)
-                                    .labelStyle(.titleAndIcon)
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text("$\(quote.price.formatted(.number.precision(.fractionLength(2))))")
-                                        .font(.title3.bold())
-                                    Text((quote.change_pct >= 0 ? "+" : "") + "\(quote.change_pct.formatted(.number.precision(.fractionLength(2))))% today")
-                                        .font(.caption.bold())
-                                        .foregroundColor(quote.change_pct >= 0 ? .green : .red)
-                                }
-                            }
-                        } else {
-                            HStack {
-                                Text("Loading live price…").foregroundColor(.secondary).font(.caption)
-                                Spacer()
-                                ProgressView().scaleEffect(0.7)
-                            }
-                        }
+    private var accountsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("ACCOUNTS").font(.caption.bold()).foregroundStyle(.secondary)
 
-                        if let updated = priceLastUpdated {
-                            Text("Updated \(updated.formatted(date: .omitted, time: .shortened))")
-                                .font(.caption).foregroundColor(.secondary)
-                        }
-                    } header: { Text("Selected Stock") }
-                }
-
-                // ── Buy details ───────────────────────────────────────────
-                if selectedResult != nil {
-                    Section("Buy Details") {
-                        HStack(spacing: 4) {
-                            Text(deductCurrencySymbol)
-                                .foregroundColor(.secondary)
-                                .font(.body)
-                            TextField("Amount to deduct", value: $amountToDeduct, format: .number.precision(.fractionLength(2)))
-                                .keyboardType(.decimalPad)
-                                .focused($focusedField, equals: .amount)
-                        }
-
-                        TextField("Price per share (USD)", value: $purchasePricePerUnit, format: .number.precision(.fractionLength(2)))
-                            .keyboardType(.decimalPad)
-                            .focused($focusedField, equals: .price)
-                            .disabled(lockToLivePrice)
-
-                        Toggle("Lock to live price", isOn: $lockToLivePrice)
-
-                        HStack {
-                            Button(isRefreshingPrice ? "Refreshing…" : "Refresh Price") {
-                                Task { await refreshPrice() }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isRefreshingPrice)
-                            Spacer()
-                            if let updated = priceLastUpdated {
-                                Text(updated.formatted(date: .omitted, time: .shortened))
-                                    .font(.caption).foregroundColor(.secondary)
-                            }
-                        }
-
-                        if let shares = estimatedShares {
-                            HStack {
-                                Text("Estimated shares")
-                                Spacer()
-                                Text(shares.formatted(.number.precision(.fractionLength(0...4))))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        Picker("Broker", selection: $selectedBrokerId) {
-                            ForEach(accounts.filter { $0.account_type == "broker" }) { acc in
-                                Text(acc.name).tag(acc.id)
-                            }
-                        }
-
-                        Picker("Deduct from", selection: $selectedDeductId) {
-                            ForEach(accounts.filter { fiatAccountTypes.contains($0.account_type) }) { acc in
+            HStack(spacing: 10) {
+                // FROM
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("FROM").font(.caption2.bold()).foregroundStyle(.secondary)
+                    Menu {
+                        ForEach(accounts.filter { fiatAccountTypes.contains($0.account_type) }) { acc in
+                            Button { selectedDeductId = acc.id } label: {
                                 let bal = accountBalances[acc.id] ?? 0
-                                Text("\(acc.name) — \(bal.formatted(.number.precision(.fractionLength(2)))) \(acc.base_currency)").tag(acc.id)
+                                Label("\(acc.name)  \(ccySymbol(acc.base_currency))\(smartNum(bal))",
+                                      systemImage: "building.columns")
                             }
                         }
-
-                        // Balance warning
-                        if let amount = amountToDeduct, amount > 0,
-                           let bal = accountBalances[selectedDeductId], bal < amount {
-                            HStack(spacing: 6) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
-                                Text("Insufficient balance (\(bal.formatted(.number.precision(.fractionLength(2)))) available)")
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                            }
-                        }
-
-                        if let fxLine = fxInfoLine { Text(fxLine).font(.caption).foregroundColor(.secondary) }
-                    }
-
-                    Section("Note (optional)") {
-                        TextField("Any notes…", text: $note)
+                    } label: {
+                        accountPill(
+                            id: selectedDeductId,
+                            fallback: "Select account",
+                            showBalance: true
+                        )
                     }
                 }
+                .frame(maxWidth: .infinity)
 
-                if let err = errorMessage {
-                    Section { Text(err).foregroundColor(.red) }
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                // TO
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TO").font(.caption2.bold()).foregroundStyle(.secondary)
+                    Menu {
+                        ForEach(accounts.filter { $0.account_type == "broker" }) { acc in
+                            Button { selectedBrokerId = acc.id } label: {
+                                Label(acc.name, systemImage: "chart.bar.fill")
+                            }
+                        }
+                    } label: {
+                        accountPill(
+                            id: selectedBrokerId,
+                            fallback: "Select broker",
+                            showBalance: false
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
+
+    @ViewBuilder
+    private func accountPill(id: String, fallback: String, showBalance: Bool) -> some View {
+        if let acc = accounts.first(where: { $0.id == id }) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(acc.name)
+                        .font(.subheadline.bold()).foregroundStyle(.primary).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                }
+                if showBalance {
+                    let bal = accountBalances[acc.id] ?? 0
+                    Text("\(ccySymbol(acc.base_currency))\(smartNum(bal))")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Broker").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Buy Stock")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") { Task { await save() } }
-                        .disabled(isSaving || selectedResult == nil || amountToDeduct == nil || purchasePricePerUnit == nil || selectedBrokerId.isEmpty || selectedDeductId.isEmpty)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.tertiarySystemFill))
+            .cornerRadius(10)
+        } else {
+            HStack {
+                Text(fallback).font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(Color(.tertiarySystemFill))
+            .cornerRadius(10)
+        }
+    }
+
+    // MARK: - Amount card
+
+    private var amountCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("AMOUNT TO INVEST").font(.caption.bold()).foregroundStyle(.secondary)
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(deductCurrencySymbol)
+                    .font(.system(size: 38, weight: .light))
+                    .foregroundStyle(.secondary)
+                TextField("0", value: $amountToDeduct, format: .number)
+                    .font(.system(size: 38, weight: .semibold, design: .rounded))
+                    .keyboardType(.decimalPad)
+                    .focused($focusedField, equals: .amount)
+                    .minimumScaleFactor(0.5)
+            }
+
+            Divider()
+
+            if let acc = accounts.first(where: { $0.id == selectedDeductId }) {
+                let bal = accountBalances[acc.id] ?? 0
+                let isInsufficient = (amountToDeduct ?? 0) > bal && (amountToDeduct ?? 0) > 0
+                HStack(spacing: 6) {
+                    if isInsufficient {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    }
+                    Text("Available: \(ccySymbol(acc.base_currency))\(smartNum(bal))")
+                        .font(.caption)
+                        .foregroundStyle(isInsufficient ? .orange : .secondary)
                 }
-                ToolbarItemGroup(placement: .keyboard) {
+            }
+
+            if let fxLine = fxInfoLine {
+                Text(fxLine).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
+
+    // MARK: - Price card
+
+    private var priceCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("PRICE").font(.caption.bold()).foregroundStyle(.secondary)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(lockToLivePrice ? "Live Market Price" : "Manual Price")
+                        .font(.subheadline.bold())
+                    Text(lockToLivePrice ? "Syncs automatically" : "Enter the price you paid")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("", isOn: $lockToLivePrice).labelsHidden()
+            }
+
+            Divider()
+
+            if lockToLivePrice {
+                if let quote = liveQuote {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                Text(ccySymbol(selectedResult?.quote_currency ?? "USD"))
+                                    .font(.title2).foregroundStyle(.secondary)
+                                Text(smartNum(quote.price, maxDec: 4))
+                                    .font(.title2.bold())
+                            }
+                            Text((quote.change_pct >= 0 ? "+" : "") + "\(smartNum(quote.change_pct))% today")
+                                .font(.caption.bold())
+                                .foregroundColor(quote.change_pct >= 0 ? .green : .red)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if isRefreshingPrice {
+                                ProgressView().scaleEffect(0.8)
+                            } else {
+                                Button { Task { await refreshPrice() } } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }.foregroundStyle(.secondary)
+                            }
+                            if let ts = priceLastUpdated {
+                                Text(ts.formatted(date: .omitted, time: .shortened))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        ProgressView().scaleEffect(0.85)
+                        Text("Fetching live price…").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(ccySymbol(selectedResult?.quote_currency ?? "USD"))
+                        .font(.title2).foregroundStyle(.secondary)
+                    TextField("0", value: $purchasePricePerUnit, format: .number)
+                        .font(.title2.bold())
+                        .keyboardType(.decimalPad)
+                        .focused($focusedField, equals: .price)
+                }
+            }
+
+            if let shares = estimatedShares, let result = selectedResult {
+                Divider()
+                HStack {
+                    Text("Estimated shares").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Done") { focusedField = nil }
-                        .font(.body.bold())
+                    Text("\(smartNum(shares, maxDec: 6)) \(result.symbol)").font(.subheadline.bold())
                 }
             }
-            .task { await loadAccounts() }
-            .task { await startLivePriceLoop() }
-            .onChange(of: lockToLivePrice) { _, newValue in
-                if newValue { Task { await refreshPrice() } }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
+
+    // MARK: - Note card
+
+    private var noteCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("NOTE (OPTIONAL)").font(.caption.bold()).foregroundStyle(.secondary)
+            TextField("Add a note…", text: $note)
+                .font(.subheadline)
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(16)
+    }
+
+    // MARK: - Save banner
+
+    private var saveBanner: some View {
+        Button { Task { await save() } } label: {
+            Group {
+                if isSaving {
+                    HStack(spacing: 10) { ProgressView().tint(.white); Text("Saving…") }
+                } else {
+                    Text("Buy \(selectedResult?.symbol ?? "Stock")")
+                }
             }
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(canSave ? Color(red: 0.15, green: 0.75, blue: 0.35) : Color(.systemFill))
+            .cornerRadius(16)
+        }
+        .disabled(!canSave || isSaving)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .background(
+            Color(.systemGroupedBackground)
+                .shadow(color: .black.opacity(0.08), radius: 10, y: -4)
+                .ignoresSafeArea()
+        )
+    }
+
+    private var canSave: Bool {
+        selectedResult != nil &&
+        (amountToDeduct ?? 0) > 0 &&
+        (purchasePricePerUnit ?? 0) > 0 &&
+        !selectedBrokerId.isEmpty &&
+        !selectedDeductId.isEmpty
+    }
+
+    // MARK: - Smart number formatting
+
+    private func smartNum(_ v: Double, maxDec: Int = 2) -> String {
+        if v.truncatingRemainder(dividingBy: 1) == 0 { return String(format: "%.0f", v) }
+        var s = String(format: "%.\(maxDec)f", v)
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
+    }
+
+    private func ccySymbol(_ code: String) -> String {
+        switch code.uppercased() {
+        case "USD": return "$"; case "GBP": return "£"; case "EUR": return "€"
+        case "CHF": return "Fr"; case "JPY": return "¥"; case "AUD": return "A$"
+        case "CAD": return "C$"; case "HKD": return "HK$"; case "AED": return "د.إ"
+        default: return code
         }
     }
 
