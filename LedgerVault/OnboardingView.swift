@@ -59,19 +59,22 @@ struct OnboardingView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color(hex: "0F0F1A"), Color(hex: "1a1a2e"), Color(hex: "16213e")],
+                colors: [LVBrand.navyMid, LVBrand.navy],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             ).ignoresSafeArea()
 
             VStack(spacing: 0) {
 
-                // ── Progress indicator ────────────────────────────────────
-                HStack(spacing: 8) {
-                    ForEach(0..<totalSteps) { i in
-                        Capsule()
-                            .fill(i <= step ? Color.white : Color.white.opacity(0.18))
-                            .frame(width: i == step ? 28 : 8, height: 6)
-                            .animation(.spring(response: 0.4), value: step)
+                // ── Wordmark + progress ───────────────────────────────────
+                VStack(spacing: 20) {
+                    LVWordmark(shieldSize: 36)
+                    HStack(spacing: 8) {
+                        ForEach(0..<totalSteps) { i in
+                            Capsule()
+                                .fill(i <= step ? Color.white : Color.white.opacity(0.18))
+                                .frame(width: i == step ? 28 : 8, height: 5)
+                                .animation(.spring(response: 0.4), value: step)
+                        }
                     }
                 }
                 .padding(.top, 60)

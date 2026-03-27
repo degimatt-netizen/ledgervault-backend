@@ -168,15 +168,16 @@ struct SignInView: View {
             VStack(spacing: 0) {
 
                 // ── Logo ──────────────────────────────────────────────
-                VStack(spacing: 12) {
-                    LVMonogram(size: 76)
-                        .shadow(color: Color(hex: "0A84FF").opacity(0.18), radius: 20, x: 0, y: 0)
-                    Text("LedgerVault")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
+                VStack(spacing: 14) {
+                    LVWordmark(shieldSize: 52)
+                        .shadow(color: LVBrand.navy.opacity(0.6), radius: 24, x: 0, y: 4)
+                    Text("Private. Complete. Calm.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.40))
+                        .tracking(0.3)
                 }
                 .padding(.top, 64)
-                .padding(.bottom, 28)
+                .padding(.bottom, 32)
 
                 // ── Tab picker — sliding underline ────────────────────
                 VStack(spacing: 0) {

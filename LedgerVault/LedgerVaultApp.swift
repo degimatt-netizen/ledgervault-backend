@@ -136,15 +136,11 @@ struct LockScreenView: View {
             VStack(spacing: 32) {
                 Spacer()
 
-                LVMonogram(size: 80)
+                LVWordmark(shieldSize: 52, textColor: .primary)
 
-                VStack(spacing: 6) {
-                    Text("LedgerVault")
-                        .font(.title.bold())
-                    Text("Locked")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
+                Text("Locked")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
 
                 if let error = authError {
                     Text(error)
