@@ -2,18 +2,77 @@ import Combine
 import SwiftUI
 import UserNotifications
 
+// MARK: - Logo image loader (primary → fallback → avatar)
+
+struct LogoImageView<Placeholder: View>: View {
+    let primary: URL?
+    let fallback: URL?
+    let placeholder: Placeholder
+
+    @State private var useFallback   = false
+    @State private var showFallback2 = false
+
+    var body: some View {
+        Group {
+            if showFallback2 {
+                placeholder
+            } else if useFallback, let url = fallback {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable().scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    case .failure(_):
+                        placeholder.onAppear { showFallback2 = true }
+                    default:
+                        placeholder
+                    }
+                }
+            } else if let url = primary {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable().scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    case .failure(_):
+                        placeholder.onAppear { useFallback = true }
+                    default:
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+    }
+}
+
 // MARK: - Logo (real image + avatar fallback)
 
 struct SymbolLogo: View {
     let symbol: String
 
-    private var logoURL: URL? {
-        let clean = symbol.replacingOccurrences(of: "-USD", with: "")
-                          .replacingOccurrences(of: ".L", with: "")
-                          .replacingOccurrences(of: ".AS", with: "")
-                          .replacingOccurrences(of: ".PA", with: "")
-                          .replacingOccurrences(of: ".DE", with: "")
-        return URL(string: "https://financialmodelingprep.com/image-stock/\(clean).png")
+    // Strip exchange suffixes to get the base ticker for logo lookup
+    private var cleanSymbol: String {
+        symbol
+            .replacingOccurrences(of: "-USD", with: "")
+            .replacingOccurrences(of: ".L",   with: "")
+            .replacingOccurrences(of: ".AS",  with: "")
+            .replacingOccurrences(of: ".PA",  with: "")
+            .replacingOccurrences(of: ".DE",  with: "")
+            .replacingOccurrences(of: ".AE",  with: "")
+            .replacingOccurrences(of: ".MI",  with: "")
+            .replacingOccurrences(of: ".SW",  with: "")
+            .replacingOccurrences(of: ".HK",  with: "")
+            .replacingOccurrences(of: ".T",   with: "")
+    }
+
+    // Try multiple logo sources in order
+    private var primaryLogoURL: URL? {
+        URL(string: "https://financialmodelingprep.com/image-stock/\(cleanSymbol).png")
+    }
+    private var fallbackLogoURL: URL? {
+        URL(string: "https://assets.parqet.com/logos/symbol/\(cleanSymbol)?format=jpg")
     }
 
     private var avatarColor: Color {
@@ -28,22 +87,8 @@ struct SymbolLogo: View {
     }
 
     var body: some View {
-        Group {
-            if let url = logoURL {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
-                    default:
-                        avatarFallback
-                    }
-                }
-            } else {
-                avatarFallback
-            }
-        }
-        .frame(width: 40, height: 40)
+        LogoImageView(primary: primaryLogoURL, fallback: fallbackLogoURL, placeholder: avatarFallback)
+            .frame(width: 40, height: 40)
     }
 
     private var avatarFallback: some View {
@@ -108,10 +153,11 @@ struct SparklineView: View {
 private func exchangeInfo(_ raw: String?) -> (flag: String, name: String) {
     guard let raw = raw?.uppercased(), !raw.isEmpty else { return ("", "") }
     let flags: [(keys: [String], flag: String, name: String)] = [
-        (["NMS","NGM","NCM","NasdaqGS","NasdaqGM","NasdaqCM","NASDAQ"], "🇺🇸", "NASDAQ"),
-        (["NYQ","NYM","NYSE"],                                            "🇺🇸", "NYSE"),
-        (["ASE","PCX","BATS","BTS"],                                      "🇺🇸", "NYSE AMEX"),
-        (["CBT","CME","NYB","NYF"],                                        "🇺🇸", "CBOT/CME"),
+        (["NMS","NGM","NCM","NASDAQGS","NASDAQGM","NASDAQCM","NASDAQ",
+          "NASDAQ GLOBAL SELECT MARKET","NASDAQ GLOBAL MARKET","NASDAQ CAPITAL MARKET"], "🇺🇸", "NASDAQ"),
+        (["NYQ","NYM","NYSE","NEW YORK STOCK EXCHANGE","NYSE ARCA","NYSE AMERICAN"],     "🇺🇸", "NYSE"),
+        (["ASE","PCX","BATS","BTS","CBOE"],                                              "🇺🇸", "NYSE AMEX"),
+        (["CBT","CME","NYB","NYF"],                                                      "🇺🇸", "CBOT/CME"),
         (["LSE","IOB"],                                                    "🇬🇧", "London"),
         (["EPA","PAR"],                                                    "🇫🇷", "Paris"),
         (["ETR","GER","XETRA"],                                            "🇩🇪", "Frankfurt"),
@@ -138,6 +184,10 @@ private func exchangeInfo(_ raw: String?) -> (flag: String, name: String) {
     ]
     for row in flags {
         if row.keys.contains(raw) { return (row.flag, row.name) }
+    }
+    // Substring fallback for full exchange names (e.g. "NEW YORK STOCK EXCHANGE" contains "NYSE")
+    for row in flags {
+        if row.keys.contains(where: { raw.contains($0) }) { return (row.flag, row.name) }
     }
     return ("🌐", raw)
 }
@@ -258,8 +308,8 @@ struct MarketRowView: View {
                         ? Color(red: 0.2, green: 0.85, blue: 0.4)
                         : Color(red: 1, green: 0.3, blue: 0.3)
                     prevPrice = newVal
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                        withAnimation(.easeOut(duration: 0.4)) { flashColor = nil }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        withAnimation(.easeOut(duration: 0.15)) { flashColor = nil }
                     }
                 }
                 .onAppear { prevPrice = quote.last }

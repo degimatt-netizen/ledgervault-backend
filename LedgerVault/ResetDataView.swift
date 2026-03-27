@@ -207,6 +207,8 @@ struct ResetDataView: View {
         do {
             if full {
                 try await APIService.shared.fullReset()
+                // Clear local-only data that the backend can't reach
+                UserDefaults.standard.removeObject(forKey: "price_alerts_v1")
                 successMessage = "Everything has been reset. Your app is starting fresh."
             } else {
                 try await APIService.shared.clearTransactions()
