@@ -4337,11 +4337,93 @@ def _fetch_single_quote(symbol: str) -> dict | None:
     return results.get(symbol.upper())
 
 
+def _calc_market_state(exchange: str) -> str | None:
+    """
+    Derive market state from local trading hours — more reliable than Yahoo Finance.
+    Returns None for unknown exchanges (caller keeps Yahoo's value).
+    """
+    now = datetime.now(timezone.utc)
+    wd  = now.weekday()   # 0=Mon … 6=Sun
+    exch = (exchange or "").upper()
+    h, m  = now.hour, now.minute
+    t_utc = h * 60 + m   # minutes since midnight UTC
+    mo    = now.month
+
+    def lt(offset_h: int) -> int:      # local time in minutes
+        return (t_utc + offset_h * 60) % 1440
+
+    # ── US exchanges ── ET = UTC-5 (Nov-Mar) / UTC-4 (Mar-Nov)
+    if any(x in exch for x in ["NYSE","NASDAQ","NMS","NGM","NCM","NASDAQGS",
+                                "NASDAQGM","NASDAQCM","BATS","ARCA","PCX","ASE"]):
+        if wd >= 5: return "CLOSED"
+        off = -4 if 3 <= mo <= 11 else -5
+        ltt = lt(off)
+        if   4*60        <= ltt < 9*60+30:  return "PRE"
+        elif 9*60+30     <= ltt < 16*60:    return "REGULAR"
+        elif 16*60       <= ltt < 20*60:    return "POST"
+        return "CLOSED"
+
+    # ── Dubai DFM / ADX ── UTC+4, no DST, UAE weekend = Sat+Sun
+    if any(x in exch for x in ["DUBAI","DFM","ADX","ABU DHABI"]):
+        if wd >= 5: return "CLOSED"
+        ltt = lt(4)
+        if 10*60 <= ltt < 14*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # ── Euronext (Paris, Amsterdam) ── CET/CEST = UTC+1/+2
+    if any(x in exch for x in ["PARIS","EURONEXT","SBF","EPA","PAR",
+                                "AMS","AMSTERDAM","BRUXELLES"]):
+        if wd >= 5: return "CLOSED"
+        off = 2 if 3 <= mo <= 10 else 1
+        ltt = lt(off)
+        if 9*60 <= ltt < 17*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # ── LSE London ── GMT/BST = UTC+0/+1
+    if any(x in exch for x in ["LSE","LONDON","IOB","LSEETF"]):
+        if wd >= 5: return "CLOSED"
+        off = 1 if 3 <= mo <= 10 else 0
+        ltt = lt(off)
+        if 8*60 <= ltt < 16*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # ── Frankfurt / Xetra ── CET/CEST
+    if any(x in exch for x in ["XETRA","FRANKFURT","GER","ETR","IBIS","IBIS2"]):
+        if wd >= 5: return "CLOSED"
+        off = 2 if 3 <= mo <= 10 else 1
+        ltt = lt(off)
+        if 9*60 <= ltt < 17*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # ── Swiss ── CET/CEST
+    if any(x in exch for x in ["SWX","EBS","SWISS"]):
+        if wd >= 5: return "CLOSED"
+        off = 2 if 3 <= mo <= 10 else 1
+        ltt = lt(off)
+        if 9*60 <= ltt < 17*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # ── Tokyo ── UTC+9, no DST
+    if any(x in exch for x in ["TOKYO","TYO","JPX","OSA"]):
+        if wd >= 5: return "CLOSED"
+        ltt = lt(9)
+        if 9*60 <= ltt < 11*60+30 or 12*60+30 <= ltt < 15*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # ── Hong Kong ── UTC+8, no DST
+    if any(x in exch for x in ["HONG KONG","HKG","HKEX"]):
+        if wd >= 5: return "CLOSED"
+        ltt = lt(8)
+        if 9*60+30 <= ltt < 16*60: return "REGULAR"
+        return "CLOSED"
+
+    return None   # unknown — keep Yahoo Finance value
+
+
 def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
     """
     Batch-fetch live quotes via Yahoo Finance v7 quote API.
-    Returns accurate real-time marketState for all exchanges worldwide
-    (DFM, Euronext, NYSE, NASDAQ, LSE etc.).
+    Market state is overridden by _calc_market_state() for accuracy.
     Falls back per-symbol to v8 chart API on partial failure.
     """
     if not symbols:
@@ -4426,6 +4508,12 @@ def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
                 result = fut.result()
                 if result:
                     out[result["symbol"]] = result
+
+    # ── Override market_state with local hours calculation ────────────────────
+    for sym, q in out.items():
+        override = _calc_market_state(q.get("exchange", ""))
+        if override is not None:
+            q["market_state"] = override
 
     return out
 
