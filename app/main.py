@@ -94,6 +94,16 @@ for _stmt in [
         last_synced VARCHAR
     )""",
     "CREATE INDEX IF NOT EXISTS ix_flanks_connections_user_id ON flanks_connections (user_id)",
+    """CREATE TABLE IF NOT EXISTS crypto_wallets (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        chain VARCHAR NOT NULL,
+        address VARCHAR NOT NULL,
+        label VARCHAR,
+        last_synced VARCHAR,
+        created_at VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_crypto_wallets_user_id ON crypto_wallets (user_id)",
     """CREATE TABLE IF NOT EXISTS watchlist (
         id VARCHAR PRIMARY KEY,
         user_id VARCHAR NOT NULL,
@@ -325,6 +335,11 @@ def _fetch_crypto_prices() -> dict:
 # STOCK PRICES  (Yahoo Finance — free, no key)
 # ─────────────────────────────────────────────
 STOCK_CACHE_TTL = int(os.getenv("STOCK_CACHE_TTL_SECONDS", "300"))
+
+# ── Wallet explorer API keys (free tiers — optional but improves rate limits) ─
+ETHERSCAN_KEY   = os.getenv("ETHERSCAN_API_KEY",   "")
+BSCSCAN_KEY     = os.getenv("BSCSCAN_API_KEY",     "")
+POLYGONSCAN_KEY = os.getenv("POLYGONSCAN_API_KEY", "")
 _stock_cache: dict[str, dict] = {}   # symbol → {price, change_pct, exchange, name, ts}
 
 def _fetch_stock_price(symbol: str) -> dict | None:
@@ -4337,6 +4352,253 @@ def _fetch_single_quote(symbol: str) -> dict | None:
     return results.get(symbol.upper())
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  CRYPTO WALLET BALANCE FETCHERS (all free, no paid APIs)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _evm_token_balances(address: str, api_base: str, api_key: str) -> list[dict]:
+    """Discover ERC-20/BEP-20/Polygon tokens via transfer history, return non-zero balances."""
+    h = {"User-Agent": "Mozilla/5.0"}
+    key = f"&apikey={api_key}" if api_key else ""
+    tokens: dict[str, dict] = {}
+    try:
+        url = (f"{api_base}?module=account&action=tokentx&address={address}"
+               f"&sort=desc&page=1&offset=200{key}")
+        with httpx.Client(timeout=12, headers=h) as c:
+            r = c.get(url); r.raise_for_status()
+        if r.json().get("status") == "1":
+            for tx in r.json().get("result", []):
+                ca = tx.get("contractAddress", "").lower()
+                if ca and ca not in tokens:
+                    tokens[ca] = {
+                        "symbol":   tx.get("tokenSymbol", "???"),
+                        "name":     tx.get("tokenName", ""),
+                        "decimals": int(tx.get("tokenDecimal", 18) or 18),
+                    }
+    except Exception as e:
+        logger.warning(f"EVM token discovery failed: {e}")
+        return []
+
+    balances = []
+    for ca, info in list(tokens.items())[:40]:
+        try:
+            url2 = (f"{api_base}?module=account&action=tokenbalance"
+                    f"&contractaddress={ca}&address={address}&tag=latest{key}")
+            with httpx.Client(timeout=8, headers=h) as c:
+                r = c.get(url2); r.raise_for_status()
+            d = r.json()
+            if d.get("status") == "1":
+                raw = int(d.get("result", 0) or 0)
+                bal = raw / (10 ** info["decimals"])
+                if bal > 1e-8:
+                    balances.append({"symbol": info["symbol"], "name": info["name"],
+                                     "balance": bal, "contract": ca})
+        except Exception:
+            pass
+    return balances
+
+
+def _fetch_btc_balance(address: str) -> tuple[float, list]:
+    try:
+        with httpx.Client(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(f"https://blockstream.info/api/address/{address}"); r.raise_for_status()
+        d = r.json()
+        cs = d.get("chain_stats", {}); ms = d.get("mempool_stats", {})
+        funded = cs.get("funded_txo_sum", 0) + ms.get("funded_txo_sum", 0)
+        spent  = cs.get("spent_txo_sum",  0) + ms.get("spent_txo_sum",  0)
+        return (funded - spent) / 1e8, []
+    except Exception as e:
+        logger.warning(f"BTC balance failed {address}: {e}"); return 0.0, []
+
+
+def _fetch_eth_balance(address: str) -> tuple[float, list]:
+    key = f"&apikey={ETHERSCAN_KEY}" if ETHERSCAN_KEY else ""
+    native = 0.0
+    try:
+        url = f"https://api.etherscan.io/api?module=account&action=balance&address={address}&tag=latest{key}"
+        with httpx.Client(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+        d = r.json()
+        if d.get("status") == "1": native = int(d["result"]) / 1e18
+    except Exception as e:
+        logger.warning(f"ETH balance failed: {e}")
+    tokens = _evm_token_balances(address, "https://api.etherscan.io/api", ETHERSCAN_KEY)
+    return native, tokens
+
+
+def _fetch_bnb_balance(address: str) -> tuple[float, list]:
+    key = f"&apikey={BSCSCAN_KEY}" if BSCSCAN_KEY else ""
+    native = 0.0
+    try:
+        url = f"https://api.bscscan.com/api?module=account&action=balance&address={address}&tag=latest{key}"
+        with httpx.Client(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+        d = r.json()
+        if d.get("status") == "1": native = int(d["result"]) / 1e18
+    except Exception as e:
+        logger.warning(f"BNB balance failed: {e}")
+    tokens = _evm_token_balances(address, "https://api.bscscan.com/api", BSCSCAN_KEY)
+    return native, tokens
+
+
+def _fetch_matic_balance(address: str) -> tuple[float, list]:
+    key = f"&apikey={POLYGONSCAN_KEY}" if POLYGONSCAN_KEY else ""
+    native = 0.0
+    try:
+        url = f"https://api.polygonscan.com/api?module=account&action=balance&address={address}&tag=latest{key}"
+        with httpx.Client(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+        d = r.json()
+        if d.get("status") == "1": native = int(d["result"]) / 1e18
+    except Exception as e:
+        logger.warning(f"MATIC balance failed: {e}")
+    tokens = _evm_token_balances(address, "https://api.polygonscan.com/api", POLYGONSCAN_KEY)
+    return native, tokens
+
+
+def _fetch_trx_balance(address: str) -> tuple[float, list]:
+    try:
+        with httpx.Client(timeout=12, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(f"https://apilist.tronscanapi.com/api/account?address={address}"); r.raise_for_status()
+        d = r.json()
+        native = d.get("balance", 0) / 1e6
+        tokens = []
+        for tok in d.get("trc20token_balances", []):
+            dec = int(tok.get("tokenDecimal", 6) or 6)
+            bal = float(tok.get("balance", 0) or 0) / (10 ** dec)
+            if bal > 1e-8:
+                tokens.append({"symbol": tok.get("tokenAbbr", "").upper(),
+                                "name": tok.get("tokenName", ""),
+                                "balance": bal, "contract": tok.get("tokenId", "")})
+        return native, tokens
+    except Exception as e:
+        logger.warning(f"TRX balance failed {address}: {e}"); return 0.0, []
+
+
+def _fetch_sol_balance(address: str) -> tuple[float, list]:
+    rpc = "https://api.mainnet-beta.solana.com"
+    h   = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+    native = 0.0
+    tokens = []
+    try:
+        with httpx.Client(timeout=10, headers=h) as c:
+            r = c.post(rpc, json={"jsonrpc": "2.0", "id": 1, "method": "getBalance",
+                                   "params": [address]}); r.raise_for_status()
+        native = r.json().get("result", {}).get("value", 0) / 1e9
+    except Exception as e:
+        logger.warning(f"SOL balance failed: {e}")
+    try:
+        payload = {"jsonrpc": "2.0", "id": 2, "method": "getTokenAccountsByOwner",
+                   "params": [address,
+                               {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+                               {"encoding": "jsonParsed"}]}
+        with httpx.Client(timeout=10, headers=h) as c:
+            r = c.post(rpc, json=payload); r.raise_for_status()
+        for acct in r.json().get("result", {}).get("value", []):
+            info = acct.get("account", {}).get("data", {}).get("parsed", {}).get("info", {})
+            ta   = info.get("tokenAmount", {})
+            bal  = float(ta.get("uiAmount", 0) or 0)
+            if bal > 1e-8:
+                mint = info.get("mint", "")
+                tokens.append({"symbol": mint[:8], "name": mint,
+                                "balance": bal, "contract": mint})
+    except Exception as e:
+        logger.warning(f"SOL tokens failed: {e}")
+    return native, tokens
+
+
+def _fetch_xrp_balance(address: str) -> tuple[float, list]:
+    try:
+        payload = {"method": "account_info",
+                   "params": [{"account": address, "ledger_index": "current"}]}
+        with httpx.Client(timeout=10, headers={"Content-Type": "application/json"}) as c:
+            r = c.post("https://xrplcluster.com/", json=payload); r.raise_for_status()
+        result = r.json().get("result", {})
+        if result.get("status") == "success":
+            drops = int(result.get("account_data", {}).get("Balance", 0))
+            return drops / 1e6, []
+        return 0.0, []
+    except Exception as e:
+        logger.warning(f"XRP balance failed {address}: {e}"); return 0.0, []
+
+
+def _fetch_ltc_balance(address: str) -> tuple[float, list]:
+    try:
+        url = f"https://api.blockchair.com/litecoin/addresses/balances?addresses={address}"
+        with httpx.Client(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = c.get(url); r.raise_for_status()
+        sats = r.json().get("data", {}).get(address.lower(), 0)
+        return sats / 1e8, []
+    except Exception as e:
+        logger.warning(f"LTC balance failed {address}: {e}"); return 0.0, []
+
+
+_CHAIN_FETCHERS = {
+    "BTC":   _fetch_btc_balance,
+    "ETH":   _fetch_eth_balance,
+    "BNB":   _fetch_bnb_balance,
+    "MATIC": _fetch_matic_balance,
+    "POL":   _fetch_matic_balance,   # same chain, rebranded
+    "TRX":   _fetch_trx_balance,
+    "SOL":   _fetch_sol_balance,
+    "XRP":   _fetch_xrp_balance,
+    "LTC":   _fetch_ltc_balance,
+}
+
+SUPPORTED_CHAINS = list(_CHAIN_FETCHERS.keys())
+
+
+def _wallet_to_holdings(chain: str, address: str) -> list[dict]:
+    """
+    Fetch wallet balances and return a list of {symbol, name, balance, value_usd}.
+    Uses live CoinGecko / Yahoo prices for valuation.
+    """
+    fetcher = _CHAIN_FETCHERS.get(chain.upper())
+    if not fetcher:
+        return []
+    native_bal, tokens = fetcher(address)
+
+    # Build symbol list for price lookup
+    native_sym = chain.upper()
+    syms_needed = [native_sym] + [t["symbol"].upper() for t in tokens]
+
+    # Get prices (reuse existing crypto price cache)
+    prices = {}
+    try:
+        fx = _get_fx_rates()
+        crypto_prices = _get_crypto_prices()
+        for sym in syms_needed:
+            if sym in crypto_prices:
+                prices[sym] = crypto_prices[sym]
+    except Exception:
+        pass
+
+    results = []
+    if native_bal > 1e-8:
+        price = prices.get(native_sym, 0)
+        results.append({
+            "symbol":    native_sym,
+            "name":      chain.upper(),
+            "balance":   native_bal,
+            "price_usd": price,
+            "value_usd": native_bal * price,
+            "is_native": True,
+        })
+    for tok in tokens:
+        sym = tok["symbol"].upper()
+        price = prices.get(sym, 0)
+        results.append({
+            "symbol":    sym,
+            "name":      tok["name"],
+            "balance":   tok["balance"],
+            "price_usd": price,
+            "value_usd": tok["balance"] * price,
+            "is_native": False,
+            "contract":  tok.get("contract", ""),
+        })
+    return results
+
+
 def _calc_market_state(exchange: str, tz_name: str = "") -> str | None:
     """
     Derive market state from IANA timezone name (preferred) or exchange name string.
@@ -4673,6 +4935,13 @@ def market_data(user_id: str = Depends(require_user_id), db: Session = Depends(g
         out["in_watchlist"] = sym in watchlist_syms
         quotes.append(out)
 
+    # Recalculate market_state from local hours on every response
+    # (cached quotes retain stale state from when they were fetched)
+    for q in quotes:
+        override = _calc_market_state(q.get("exchange", ""), q.get("exchange_tz", ""))
+        if override is not None:
+            q["market_state"] = override
+
     quotes.sort(key=lambda q: q["symbol"])
     return {"quotes": quotes, "watchlist": watchlist_syms}
 
@@ -4788,3 +5057,116 @@ def market_news(symbols: str = "", user_id: str = Depends(require_user_id)):
 
     articles.sort(key=lambda a: a["published_at"], reverse=True)
     return {"articles": articles[:25]}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  CRYPTO WALLET ENDPOINTS
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/wallets")
+def list_wallets(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    rows = db.execute(
+        text("SELECT id, chain, address, label, last_synced, created_at "
+             "FROM crypto_wallets WHERE user_id = :uid ORDER BY created_at"),
+        {"uid": user_id}
+    ).fetchall()
+    return {"wallets": [dict(r._mapping) for r in rows]}
+
+
+@app.post("/wallets")
+def add_wallet(payload: dict, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    chain   = (payload.get("chain") or "").upper().strip()
+    address = (payload.get("address") or "").strip()
+    label   = (payload.get("label") or "").strip() or None
+
+    if chain not in SUPPORTED_CHAINS:
+        raise HTTPException(400, f"Unsupported chain. Supported: {', '.join(SUPPORTED_CHAINS)}")
+    if not address:
+        raise HTTPException(400, "Address required")
+
+    # Check duplicate
+    existing = db.execute(
+        text("SELECT id FROM crypto_wallets WHERE user_id = :uid AND chain = :c AND address = :a"),
+        {"uid": user_id, "c": chain, "a": address}
+    ).fetchone()
+    if existing:
+        raise HTTPException(409, "Wallet already added")
+
+    wid = str(uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        text("INSERT INTO crypto_wallets (id, user_id, chain, address, label, created_at) "
+             "VALUES (:id, :uid, :c, :a, :l, :ts)"),
+        {"id": wid, "uid": user_id, "c": chain, "a": address, "l": label, "ts": now}
+    )
+    db.commit()
+    return {"id": wid, "chain": chain, "address": address, "label": label}
+
+
+@app.delete("/wallets/{wallet_id}")
+def delete_wallet(wallet_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    result = db.execute(
+        text("DELETE FROM crypto_wallets WHERE id = :id AND user_id = :uid"),
+        {"id": wallet_id, "uid": user_id}
+    )
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(404, "Wallet not found")
+    return {"deleted": True}
+
+
+@app.post("/wallets/{wallet_id}/sync")
+def sync_wallet(wallet_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    row = db.execute(
+        text("SELECT chain, address FROM crypto_wallets WHERE id = :id AND user_id = :uid"),
+        {"id": wallet_id, "uid": user_id}
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Wallet not found")
+
+    holdings = _wallet_to_holdings(row.chain, row.address)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        text("UPDATE crypto_wallets SET last_synced = :ts WHERE id = :id"),
+        {"ts": now, "id": wallet_id}
+    )
+    db.commit()
+    return {
+        "wallet_id":   wallet_id,
+        "chain":       row.chain,
+        "address":     row.address,
+        "holdings":    holdings,
+        "total_usd":   sum(h["value_usd"] for h in holdings),
+        "synced_at":   now,
+    }
+
+
+@app.get("/wallets/balances")
+def all_wallet_balances(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    """Fetch live balances for all user wallets in parallel."""
+    rows = db.execute(
+        text("SELECT id, chain, address, label FROM crypto_wallets WHERE user_id = :uid"),
+        {"uid": user_id}
+    ).fetchall()
+
+    def _sync_one(row):
+        holdings = _wallet_to_holdings(row.chain, row.address)
+        return {
+            "wallet_id": row.id,
+            "chain":     row.chain,
+            "address":   row.address,
+            "label":     row.label,
+            "holdings":  holdings,
+            "total_usd": sum(h["value_usd"] for h in holdings),
+        }
+
+    results = []
+    with ThreadPoolExecutor(max_workers=min(len(rows), 6)) as ex:
+        futures = {ex.submit(_sync_one, r): r for r in rows}
+        for fut in as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                logger.warning(f"Wallet sync failed: {e}")
+
+    return {"wallets": results, "total_usd": sum(w["total_usd"] for w in results)}
