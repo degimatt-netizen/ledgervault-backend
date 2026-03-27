@@ -450,14 +450,7 @@ struct AccountDetailView: View {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     private func currencyString(_ value: Double) -> String {
-        let symbol: String
-        switch baseCurrency {
-        case "EUR": symbol = "€"
-        case "USD": symbol = "$"
-        case "GBP": symbol = "£"
-        default:    symbol = "\(baseCurrency) "
-        }
-        return "\(symbol)\(value.formatted(.number.precision(.fractionLength(2))))"
+        fmtCurrency(value, currency: baseCurrency)
     }
 
     private func iconForEvent(_ type: String) -> String {

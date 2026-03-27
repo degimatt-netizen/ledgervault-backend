@@ -516,24 +516,7 @@ struct AddStockView: View {
         !selectedDeductId.isEmpty
     }
 
-    // MARK: - Smart number formatting
-
-    private func smartNum(_ v: Double, maxDec: Int = 2) -> String {
-        if v.truncatingRemainder(dividingBy: 1) == 0 { return String(format: "%.0f", v) }
-        var s = String(format: "%.\(maxDec)f", v)
-        while s.hasSuffix("0") { s.removeLast() }
-        if s.hasSuffix(".") { s.removeLast() }
-        return s
-    }
-
-    private func ccySymbol(_ code: String) -> String {
-        switch code.uppercased() {
-        case "USD": return "$"; case "GBP": return "£"; case "EUR": return "€"
-        case "CHF": return "Fr"; case "JPY": return "¥"; case "AUD": return "A$"
-        case "CAD": return "C$"; case "HKD": return "HK$"; case "AED": return "د.إ"
-        default: return code
-        }
-    }
+    // smartNum and ccySymbol are global — see LVFormatting.swift
 
     // MARK: - Search
 
@@ -657,10 +640,7 @@ struct AddStockView: View {
 
     private var deductCurrencySymbol: String {
         guard let acc = accounts.first(where: { $0.id == selectedDeductId }) else { return "€" }
-        switch acc.base_currency.uppercased() {
-        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF"
-        default: return "€"
-        }
+        return ccySymbol(acc.base_currency)
     }
 
     // MARK: - FX helpers

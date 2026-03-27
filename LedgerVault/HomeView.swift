@@ -768,10 +768,7 @@ struct HomeView: View {
         guard let leg = primaryActivityLeg(item),
               let currency = accounts.first(where: { $0.id == leg.account_id })?.base_currency
         else { return "€" }
-        switch currency.uppercased() {
-        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF "
-        default: return "€"
-        }
+        return ccySymbol(currency)
     }
 
     private func startAutoRefresh() async {
@@ -784,13 +781,7 @@ struct HomeView: View {
     // MARK: - Helpers
 
     private func fmt(_ v: Double) -> String {
-        let s: String
-        switch baseCurrency {
-        case "EUR": s = "€"; case "USD": s = "$"; case "GBP": s = "£"
-        case "CHF": s = "CHF "; case "JPY": s = "¥"; case "CAD": s = "C$"
-        case "AUD": s = "A$"; default: s = baseCurrency + " "
-        }
-        return s + v.formatted(.number.precision(.fractionLength(2)))
+        fmtCurrency(v, currency: baseCurrency)
     }
 
     private func eventIcon(_ t: String) -> String {

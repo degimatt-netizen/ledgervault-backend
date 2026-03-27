@@ -70,25 +70,7 @@ struct InvestmentDashboardView: View {
     private var totalPLPct: Double { totalCost > 0 ? (totalPL / totalCost) * 100 : 0 }
 
     // ── Formatting ────────────────────────────────────────────────────────────
-    private func fmtValue(_ v: Double) -> String {
-        let sym: String
-        switch baseCurrency.uppercased() {
-        case "USD": sym = "$";   case "GBP": sym = "£";   case "CHF": sym = "CHF "
-        case "JPY": sym = "¥";   case "CAD": sym = "C$";  case "AUD": sym = "A$"
-        case "PLN": sym = "zł "; case "SEK": sym = "kr "; case "NOK": sym = "kr "
-        case "CZK": sym = "Kč "; case "EUR": sym = "€"
-        default:    sym = baseCurrency + " "
-        }
-        return sym + v.formatted(.number.precision(.fractionLength(2)))
-    }
-    private func fmtPrice(_ p: Double) -> String {
-        if p < 0.001 { return "$\(p.formatted(.number.precision(.fractionLength(6))))" }
-        if p < 1     { return "$\(p.formatted(.number.precision(.fractionLength(4))))" }
-        return "$\(p.formatted(.number.precision(.fractionLength(2))))"
-    }
-    private func pctStr(_ v: Double) -> String {
-        (v >= 0 ? "+" : "") + v.formatted(.number.precision(.fractionLength(2))) + "%"
-    }
+    private func fmtValue(_ v: Double) -> String { fmtCurrency(v, currency: baseCurrency) }
 
     // ── Body ──────────────────────────────────────────────────────────────────
     var body: some View {
