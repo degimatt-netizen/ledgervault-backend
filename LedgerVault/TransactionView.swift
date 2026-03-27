@@ -409,13 +409,7 @@ struct TransactionsView: View {
     private var totalExpenses: Double {
         filtered.filter { $0.event_type.lowercased() == "expense" }.reduce(0) { $0 + txAmount($1) }
     }
-    private var baseCurrencySymbol: String {
-        switch baseCurrency.uppercased() {
-        case "USD": return "$"; case "GBP": return "£"; case "CHF": return "CHF "
-        case "JPY": return "¥"; case "CAD": return "C$"; case "AUD": return "A$"
-        default: return "€"
-        }
-    }
+    private var baseCurrencySymbol: String { ccySymbol(baseCurrency) }
 
     // ── Filter header (pinned) ─────────────────────────────────────────────────
     private var filterHeader: some View {
@@ -427,6 +421,7 @@ struct TransactionsView: View {
                         let count = f == "All" ? filtered.count
                             : filtered.filter { $0.event_type.lowercased() == f.lowercased() }.count
                         Button {
+                            hapticLight()
                             withAnimation(.spring(duration: 0.2)) { filterType = f }
                         } label: {
                             HStack(spacing: 5) {
@@ -494,9 +489,7 @@ struct TransactionsView: View {
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Income").font(.caption2).foregroundColor(.secondary)
-                            Text(totalIncome > 0
-                                 ? "+\(baseCurrencySymbol)\(totalIncome.formatted(.number.precision(.fractionLength(2))))"
-                                 : "—")
+                            Text(totalIncome > 0 ? "+" + fmtCurrency(totalIncome, currency: baseCurrency) : "—")
                                 .font(.subheadline.bold())
                                 .foregroundColor(totalIncome > 0 ? .green : .secondary)
                         }
@@ -514,9 +507,7 @@ struct TransactionsView: View {
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Expenses").font(.caption2).foregroundColor(.secondary)
-                            Text(totalExpenses > 0
-                                 ? "-\(baseCurrencySymbol)\(totalExpenses.formatted(.number.precision(.fractionLength(2))))"
-                                 : "—")
+                            Text(totalExpenses > 0 ? "−" + fmtCurrency(totalExpenses, currency: baseCurrency) : "—")
                                 .font(.subheadline.bold())
                                 .foregroundColor(totalExpenses > 0 ? .red : .secondary)
                         }
@@ -575,7 +566,7 @@ struct TransactionsView: View {
                                         .textCase(nil)
                                     Spacer()
                                     if net != 0 {
-                                        Text("\(net >= 0 ? "+" : "")\(baseCurrencySymbol)\(abs(net).formatted(.number.precision(.fractionLength(2))))")
+                                        Text((net >= 0 ? "+" : "−") + fmtCurrency(abs(net), currency: baseCurrency))
                                             .font(.caption2.bold())
                                             .foregroundColor(net >= 0 ? .green : .red)
                                             .textCase(nil)
@@ -841,6 +832,7 @@ struct TransactionsView: View {
     }
 
     private func deleteItems(_ offsets: IndexSet, from txs: [APIService.TransactionEvent]) async {
+        hapticWarning()
         for tx in offsets.map({ txs[$0] }) {
             try? await APIService.shared.deleteTransactionEvent(id: tx.id)
         }
