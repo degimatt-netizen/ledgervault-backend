@@ -77,20 +77,21 @@ struct SparklineShape: Shape {
 
 struct SparklineView: View {
     let symbol: String
+    var changeIsPositive: Bool = true   // driven by quote.change_pct — not sparkline direction
+
     @State private var prices: [Double] = []
     @State private var loaded = false
 
-    private var positive: Bool { (prices.last ?? 0) >= (prices.first ?? 1) }
+    private var lineColor: Color { changeIsPositive ? Color(red: 0.2, green: 0.85, blue: 0.4) : Color(red: 1, green: 0.3, blue: 0.3) }
 
     var body: some View {
         ZStack {
             if prices.count >= 2 {
                 SparklineShape(prices: prices)
-                    .stroke(positive ? Color.green : Color.red,
-                            style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                    .shadow(color: (positive ? Color.green : Color.red).opacity(0.5), radius: 3)
+                    .stroke(lineColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                    .shadow(color: lineColor.opacity(0.4), radius: 3)
             } else {
-                Capsule().fill(Color.white.opacity(0.06))
+                Capsule().fill(Color.secondary.opacity(0.15))
             }
         }
         .frame(width: 68, height: 30)
@@ -209,8 +210,8 @@ struct MarketRowView: View {
 
                 Spacer()
 
-                // Sparkline
-                SparklineView(symbol: quote.symbol)
+                // Sparkline — colour matches change direction
+                SparklineView(symbol: quote.symbol, changeIsPositive: quote.change_pct >= 0)
 
                 // Price + change (right-aligned, fixed width)
                 VStack(alignment: .trailing, spacing: 3) {
@@ -421,7 +422,7 @@ struct MarketSectionHeader: View {
 
 // MARK: - Sort
 
-enum MarketSortField { case symbol, last, changePct }
+enum MarketSortField { case symbol, last, change, changePct }
 
 // MARK: - Open URL (Chrome → Safari fallback)
 private func openInBrowser(_ urlString: String) {
@@ -680,6 +681,7 @@ struct MarketsView: View {
             switch sortField {
             case .symbol:    r = $0.symbol < $1.symbol
             case .last:      r = $0.last < $1.last
+            case .change:    r = $0.change < $1.change
             case .changePct: r = $0.change_pct < $1.change_pct
             }
             return sortAsc ? r : !r
@@ -792,7 +794,7 @@ struct MarketsView: View {
     // MARK: Sort bar
     private var sortBar: some View {
         HStack(spacing: 0) {
-            sortBtn("INSTRUMENT", .symbol, leading: true)
+            sortBtn("INSTRUMENT", .symbol)
             Spacer()
             // Live indicator
             if let ts = lastUpdated {
@@ -802,10 +804,11 @@ struct MarketsView: View {
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.trailing, 6)
+                .padding(.trailing, 8)
             }
-            sortBtn("LAST", .last, leading: false)
-            sortBtn("CHG %", .changePct, leading: false).frame(width: 88)
+            sortBtn("LAST", .last).frame(width: 62)
+            sortBtn("CHG", .change).frame(width: 54)
+            sortBtn("CHG%", .changePct).frame(width: 62)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
         .background(Color(UIColor.systemBackground).opacity(0.8))
@@ -818,17 +821,19 @@ struct MarketsView: View {
         return "\(s / 60)m ago"
     }
 
-    private func sortBtn(_ label: String, _ field: MarketSortField, leading: Bool) -> some View {
+    private func sortBtn(_ label: String, _ field: MarketSortField) -> some View {
         Button {
-            sortField == field ? (sortAsc.toggle()) : { sortField = field; sortAsc = true }()
+            if sortField == field { sortAsc.toggle() }
+            else { sortField = field; sortAsc = field == .symbol }
         } label: {
             HStack(spacing: 2) {
                 Text(label).font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(sortField == field ? Color.primary : Color.secondary)
-                if sortField == field {
-                    Image(systemName: sortAsc ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 7, weight: .bold)).foregroundStyle(Color.primary)
-                }
+                Image(systemName: sortField == field
+                      ? (sortAsc ? "chevron.up" : "chevron.down")
+                      : "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: sortField == field ? .bold : .regular))
+                    .foregroundStyle(sortField == field ? Color.primary : Color.secondary.opacity(0.4))
             }
         }
     }
