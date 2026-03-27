@@ -4545,3 +4545,85 @@ def remove_watchlist(symbol: str, user_id: str = Depends(require_user_id), db: S
         raise HTTPException(404, "Not in watchlist")
     db.delete(item); db.commit()
     return {"status": "removed", "symbol": symbol.upper()}
+
+
+# ── Forex ──────────────────────────────────────────────────────────────────
+
+_FOREX_PAIRS = [
+    ("EURUSD=X", "EUR/USD"),
+    ("GBPUSD=X", "GBP/USD"),
+    ("USDJPY=X", "USD/JPY"),
+    ("USDCHF=X", "USD/CHF"),
+    ("AUDUSD=X", "AUD/USD"),
+    ("USDCAD=X", "USD/CAD"),
+    ("GBPEUR=X", "GBP/EUR"),
+    ("EURGBP=X", "EUR/GBP"),
+    ("USDAED=X", "USD/AED"),
+    ("USDSGD=X", "USD/SGD"),
+]
+
+@app.get("/market/forex")
+def market_forex(user_id: str = Depends(require_user_id)):
+    """Live rates for major forex pairs."""
+    symbols = [p[0] for p in _FOREX_PAIRS]
+    name_map = {p[0]: p[1] for p in _FOREX_PAIRS}
+    now = time.time()
+    fresh = {s: _QUOTE_CACHE[s] for s in symbols if s in _QUOTE_CACHE and now - _QUOTE_CACHE[s]["_ts"] < _QUOTE_CACHE_TTL}
+    stale = [s for s in symbols if s not in fresh]
+    if stale:
+        fetched = _fetch_yahoo_quotes(stale)
+        for sym, q in fetched.items():
+            q["_ts"] = now
+            _QUOTE_CACHE[sym] = q
+            fresh[sym] = q
+    result = []
+    for sym, display_name in _FOREX_PAIRS:
+        q = fresh.get(sym)
+        if not q:
+            continue
+        out = {k: v for k, v in q.items() if not k.startswith("_")}
+        out["display_name"] = display_name
+        result.append(out)
+    return {"pairs": result}
+
+
+# ── News ────────────────────────────────────────────────────────────────────
+
+@app.get("/market/news")
+def market_news(symbols: str = "", user_id: str = Depends(require_user_id)):
+    """Fetch latest news from Yahoo Finance for given symbols (comma-separated)."""
+    sym_list = [s.upper().strip() for s in symbols.split(",") if s.strip()][:10]
+    seen: set[str] = set()
+    articles: list[dict] = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    for sym in sym_list[:6]:
+        try:
+            url = (f"https://query2.finance.yahoo.com/v1/finance/search"
+                   f"?q={sym}&quotesCount=0&newsCount=8&enableFuzzyQuery=false")
+            with httpx.Client(timeout=6.0, headers=headers) as c:
+                r = c.get(url)
+                if r.status_code != 200:
+                    continue
+            for item in r.json().get("news", []):
+                link = item.get("link", "")
+                if not link or link in seen:
+                    continue
+                seen.add(link)
+                thumb = None
+                for res in item.get("thumbnail", {}).get("resolutions", []):
+                    if res.get("width", 0) >= 100:
+                        thumb = res.get("url"); break
+                articles.append({
+                    "title":        item.get("title", ""),
+                    "link":         link,
+                    "publisher":    item.get("publisher", ""),
+                    "published_at": item.get("providerPublishTime", 0),
+                    "thumbnail":    thumb,
+                    "symbols":      item.get("relatedTickers", []),
+                })
+        except Exception as e:
+            logger.warning(f"News fetch failed for {sym}: {e}")
+
+    articles.sort(key=lambda a: a["published_at"], reverse=True)
+    return {"articles": articles[:25]}
