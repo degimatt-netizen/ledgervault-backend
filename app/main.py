@@ -4690,9 +4690,9 @@ def _calc_market_state(exchange: str, tz_name: str = "") -> str | None:
 
     # ── Fallback: exchange name string matching ───────────────────────────────
     # US — short codes AND full exchange names Yahoo may return
-    if any(x in exch for x in ["NYSE","NASDAQ","NMS","NGM","NCM","NASDAQGS","NASDAQGM",
-                                "NASDAQCM","BATS","ARCA","PCX","ASE","CBOE",
-                                "NEW YORK STOCK","AMERICAN STOCK","NASDAQ GLOBAL"]):
+    if any(x in exch for x in ["NYSE","NYQ","NYM","NYB","NYF","NASDAQ","NMS","NGM","NCM",
+                                "NASDAQGS","NASDAQGM","NASDAQCM","BATS","ARCA","PCX",
+                                "ASE","CBOE","NEW YORK STOCK","AMERICAN STOCK","NASDAQ GLOBAL"]):
         if wd >= 5: return "CLOSED"
         off = -4 if 3 <= mo <= 11 else -5
         ltt = lt(off)
