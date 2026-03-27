@@ -151,6 +151,7 @@ struct AccountDetailView: View {
                 }
             }
             .task { await load() }
+            .refreshable { await load() }
             .sheet(isPresented: $showEdit) {
                 EditAccountView(account: liveAccount) {
                     Task { await load() }

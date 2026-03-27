@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import SwiftUI
 
 // MARK: - LVFormatting
 // Single source of truth for all currency / number formatting across the app.
@@ -47,6 +48,54 @@ func fmtPrice(_ p: Double) -> String {
 /// e.g. pctStr(3.14)  →  "+3.14%", pctStr(-1.0)  →  "-1.00%"
 func pctStr(_ v: Double) -> String {
     (v >= 0 ? "+" : "") + v.formatted(.number.precision(.fractionLength(2))) + "%"
+}
+
+// MARK: - Shimmer skeleton
+
+/// Applies an animated shimmer effect to any view — use while data is loading.
+struct ShimmerModifier: ViewModifier {
+    @State private var phase: CGFloat = -1
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geo in
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear,                     location: 0),
+                            .init(color: .white.opacity(0.45),       location: 0.4),
+                            .init(color: .white.opacity(0.45),       location: 0.6),
+                            .init(color: .clear,                     location: 1),
+                        ],
+                        startPoint: .init(x: phase,     y: 0.5),
+                        endPoint:   .init(x: phase + 1, y: 0.5)
+                    )
+                    .blendMode(.plusLighter)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                }
+            )
+            .onAppear {
+                withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+    }
+}
+
+extension View {
+    /// Wraps the view in a shimmer loading animation.
+    func shimmer() -> some View { modifier(ShimmerModifier()) }
+    /// Shows a rounded-rect placeholder with shimmer when `isLoading` is true.
+    func skeletonRedacted(_ isLoading: Bool) -> some View {
+        self.redacted(reason: isLoading ? .placeholder : [])
+            .shimmer()
+            .opacity(isLoading ? 1 : 0)
+            .overlay(isLoading ? nil : self.eraseToAnyView())
+    }
+}
+
+private extension View {
+    func eraseToAnyView() -> AnyView { AnyView(self) }
 }
 
 // MARK: - Haptics

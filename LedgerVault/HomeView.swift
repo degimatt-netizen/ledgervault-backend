@@ -171,11 +171,20 @@ struct HomeView: View {
                 .clipShape(Capsule())
             }
 
-            // Amount
-            Text(fmt(total))
-                .font(.system(size: 46, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .padding(.top, 8)
+            // Amount — shimmer placeholder while loading
+            Group {
+                if isLoading && valuation == nil {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.white.opacity(0.25))
+                        .frame(width: 220, height: 48)
+                        .shimmer()
+                } else {
+                    Text(fmt(total))
+                        .font(.system(size: 46, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                }
+            }
+            .padding(.top, 8)
 
             Text(baseCurrency)
                 .font(.caption.weight(.semibold))
