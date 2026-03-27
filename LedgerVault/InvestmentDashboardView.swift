@@ -11,6 +11,16 @@ struct InvestmentDashboardView: View {
     @State private var isLoading     = true
     @State private var errorMessage: String?
 
+    enum SortMode: String, CaseIterable {
+        case value = "Value", gain = "Gain %", name = "Name"
+    }
+    @State private var sortMode: SortMode = .value
+
+    private static let currencies = [
+        "USD","EUR","GBP","AED","AUD","CAD","CHF","JPY",
+        "NOK","SEK","PLN","CZK","DKK","SGD","HKD","NZD"
+    ]
+
     // ── Account type sets ──────────────────────────────────────────────────────
     private var brokerIDs: Set<String> {
         Set(accounts.filter { $0.account_type == "broker" }.map { $0.id })
@@ -19,16 +29,30 @@ struct InvestmentDashboardView: View {
         Set(accounts.filter { $0.account_type == "crypto_wallet" }.map { $0.id })
     }
 
+    // ── Sort helper ───────────────────────────────────────────────────────────
+    private func applySortMode(_ items: [APIService.ValuationPortfolioItem]) -> [APIService.ValuationPortfolioItem] {
+        switch sortMode {
+        case .value: return items.sorted { $0.value_in_base > $1.value_in_base }
+        case .gain:
+            return items.sorted { a, b in
+                let pa = a.avg_cost > 0 ? ((a.price_usd - a.avg_cost) / a.avg_cost) : 0
+                let pb = b.avg_cost > 0 ? ((b.price_usd - b.avg_cost) / b.avg_cost) : 0
+                return pa > pb
+            }
+        case .name: return items.sorted { $0.symbol < $1.symbol }
+        }
+    }
+
     // ── Holdings ──────────────────────────────────────────────────────────────
     private var stockItems: [APIService.ValuationPortfolioItem] {
-        (valuation?.portfolio ?? [])
+        let raw = (valuation?.portfolio ?? [])
             .filter { brokerIDs.contains($0.account_id) && $0.quantity > 0.000001 }
-            .sorted { $0.value_in_base > $1.value_in_base }
+        return applySortMode(raw)
     }
     private var cryptoItems: [APIService.ValuationPortfolioItem] {
-        (valuation?.portfolio ?? [])
+        let raw = (valuation?.portfolio ?? [])
             .filter { cryptoIDs.contains($0.account_id) && $0.quantity > 0.000001 }
-            .sorted { $0.value_in_base > $1.value_in_base }
+        return applySortMode(raw)
     }
     private var allItems: [APIService.ValuationPortfolioItem] { stockItems + cryptoItems }
 
@@ -105,22 +129,45 @@ struct InvestmentDashboardView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        ForEach(["USD", "EUR", "GBP"], id: \.self) { currency in
-                            Button {
-                                baseCurrency = currency
-                            } label: {
-                                Label(currency, systemImage: baseCurrency == currency ? "checkmark" : "")
+                    HStack(spacing: 8) {
+                        // Sort menu
+                        Menu {
+                            ForEach(SortMode.allCases, id: \.self) { mode in
+                                Button {
+                                    withAnimation { sortMode = mode }
+                                } label: {
+                                    Label(mode.rawValue,
+                                          systemImage: sortMode == mode ? "checkmark" : "")
+                                }
                             }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.caption.bold())
+                                .padding(8)
+                                .background(Color(.systemGray5))
+                                .clipShape(Circle())
+                                .foregroundColor(.primary)
                         }
-                    } label: {
-                        Text(baseCurrency)
-                            .font(.caption.bold())
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(Color(.systemGray5))
-                            .clipShape(Capsule())
-                            .foregroundColor(.primary)
+
+                        // Currency menu
+                        Menu {
+                            ForEach(Self.currencies, id: \.self) { currency in
+                                Button {
+                                    baseCurrency = currency
+                                } label: {
+                                    Label(currency,
+                                          systemImage: baseCurrency == currency ? "checkmark" : "")
+                                }
+                            }
+                        } label: {
+                            Text(baseCurrency)
+                                .font(.caption.bold())
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .background(Color(.systemGray5))
+                                .clipShape(Capsule())
+                                .foregroundColor(.primary)
+                        }
                     }
                 }
             }

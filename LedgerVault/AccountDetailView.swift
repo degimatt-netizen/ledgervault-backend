@@ -17,10 +17,46 @@ struct AccountDetailView: View {
     @State private var showEdit      = false
     @State private var showDeleteAlert = false
     @State private var errorMessage: String?
+    @State private var txSearch  = ""
+    @State private var showAllTx = false
+
+    enum HoldingSort: String, CaseIterable {
+        case value = "Value", gain = "Gain %", name = "Name"
+    }
+    @State private var holdingSort: HoldingSort = .value
 
     init(account: APIService.Account) {
         self.account = account
         _liveAccount = State(initialValue: account)
+    }
+
+    // ── Filtered / sorted data ────────────────────────────────────────────────
+    private var filteredTx: [APIService.TransactionEvent] {
+        guard !txSearch.isEmpty else { return transactions }
+        let q = txSearch.lowercased()
+        return transactions.filter {
+            ($0.description?.lowercased().contains(q) ?? false) ||
+            $0.event_type.lowercased().contains(q) ||
+            ($0.category?.lowercased().contains(q) ?? false) ||
+            $0.date.contains(q)
+        }
+    }
+
+    private var displayedTx: [APIService.TransactionEvent] {
+        showAllTx || !txSearch.isEmpty ? filteredTx : Array(filteredTx.prefix(20))
+    }
+
+    private var sortedHoldings: [APIService.ValuationPortfolioItem] {
+        switch holdingSort {
+        case .value: return holdings.sorted { $0.value_in_base > $1.value_in_base }
+        case .gain:
+            return holdings.sorted { a, b in
+                let pa = a.avg_cost > 0 ? ((a.price_usd - a.avg_cost) / a.avg_cost) : 0
+                let pb = b.avg_cost > 0 ? ((b.price_usd - b.avg_cost) / b.avg_cost) : 0
+                return pa > pb
+            }
+        case .name: return holdings.sorted { $0.symbol < $1.symbol }
+        }
     }
 
     // ── Derived totals ────────────────────────────────────────────────────────
@@ -80,6 +116,7 @@ struct AccountDetailView: View {
                     if !holdings.isEmpty {
                         holdingsSection
                     }
+
 
                     // Recent transactions
                     transactionsSection
@@ -200,11 +237,36 @@ struct AccountDetailView: View {
     // ── Holdings section ──────────────────────────────────────────────────────
     private var holdingsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Holdings")
-                .font(.headline)
-                .padding(.horizontal, 4)
+            HStack {
+                Text("Holdings")
+                    .font(.headline)
+                Spacer()
+                Menu {
+                    ForEach(HoldingSort.allCases, id: \.self) { mode in
+                        Button {
+                            holdingSort = mode
+                        } label: {
+                            Label(mode.rawValue,
+                                  systemImage: holdingSort == mode ? "checkmark" : "")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(holdingSort.rawValue)
+                            .font(.caption.bold())
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
+                    .foregroundColor(.primary)
+                }
+            }
+            .padding(.horizontal, 4)
 
-            ForEach(holdings) { item in
+            ForEach(sortedHoldings) { item in
                 HStack(spacing: 14) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 10)
@@ -251,27 +313,68 @@ struct AccountDetailView: View {
     private var transactionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Recent Activity")
+                Text("Activity")
                     .font(.headline)
                 Spacer()
-                Text("\(transactions.count) events")
+                Text("\(filteredTx.count) event\(filteredTx.count == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             .padding(.horizontal, 4)
 
+            // Search bar
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+                TextField("Search transactions…", text: $txSearch)
+                    .font(.subheadline)
+                if !txSearch.isEmpty {
+                    Button { txSearch = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.systemBackground))
+            .cornerRadius(10)
+
             if isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity)
                     .padding()
-            } else if transactions.isEmpty {
-                Text("No transactions yet")
+            } else if filteredTx.isEmpty {
+                Text(txSearch.isEmpty ? "No transactions yet" : "No results for \"\(txSearch)\"")
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding()
             } else {
-                ForEach(transactions.prefix(20)) { tx in
+                ForEach(displayedTx) { tx in
                     txRow(tx)
+                }
+
+                // Load More / Show Less
+                if filteredTx.count > 20 && txSearch.isEmpty {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showAllTx.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(showAllTx
+                                 ? "Show less"
+                                 : "Show all \(filteredTx.count) transactions")
+                                .font(.subheadline.bold())
+                            Image(systemName: showAllTx ? "chevron.up" : "chevron.down")
+                                .font(.caption.bold())
+                        }
+                        .foregroundColor(accountColor)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                    }
                 }
             }
         }

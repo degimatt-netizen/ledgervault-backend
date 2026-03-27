@@ -70,17 +70,26 @@ struct AddTransactionView: View {
     }
 
     private var currencySymbol: String {
-        // Use the relevant account depending on transaction type
         let currency: String
         switch type {
         case "Income":   currency = toAccount?.base_currency   ?? "EUR"
         default:         currency = fromAccount?.base_currency ?? "EUR"
         }
         switch currency.uppercased() {
-        case "USD": return "$"
-        case "GBP": return "£"
-        case "CHF": return "CHF "
-        default:    return "€"
+        case "USD":             return "$"
+        case "GBP":             return "£"
+        case "JPY":             return "¥"
+        case "CHF":             return "Fr "
+        case "CAD":             return "C$"
+        case "AUD":             return "A$"
+        case "NZD":             return "NZ$"
+        case "SGD":             return "S$"
+        case "HKD":             return "HK$"
+        case "AED":             return "د.إ "
+        case "PLN":             return "zł "
+        case "SEK", "NOK", "DKK": return currency.prefix(2).uppercased() + "kr "
+        case "CZK":             return "Kč "
+        default:                return "€"
         }
     }
 

@@ -53,6 +53,20 @@ class AlertsManager: ObservableObject {
         }
     }
 
+    /// Reset a triggered alert back to active (re-arm it)
+    func rearm(_ id: String) {
+        if let i = alerts.firstIndex(where: { $0.id == id }) {
+            alerts[i].triggered = false
+            alerts[i].isActive  = true
+            save()
+        }
+    }
+
+    func deleteById(_ id: String) {
+        alerts.removeAll { $0.id == id }
+        save()
+    }
+
     func checkNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             DispatchQueue.main.async {
@@ -144,9 +158,29 @@ struct AlertsView: View {
                     List {
                         if !triggeredAlerts.isEmpty {
                             Section {
-                                ForEach(triggeredAlerts) { alertRow($0, status: "triggered") }
+                                ForEach(triggeredAlerts) { alert in
+                                    alertRow(alert, status: "triggered")
+                                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                            Button {
+                                                manager.rearm(alert.id)
+                                            } label: {
+                                                Label("Re-arm", systemImage: "arrow.clockwise.circle.fill")
+                                            }
+                                            .tint(.blue)
+                                        }
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                            Button(role: .destructive) {
+                                                manager.deleteById(alert.id)
+                                            } label: {
+                                                Label("Delete", systemImage: "trash")
+                                            }
+                                        }
+                                }
                             } header: {
                                 Label("TRIGGERED", systemImage: "checkmark.circle.fill").foregroundColor(.green)
+                            } footer: {
+                                Text("Swipe right to re-arm an alert")
+                                    .font(.caption2)
                             }
                         }
                         if !activeAlerts.isEmpty {
@@ -233,12 +267,21 @@ struct AlertsView: View {
             Spacer()
 
             if status == "triggered" {
-                Text("HIT ✓")
-                    .font(.caption2.weight(.bold))
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Color.green.opacity(0.15))
-                    .foregroundColor(.green)
-                    .cornerRadius(6)
+                VStack(spacing: 4) {
+                    Text("HIT ✓")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Color.green.opacity(0.15))
+                        .foregroundColor(.green)
+                        .cornerRadius(6)
+                    Button {
+                        manager.rearm(alert.id)
+                    } label: {
+                        Text("Re-arm")
+                            .font(.caption2.bold())
+                            .foregroundColor(.blue)
+                    }
+                }
             } else {
                 Toggle("", isOn: Binding(
                     get: { alert.isActive },
