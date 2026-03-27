@@ -422,6 +422,18 @@ struct MarketSectionHeader: View {
 
 enum MarketSortField { case symbol, last, changePct }
 
+// MARK: - Open URL (Chrome → Safari fallback)
+private func openInBrowser(_ urlString: String) {
+    guard let url = URL(string: urlString), let scheme = url.scheme else { return }
+    let chromeScheme = scheme == "https" ? "googlechromes" : "googlechrome"
+    let chromeString = urlString.replacingOccurrences(of: "\(scheme)://", with: "\(chromeScheme)://")
+    if let chromeURL = URL(string: chromeString), UIApplication.shared.canOpenURL(chromeURL) {
+        UIApplication.shared.open(chromeURL)
+    } else {
+        UIApplication.shared.open(url)
+    }
+}
+
 // MARK: - Currency flag helper
 private func currencyFlag(_ code: String) -> String {
     let flags: [String: String] = [
@@ -497,8 +509,7 @@ struct NewsArticleRow: View {
 
     var body: some View {
         Button {
-            guard let url = URL(string: article.link) else { return }
-            UIApplication.shared.open(url)
+            openInBrowser(article.link)
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Group {

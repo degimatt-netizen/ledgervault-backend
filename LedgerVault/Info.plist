@@ -8,6 +8,11 @@
 	<dict/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>LedgerVault uses Face ID to protect access to your financial data.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>googlechrome</string>
+		<string>googlechromes</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
