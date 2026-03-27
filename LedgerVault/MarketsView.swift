@@ -155,6 +155,7 @@ private func marketStateBadge(_ state: String?) -> (label: String, color: Color)
 
 struct MarketRowView: View {
     let quote: APIService.MarketQuote
+    let isEditMode: Bool
     let onRemove: () -> Void
 
     private var up: Bool           { quote.change_pct >= 0 }
@@ -162,7 +163,7 @@ struct MarketRowView: View {
     private var excInfo:           (flag: String, name: String) { exchangeInfo(quote.exchange) }
     private var mktBadge:          (label: String, color: Color) { marketStateBadge(quote.market_state) }
     private var isHeld: Bool       { (quote.position ?? 0) != 0 }
-    private var canRemove: Bool    { quote.in_watchlist == true && !isHeld }
+    private var canRemove: Bool    { (quote.in_watchlist ?? false) && !isHeld }
 
     // Unrealised P&L
     private var unrealisedPnL: Double? {
@@ -178,6 +179,17 @@ struct MarketRowView: View {
     }
 
     var body: some View {
+        HStack(spacing: 8) {
+            // Edit-mode delete button
+            if isEditMode && canRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.red)
+                }
+                .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+
         VStack(spacing: 0) {
 
             // ── Main row ──────────────────────────────────────────────────
@@ -282,6 +294,8 @@ struct MarketRowView: View {
                 }
             }
         }
+        } // closes outer HStack
+        .animation(.easeInOut(duration: 0.2), value: isEditMode)
     }
 
     // MARK: Formatters
@@ -662,6 +676,7 @@ struct MarketsView: View {
     @State private var isLoading    = false
     @State private var error:       String?
     @State private var showAdd      = false
+    @State private var isEditMode   = false
     @State private var sortField    = MarketSortField.symbol
     @State private var sortAsc      = true
     @State private var searchText   = ""
@@ -766,13 +781,24 @@ struct MarketsView: View {
                         if !held.isEmpty {
                             MarketSectionHeader(title: "My Holdings", count: held.count)
                             ForEach(held) { q in
-                                MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                                MarketRowView(quote: q, isEditMode: false) { }
                             }
                         }
                         if !watchOnly.isEmpty {
-                            MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
+                            HStack {
+                                MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
+                                Spacer()
+                                Button(isEditMode ? "Done" : "Edit") {
+                                    withAnimation { isEditMode.toggle() }
+                                }
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(isEditMode ? Color.red : Color.accentColor)
+                                .padding(.trailing, 4)
+                            }
                             ForEach(watchOnly) { q in
-                                MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                                MarketRowView(quote: q, isEditMode: isEditMode) {
+                                    Task { await removeFromWatchlist(q.symbol) }
+                                }
                             }
                         }
                         if !forexPairs.isEmpty {
@@ -888,7 +914,10 @@ struct MarketsView: View {
     }
 
     private func removeFromWatchlist(_ sym: String) async {
+        // Optimistically remove from local list for instant UI feedback
+        quotes.removeAll { $0.symbol == sym && ($0.in_watchlist ?? false) && ($0.position ?? 0) == 0 }
         try? await APIService.shared.removeFromWatchlist(symbol: sym)
         await loadData()
+        if watchOnly.isEmpty { withAnimation { isEditMode = false } }
     }
 }
