@@ -4328,7 +4328,7 @@ def flanks_delete(conn_id: str, user_id: str = Depends(require_user_id), db: Ses
 # ─────────────────────────────────────────────────────────────────────────────
 
 _QUOTE_CACHE: dict[str, dict] = {}   # symbol → {quote dict, ts}
-_QUOTE_CACHE_TTL = 60  # seconds
+_QUOTE_CACHE_TTL = 10  # seconds
 
 
 def _fetch_single_quote(symbol: str) -> dict | None:
