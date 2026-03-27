@@ -12,6 +12,7 @@ struct AccountDetailView: View {
 
     @State private var liveAccount:  APIService.Account
     @State private var transactions: [APIService.TransactionEvent] = []
+    @State private var legs:         [APIService.TransactionLeg]   = []
     @State private var holdings:     [APIService.ValuationPortfolioItem] = []
     @State private var isLoading     = false
     @State private var showEdit      = false
@@ -385,25 +386,31 @@ struct AccountDetailView: View {
 
     @ViewBuilder
     private func txRow(_ tx: APIService.TransactionEvent) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: iconForEvent(tx.event_type))
-                .font(.title3)
-                .foregroundColor(colorForEvent(tx.event_type))
-                .frame(width: 32)
+        let color  = colorForEvent(tx.event_type)
+        let net    = txNetAmount(tx)
 
+        HStack(spacing: 12) {
+            // Icon bubble
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.12))
+                    .frame(width: 38, height: 38)
+                Image(systemName: iconForEvent(tx.event_type))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(color)
+            }
+
+            // Description + meta
             VStack(alignment: .leading, spacing: 2) {
                 Text(tx.description ?? tx.event_type.capitalized)
                     .font(.subheadline)
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(tx.date)
+                HStack(spacing: 4) {
+                    Text(shortDate(tx.date))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     if let cat = tx.category {
-                        Text("·")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(cat)
+                        Text("· \(cat)")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -412,13 +419,27 @@ struct AccountDetailView: View {
 
             Spacer()
 
-            Text(tx.event_type.capitalized)
-                .font(.caption.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(colorForEvent(tx.event_type).opacity(0.12))
-                .foregroundColor(colorForEvent(tx.event_type))
-                .clipShape(Capsule())
+            // Amount — right-aligned, color-coded
+            if let net {
+                let isPositive = net >= 0
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text((isPositive ? "+" : "−") +
+                         fmtCurrency(abs(net), currency: liveAccount.base_currency))
+                        .font(.subheadline.bold())
+                        .foregroundColor(isPositive ? .green : .red)
+                    Text(tx.event_type.capitalized)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text(tx.event_type.capitalized)
+                    .font(.caption.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(color.opacity(0.12))
+                    .foregroundColor(color)
+                    .clipShape(Capsule())
+            }
         }
         .padding(.vertical, 6)
     }
@@ -431,10 +452,11 @@ struct AccountDetailView: View {
 
         do {
             async let txFetch       = APIService.shared.fetchTransactionEvents()
+            async let legsFetch     = APIService.shared.fetchTransactionLegs()
             async let valuationFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
             async let accFetch      = APIService.shared.fetchAccounts()
 
-            let (allTx, valuation, allAccounts) = try await (txFetch, valuationFetch, accFetch)
+            let (allTx, allLegs, valuation, allAccounts) = try await (txFetch, legsFetch, valuationFetch, accFetch)
 
             // Refresh account data so edits (name, currency, type) are reflected
             if let updated = allAccounts.first(where: { $0.id == account.id }) {
@@ -442,7 +464,8 @@ struct AccountDetailView: View {
             }
 
             transactions = allTx
-            holdings = valuation.portfolio.filter { $0.account_id == account.id }
+            legs         = allLegs
+            holdings     = valuation.portfolio.filter { $0.account_id == account.id }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -451,6 +474,28 @@ struct AccountDetailView: View {
     // ── Helpers ───────────────────────────────────────────────────────────────
     private func currencyString(_ value: Double) -> String {
         fmtCurrency(value, currency: baseCurrency)
+    }
+
+    /// Net amount this account received/sent for a given transaction (non-fee legs only).
+    private func txNetAmount(_ tx: APIService.TransactionEvent) -> Double? {
+        let relevant = legs.filter {
+            $0.event_id  == tx.id &&
+            $0.account_id == account.id &&
+            $0.fee_flag  != "true"
+        }
+        guard !relevant.isEmpty else { return nil }
+        return relevant.reduce(0) { $0 + $1.quantity * ($1.unit_price ?? 1.0) }
+    }
+
+    /// "27 Mar" or "27 Mar 24" for past years.
+    private func shortDate(_ iso: String) -> String {
+        let p = DateFormatter(); p.dateFormat = "yyyy-MM-dd"
+        guard let d = p.date(from: iso) else { return iso }
+        let f = DateFormatter()
+        let thisYear = Calendar.current.component(.year, from: Date())
+        let txYear   = Calendar.current.component(.year, from: d)
+        f.dateFormat = txYear == thisYear ? "d MMM" : "d MMM yy"
+        return f.string(from: d)
     }
 
     private func iconForEvent(_ type: String) -> String {

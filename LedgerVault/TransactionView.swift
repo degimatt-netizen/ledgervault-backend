@@ -40,26 +40,15 @@ struct TransactionDetailView: View {
         accounts.first(where: { $0.id == primaryLeg?.account_id })
     }
 
-    private func sym(_ currency: String) -> String {
-        switch currency.uppercased() {
-        case "USD": return "$";    case "GBP": return "£";   case "CHF": return "CHF "
-        case "JPY": return "¥";    case "CAD": return "C$";  case "AUD": return "A$"
-        case "PLN": return "zł ";  case "SEK": return "kr "; case "NOK": return "kr "
-        case "CZK": return "Kč ";  default: return "€"
-        }
-    }
+    // sym, formatPrice → global ccySymbol / fmtPrice in LVFormatting.swift
+    private func sym(_ currency: String) -> String { ccySymbol(currency) }
+    private func formatPrice(_ p: Double) -> String { fmtPrice(p) }
 
     private var amtPrefix: String {
         isExpense || isTrade ? "−" : isIncome ? "+" : ""
     }
     private var amtColor: Color {
         isIncome ? .green : isExpense ? .red : isTrade ? .orange : .blue
-    }
-
-    private func formatPrice(_ p: Double) -> String {
-        if p < 0.01 { return "$\(p.formatted(.number.precision(.fractionLength(6))))" }
-        if p < 1    { return "$\(p.formatted(.number.precision(.fractionLength(4))))" }
-        return "$\(p.formatted(.number.precision(.fractionLength(2))))"
     }
 
     // ── Date formatting ───────────────────────────────────────────────────────
