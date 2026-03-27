@@ -334,162 +334,256 @@ struct AddAlertView: View {
     private var conditionColor: Color  { condition == "above" ? .green : .red }
     private var conditionIcon:  String { condition == "above" ? "arrow.up.circle.fill" : "arrow.down.circle.fill" }
 
+    private var canAdd: Bool { !selectedSym.isEmpty && (targetPrice ?? 0) > 0 }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                // ── Search ────────────────────────────────────────────────
-                Section("Search Asset") {
-                    HStack {
-                        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                        TextField("TSLA, BTC, ETH, NVDA…", text: $searchText)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.characters)
-                            .onChange(of: searchText) { _, q in scheduleSearch(q) }
-                        if isSearching { ProgressView().scaleEffect(0.8) }
-                        if !selectedSym.isEmpty {
-                            Button {
-                                selectedSym = ""; selectedName = ""; selectedImage = nil
-                                targetPrice = nil; searchText = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+        VStack(spacing: 0) {
+
+            // ── Header ────────────────────────────────────────────────────
+            HStack {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                        .font(.title3.bold())
+                        .foregroundColor(.primary)
+                        .frame(width: 40, height: 40)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .clipShape(Circle())
+                }
+                Spacer()
+                Text("New Alert").font(.headline)
+                Spacer()
+                Color.clear.frame(width: 40, height: 40)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
+
+            ScrollView {
+                VStack(spacing: 12) {
+
+                    // ── Search card ───────────────────────────────────────
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundColor(.secondary)
+                                .font(.subheadline)
+                            TextField("TSLA, BTC, ETH, NVDA…", text: $searchText)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.characters)
+                                .onChange(of: searchText) { _, q in scheduleSearch(q) }
+                            if isSearching {
+                                ProgressView().scaleEffect(0.75)
+                            } else if !searchText.isEmpty {
+                                Button {
+                                    selectedSym = ""; selectedName = ""; selectedImage = nil
+                                    targetPrice = nil; searchText = ""
+                                    searchResults = []
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                                }
                             }
                         }
-                    }
-                }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(16)
 
-                // ── Search results ────────────────────────────────────────
-                if !searchResults.isEmpty && selectedSym.isEmpty {
-                    Section("Results") {
-                        ForEach(searchResults.prefix(8)) { hit in
-                            Button { select(hit) } label: {
-                                HStack(spacing: 12) {
-                                    // Thumbnail
-                                    ZStack {
-                                        Circle().fill(Color.blue.opacity(0.10)).frame(width: 38, height: 38)
-                                        if let urlStr = hit.imageURL, let url = URL(string: urlStr) {
-                                            AsyncImage(url: url) { phase in
-                                                switch phase {
-                                                case .success(let img):
-                                                    img.resizable().scaledToFill()
-                                                        .frame(width: 30, height: 30).clipShape(Circle())
-                                                default:
+                        // ── Search results ────────────────────────────────
+                        if !searchResults.isEmpty && selectedSym.isEmpty {
+                            VStack(spacing: 0) {
+                                ForEach(Array(searchResults.prefix(8).enumerated()), id: \.element.id) { idx, hit in
+                                    Button { select(hit) } label: {
+                                        HStack(spacing: 12) {
+                                            ZStack {
+                                                Circle()
+                                                    .fill(Color.blue.opacity(0.10))
+                                                    .frame(width: 40, height: 40)
+                                                if let urlStr = hit.imageURL, let url = URL(string: urlStr) {
+                                                    AsyncImage(url: url) { phase in
+                                                        switch phase {
+                                                        case .success(let img):
+                                                            img.resizable().scaledToFill()
+                                                                .frame(width: 30, height: 30).clipShape(Circle())
+                                                        default:
+                                                            Text(String(hit.symbol.prefix(2)))
+                                                                .font(.caption2.bold()).foregroundColor(.blue)
+                                                        }
+                                                    }
+                                                } else {
                                                     Text(String(hit.symbol.prefix(2)))
                                                         .font(.caption2.bold()).foregroundColor(.blue)
                                                 }
                                             }
-                                        } else {
-                                            Text(String(hit.symbol.prefix(2)))
-                                                .font(.caption2.bold()).foregroundColor(.blue)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(hit.symbol).font(.subheadline.bold()).foregroundColor(.primary)
+                                                Text(hit.name).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                                            }
+                                            Spacer()
+                                            if let price = hit.price {
+                                                Text(fmtPrice(price))
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption2).foregroundColor(.secondary)
                                         }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
                                     }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(hit.symbol).font(.headline).foregroundColor(.primary)
-                                        Text(hit.name).font(.caption).foregroundColor(.secondary).lineLimit(1)
-                                    }
-                                    Spacer()
-                                    if let price = hit.price {
-                                        Text("$\(price < 1 ? String(format: "%.4f", price) : String(format: "%.2f", price))")
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundColor(.secondary)
+                                    if idx < min(searchResults.count, 8) - 1 {
+                                        Divider().padding(.leading, 68)
                                     }
                                 }
                             }
+                            .background(Color(UIColor.secondarySystemGroupedBackground))
+                            .cornerRadius(16)
+                            .padding(.top, 8)
                         }
                     }
-                }
 
-                // ── Alert Details ─────────────────────────────────────────
-                if !selectedSym.isEmpty {
-                    Section {
-                        // Asset header row
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Circle().fill(conditionColor.opacity(0.10)).frame(width: 48, height: 48)
-                                if let urlStr = selectedImage, let url = URL(string: urlStr) {
-                                    AsyncImage(url: url) { phase in
-                                        switch phase {
-                                        case .success(let img):
-                                            img.resizable().scaledToFill()
-                                                .frame(width: 38, height: 38).clipShape(Circle())
-                                        default:
-                                            Text(String(selectedSym.prefix(2)))
-                                                .font(.subheadline.bold()).foregroundColor(conditionColor)
+                    // ── Selected asset card ───────────────────────────────
+                    if !selectedSym.isEmpty {
+                        VStack(spacing: 0) {
+                            // Asset row
+                            HStack(spacing: 14) {
+                                ZStack {
+                                    Circle()
+                                        .fill(conditionColor.opacity(0.12))
+                                        .frame(width: 52, height: 52)
+                                    if let urlStr = selectedImage, let url = URL(string: urlStr) {
+                                        AsyncImage(url: url) { phase in
+                                            switch phase {
+                                            case .success(let img):
+                                                img.resizable().scaledToFill()
+                                                    .frame(width: 40, height: 40).clipShape(Circle())
+                                            default:
+                                                Text(String(selectedSym.prefix(2)))
+                                                    .font(.subheadline.bold()).foregroundColor(conditionColor)
+                                            }
                                         }
+                                    } else {
+                                        Text(String(selectedSym.prefix(2)))
+                                            .font(.subheadline.bold()).foregroundColor(conditionColor)
                                     }
-                                } else {
-                                    Text(String(selectedSym.prefix(2)))
-                                        .font(.subheadline.bold()).foregroundColor(conditionColor)
                                 }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 6) {
+                                        Text(selectedSym).font(.headline.bold())
+                                        Text(selectedName).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                                    }
+                                    if let price = currentPrice {
+                                        Text("Current  \(fmtPrice(price))")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                // Condition badge
+                                HStack(spacing: 4) {
+                                    Image(systemName: condition == "above" ? "arrow.up" : "arrow.down")
+                                        .font(.caption2.bold())
+                                    Text(condition == "above" ? "ABOVE" : "BELOW")
+                                        .font(.caption2.bold())
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(conditionColor.opacity(0.12))
+                                .foregroundColor(conditionColor)
+                                .clipShape(Capsule())
                             }
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 6) {
-                                    Text(selectedSym).font(.headline.bold())
-                                    Text(selectedName).font(.caption).foregroundColor(.secondary).lineLimit(1)
-                                }
-                                if let price = currentPrice {
-                                    Text("Current: $\(price < 1 ? String(format: "%.4f", price) : String(format: "%.2f", price))")
-                                        .font(.caption).foregroundColor(.secondary)
-                                }
-                            }
-                            Spacer()
-                        }
-                        .padding(.vertical, 4)
+                            .padding(16)
 
-                        // Target price input
-                        HStack(spacing: 8) {
-                            Text("$").foregroundColor(.secondary).font(.body)
-                            TextField("Target price", value: $targetPrice,
-                                      format: .number.precision(.fractionLength(2)))
-                                .keyboardType(.decimalPad)
-                                .focused($priceFocused)
-                                .font(.body)
-                        }
+                            Divider().padding(.horizontal, 16)
 
-                        // Direction indicator (auto-derived)
-                        if let current = currentPrice, let target = targetPrice, target > 0 {
-                            let diff = ((target - current) / current) * 100
-                            HStack(spacing: 6) {
-                                Image(systemName: diff >= 0 ? "arrow.up.right" : "arrow.down.right")
-                                    .font(.caption.bold())
-                                    .foregroundColor(diff >= 0 ? .green : .red)
-                                Text(String(format: "%@%.1f%% from current price — alert when price %@",
-                                            diff >= 0 ? "+" : "", diff,
-                                            diff >= 0 ? "rises above" : "falls below"))
-                                    .font(.caption)
-                                    .foregroundColor(diff >= 0 ? .green : .red)
+                            // Target price input
+                            HStack(spacing: 10) {
+                                Image(systemName: "target")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                                Text("Target price")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                HStack(spacing: 4) {
+                                    Text("$").foregroundColor(.secondary)
+                                    TextField("0.00", value: $targetPrice,
+                                              format: .number.precision(.fractionLength(2)))
+                                        .keyboardType(.decimalPad)
+                                        .focused($priceFocused)
+                                        .font(.headline.bold())
+                                        .multilineTextAlignment(.trailing)
+                                        .frame(width: 120)
+                                }
+                            }
+                            .padding(16)
+
+                            // Direction indicator
+                            if let current = currentPrice, let target = targetPrice, target > 0 {
+                                let diff = ((target - current) / current) * 100
+                                Divider().padding(.horizontal, 16)
+                                HStack(spacing: 8) {
+                                    Image(systemName: diff >= 0 ? "arrow.up.right" : "arrow.down.right")
+                                        .font(.caption.bold())
+                                        .foregroundColor(diff >= 0 ? .green : .red)
+                                    Text(String(format: "%@%.1f%% from current — fires when price %@",
+                                                diff >= 0 ? "+" : "", diff,
+                                                diff >= 0 ? "rises above" : "falls below"))
+                                        .font(.caption)
+                                        .foregroundColor(diff >= 0 ? .green : .red)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
                             }
                         }
-                    } header: { Text("Alert Details") }
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(16)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .animation(.spring(response: 0.35), value: selectedSym)
+                    }
+
+                    Color.clear.frame(height: 80)
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("New Alert")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add Alert") {
-                        guard !selectedSym.isEmpty, let price = targetPrice, price > 0 else { return }
-                        onAdd(PriceAlert(
-                            id: UUID().uuidString,
-                            symbol: selectedSym.uppercased(),
-                            assetName: selectedName,
-                            targetPrice: price,
-                            condition: condition,
-                            isActive: true,
-                            triggered: false,
-                            createdAt: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day()),
-                            imageURL: selectedImage
-                        ))
-                        dismiss()
-                    }
-                    .disabled(selectedSym.isEmpty || targetPrice == nil)
-                    .fontWeight(.semibold)
+
+            // ── Pinned Add button ─────────────────────────────────────────
+            Button {
+                guard canAdd, let price = targetPrice else { return }
+                onAdd(PriceAlert(
+                    id: UUID().uuidString,
+                    symbol: selectedSym.uppercased(),
+                    assetName: selectedName,
+                    targetPrice: price,
+                    condition: condition,
+                    isActive: true,
+                    triggered: false,
+                    createdAt: Date().formatted(.iso8601.dateSeparator(.dash).year().month().day()),
+                    imageURL: selectedImage
+                ))
+                dismiss()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "bell.badge.fill")
+                    Text(selectedSym.isEmpty ? "Set Alert" : "Alert \(selectedSym) \(condition == "above" ? "≥" : "≤") \(targetPrice.map { fmtPrice($0) } ?? "…")")
+                        .lineLimit(1)
                 }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { priceFocused = false }.font(.body.bold())
-                }
+                .font(.headline.bold())
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(canAdd ? Color.orange : Color.orange.opacity(0.3))
+                .foregroundColor(canAdd ? .white : .white.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+            }
+            .disabled(!canAdd)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 30)
+            .background(Color(UIColor.systemGroupedBackground))
+        }
+        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { priceFocused = false }.font(.body.bold())
             }
         }
     }
