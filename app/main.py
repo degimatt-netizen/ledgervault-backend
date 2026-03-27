@@ -4337,49 +4337,111 @@ def _fetch_single_quote(symbol: str) -> dict | None:
     return results.get(symbol.upper())
 
 
-def _calc_market_state(exchange: str) -> str | None:
+def _calc_market_state(exchange: str, tz_name: str = "") -> str | None:
     """
-    Derive market state from local trading hours — more reliable than Yahoo Finance.
-    Returns None for unknown exchanges (caller keeps Yahoo's value).
+    Derive market state from IANA timezone name (preferred) or exchange name string.
+    Returns None only if the exchange is truly unrecognised — caller keeps Yahoo's value.
     """
-    now = datetime.now(timezone.utc)
-    wd  = now.weekday()   # 0=Mon … 6=Sun
-    exch = (exchange or "").upper()
-    h, m  = now.hour, now.minute
-    t_utc = h * 60 + m   # minutes since midnight UTC
+    now   = datetime.now(timezone.utc)
+    wd    = now.weekday()   # 0=Mon … 6=Sun
+    t_utc = now.hour * 60 + now.minute
     mo    = now.month
 
-    def lt(offset_h: int) -> int:      # local time in minutes
-        return (t_utc + offset_h * 60) % 1440
+    def lt(off: int) -> int:            # local minutes since midnight
+        return (t_utc + off * 60) % 1440
 
-    # ── US exchanges ── ET = UTC-5 (Nov-Mar) / UTC-4 (Mar-Nov)
-    if any(x in exch for x in ["NYSE","NASDAQ","NMS","NGM","NCM","NASDAQGS",
-                                "NASDAQGM","NASDAQCM","BATS","ARCA","PCX","ASE"]):
+    tz   = (tz_name  or "").upper()
+    exch = (exchange or "").upper()
+
+    # ── Primary: IANA timezone (returned by Yahoo v7 as exchangeTimezoneName) ─
+    # America/New_York → ET
+    if any(x in tz for x in ["AMERICA/NEW_YORK","AMERICA/CHICAGO","AMERICA/DETROIT",
+                              "AMERICA/INDIANA","AMERICA/KENTUCKY"]):
         if wd >= 5: return "CLOSED"
         off = -4 if 3 <= mo <= 11 else -5
         ltt = lt(off)
-        if   4*60        <= ltt < 9*60+30:  return "PRE"
-        elif 9*60+30     <= ltt < 16*60:    return "REGULAR"
-        elif 16*60       <= ltt < 20*60:    return "POST"
+        if   4*60    <= ltt < 9*60+30:  return "PRE"
+        elif 9*60+30 <= ltt < 16*60:    return "REGULAR"
+        elif 16*60   <= ltt < 20*60:    return "POST"
         return "CLOSED"
 
-    # ── Dubai DFM / ADX ── UTC+4, no DST, UAE weekend = Sat+Sun
-    if any(x in exch for x in ["DUBAI","DFM","ADX","ABU DHABI"]):
+    # Asia/Dubai → UTC+4, no DST
+    if any(x in tz for x in ["ASIA/DUBAI","ASIA/MUSCAT"]):
         if wd >= 5: return "CLOSED"
         ltt = lt(4)
         if 10*60 <= ltt < 14*60+30: return "REGULAR"
         return "CLOSED"
 
-    # ── Euronext (Paris, Amsterdam) ── CET/CEST = UTC+1/+2
-    if any(x in exch for x in ["PARIS","EURONEXT","SBF","EPA","PAR",
-                                "AMS","AMSTERDAM","BRUXELLES"]):
+    # Europe/Paris / Amsterdam / Euronext zone → CET/CEST
+    if any(x in tz for x in ["EUROPE/PARIS","EUROPE/AMSTERDAM","EUROPE/BRUSSELS",
+                              "EUROPE/LISBON","EUROPE/MADRID","EUROPE/ROME",
+                              "EUROPE/OSLO","EUROPE/STOCKHOLM","EUROPE/COPENHAGEN",
+                              "EUROPE/WARSAW","EUROPE/PRAGUE","EUROPE/BUDAPEST"]):
         if wd >= 5: return "CLOSED"
         off = 2 if 3 <= mo <= 10 else 1
         ltt = lt(off)
         if 9*60 <= ltt < 17*60+30: return "REGULAR"
         return "CLOSED"
 
-    # ── LSE London ── GMT/BST = UTC+0/+1
+    # Europe/London → GMT/BST
+    if any(x in tz for x in ["EUROPE/LONDON","EUROPE/DUBLIN"]):
+        if wd >= 5: return "CLOSED"
+        off = 1 if 3 <= mo <= 10 else 0
+        ltt = lt(off)
+        if 8*60 <= ltt < 16*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # Europe/Berlin / Zurich → CET/CEST
+    if any(x in tz for x in ["EUROPE/BERLIN","EUROPE/ZURICH","EUROPE/VIENNA"]):
+        if wd >= 5: return "CLOSED"
+        off = 2 if 3 <= mo <= 10 else 1
+        ltt = lt(off)
+        if 9*60 <= ltt < 17*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # Asia/Tokyo → UTC+9
+    if "ASIA/TOKYO" in tz:
+        if wd >= 5: return "CLOSED"
+        ltt = lt(9)
+        if 9*60 <= ltt < 11*60+30 or 12*60+30 <= ltt < 15*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # Asia/Hong_Kong → UTC+8
+    if any(x in tz for x in ["ASIA/HONG_KONG","ASIA/SHANGHAI","ASIA/SINGAPORE"]):
+        if wd >= 5: return "CLOSED"
+        ltt = lt(8)
+        if 9*60+30 <= ltt < 16*60: return "REGULAR"
+        return "CLOSED"
+
+    # ── Fallback: exchange name string matching ───────────────────────────────
+    # US — short codes AND full exchange names Yahoo may return
+    if any(x in exch for x in ["NYSE","NASDAQ","NMS","NGM","NCM","NASDAQGS","NASDAQGM",
+                                "NASDAQCM","BATS","ARCA","PCX","ASE","CBOE",
+                                "NEW YORK STOCK","AMERICAN STOCK","NASDAQ GLOBAL"]):
+        if wd >= 5: return "CLOSED"
+        off = -4 if 3 <= mo <= 11 else -5
+        ltt = lt(off)
+        if   4*60    <= ltt < 9*60+30:  return "PRE"
+        elif 9*60+30 <= ltt < 16*60:    return "REGULAR"
+        elif 16*60   <= ltt < 20*60:    return "POST"
+        return "CLOSED"
+
+    # Dubai
+    if any(x in exch for x in ["DUBAI","DFM","ADX","ABU DHABI","NASDAQ DUBAI"]):
+        if wd >= 5: return "CLOSED"
+        ltt = lt(4)
+        if 10*60 <= ltt < 14*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # Euronext
+    if any(x in exch for x in ["PARIS","EURONEXT","SBF","AMS","AMSTERDAM","BRUSSELS"]):
+        if wd >= 5: return "CLOSED"
+        off = 2 if 3 <= mo <= 10 else 1
+        ltt = lt(off)
+        if 9*60 <= ltt < 17*60+30: return "REGULAR"
+        return "CLOSED"
+
+    # LSE
     if any(x in exch for x in ["LSE","LONDON","IOB","LSEETF"]):
         if wd >= 5: return "CLOSED"
         off = 1 if 3 <= mo <= 10 else 0
@@ -4387,37 +4449,15 @@ def _calc_market_state(exchange: str) -> str | None:
         if 8*60 <= ltt < 16*60+30: return "REGULAR"
         return "CLOSED"
 
-    # ── Frankfurt / Xetra ── CET/CEST
-    if any(x in exch for x in ["XETRA","FRANKFURT","GER","ETR","IBIS","IBIS2"]):
+    # Frankfurt / Xetra
+    if any(x in exch for x in ["XETRA","FRANKFURT","ETR","IBIS"]):
         if wd >= 5: return "CLOSED"
         off = 2 if 3 <= mo <= 10 else 1
         ltt = lt(off)
         if 9*60 <= ltt < 17*60+30: return "REGULAR"
         return "CLOSED"
 
-    # ── Swiss ── CET/CEST
-    if any(x in exch for x in ["SWX","EBS","SWISS"]):
-        if wd >= 5: return "CLOSED"
-        off = 2 if 3 <= mo <= 10 else 1
-        ltt = lt(off)
-        if 9*60 <= ltt < 17*60+30: return "REGULAR"
-        return "CLOSED"
-
-    # ── Tokyo ── UTC+9, no DST
-    if any(x in exch for x in ["TOKYO","TYO","JPX","OSA"]):
-        if wd >= 5: return "CLOSED"
-        ltt = lt(9)
-        if 9*60 <= ltt < 11*60+30 or 12*60+30 <= ltt < 15*60+30: return "REGULAR"
-        return "CLOSED"
-
-    # ── Hong Kong ── UTC+8, no DST
-    if any(x in exch for x in ["HONG KONG","HKG","HKEX"]):
-        if wd >= 5: return "CLOSED"
-        ltt = lt(8)
-        if 9*60+30 <= ltt < 16*60: return "REGULAR"
-        return "CLOSED"
-
-    return None   # unknown — keep Yahoo Finance value
+    return None   # truly unknown — keep Yahoo's value
 
 
 def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
@@ -4443,7 +4483,7 @@ def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
             f"&fields=regularMarketPrice,regularMarketPreviousClose,"
             f"regularMarketChange,regularMarketChangePercent,"
             f"regularMarketVolume,bid,ask,currency,marketState,"
-            f"fullExchangeName,shortName"
+            f"fullExchangeName,exchangeTimezoneName,shortName"
         )
         try:
             with httpx.Client(timeout=10.0, headers=headers) as c:
@@ -4468,6 +4508,7 @@ def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
                     "currency":     q.get("currency", "USD"),
                     "market_state": q.get("marketState", "CLOSED"),
                     "exchange":     q.get("fullExchangeName", ""),
+                    "exchange_tz":  q.get("exchangeTimezoneName", ""),
                 }
         except Exception as e:
             logger.warning(f"Yahoo v7 batch fetch failed for {batch}: {e}")
@@ -4511,7 +4552,7 @@ def _fetch_yahoo_quotes(symbols: list[str]) -> dict[str, dict]:
 
     # ── Override market_state with local hours calculation ────────────────────
     for sym, q in out.items():
-        override = _calc_market_state(q.get("exchange", ""))
+        override = _calc_market_state(q.get("exchange", ""), q.get("exchange_tz", ""))
         if override is not None:
             q["market_state"] = override
 
