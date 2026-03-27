@@ -913,7 +913,14 @@ struct StockIntegrationsView: View {
 // MARK: - Crypto Wallet Integrations View
 
 struct CryptoWalletIntegrationsView: View {
-    @State private var showRPCScan = false
+    @State private var showWallets  = false
+    @State private var walletCount  = 0
+
+    private func loadWalletCount() async {
+        if let ws = try? await APIService.shared.fetchWallets() {
+            walletCount = ws.count
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -922,29 +929,19 @@ struct CryptoWalletIntegrationsView: View {
                     icon: "link.circle.fill",
                     iconColors: [.purple, .indigo],
                     title: "Crypto Wallets",
-                    subtitle: "Connect self-custody wallets to track on-chain balances and transactions."
+                    subtitle: "Add your public wallet addresses to track on-chain balances across 8 chains."
                 )
-
-                IntegrationProviderCard(
-                    icon: "qrcode",
-                    iconColors: [Color(red: 0.24, green: 0.39, blue: 0.91), .blue],
-                    name: "WalletConnect",
-                    isLive: false,
-                    description: "Industry-standard protocol for 300+ self-custody wallets. Scan a QR — no keys ever shared.",
-                    brands: ["MetaMask", "Trust Wallet", "TronLink", "Rainbow", "Ledger", "300+ wallets"],
-                    connectedCount: 0
-                ) { }
 
                 IntegrationProviderCard(
                     icon: "cube.fill",
                     iconColors: [.purple, Color(red: 0.54, green: 0.17, blue: 0.89)],
-                    name: "RPC / Address Scan",
+                    name: "Address Tracking",
                     isLive: true,
-                    description: "Paste any wallet address to fetch live on-chain balance. ETH, BTC, SOL, BNB, Polygon, Arbitrum, Avalanche & Tron — no API key needed.",
-                    brands: ["ETH", "BTC", "SOL", "BNB", "Polygon", "Arbitrum", "Avalanche", "Tron"],
-                    connectedCount: 0
+                    description: "Paste any public wallet address. Supports BTC, ETH, TRX (USDT-TRC20), BNB, SOL, MATIC, XRP, LTC — live balances, no private key needed.",
+                    brands: ["BTC", "ETH", "TRX", "BNB", "SOL", "MATIC", "XRP", "LTC"],
+                    connectedCount: walletCount
                 ) {
-                    showRPCScan = true
+                    showWallets = true
                 }
             }
             .padding(.bottom, 40)
@@ -952,9 +949,10 @@ struct CryptoWalletIntegrationsView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Crypto Wallets")
         .navigationBarTitleDisplayMode(.large)
-        .sheet(isPresented: $showRPCScan) {
-            WalletAddressScanView()
+        .sheet(isPresented: $showWallets, onDismiss: { Task { await loadWalletCount() } }) {
+            CryptoWalletsView()
         }
+        .task { await loadWalletCount() }
     }
 }
 

@@ -627,6 +627,77 @@ final class APIService {
         return try JSONDecoder().decode(SyncResultResponse.self, from: data)
     }
 
+    // MARK: - Crypto Wallets
+
+    struct WalletTokenBalance: Codable {
+        let symbol: String
+        let name: String
+        let balance: Double
+        let price_usd: Double
+        let value_usd: Double
+        let is_native: Bool
+        let contract: String?
+    }
+
+    struct CryptoWallet: Codable, Identifiable {
+        let id: String
+        let chain: String
+        let address: String
+        let label: String?
+        let last_synced: String?
+        let created_at: String?
+    }
+
+    struct WalletListResponse: Codable { let wallets: [CryptoWallet] }
+
+    struct WalletSyncResponse: Codable {
+        let wallet_id: String
+        let chain: String
+        let address: String
+        let holdings: [WalletTokenBalance]
+        let total_usd: Double
+        let synced_at: String
+    }
+
+    struct AllWalletBalancesResponse: Codable {
+        struct WalletResult: Codable {
+            let wallet_id: String
+            let chain: String
+            let address: String
+            let label: String?
+            let holdings: [WalletTokenBalance]
+            let total_usd: Double
+        }
+        let wallets: [WalletResult]
+        let total_usd: Double
+    }
+
+    func fetchWallets() async throws -> [CryptoWallet] {
+        let data = try await get("/wallets")
+        return try JSONDecoder().decode(WalletListResponse.self, from: data).wallets
+    }
+
+    func addWallet(chain: String, address: String, label: String?) async throws -> CryptoWallet {
+        var body: [String: Any] = ["chain": chain, "address": address]
+        if let l = label, !l.isEmpty { body["label"] = l }
+        let data = try await post("/wallets", body: body)
+        return try JSONDecoder().decode(CryptoWallet.self, from: data)
+    }
+
+    func deleteWallet(id: String) async throws {
+        _ = try await delete("/wallets/\(id)")
+    }
+
+    func syncWallet(id: String) async throws -> WalletSyncResponse {
+        let data = try await post("/wallets/\(id)/sync", body: [:])
+        return try JSONDecoder().decode(WalletSyncResponse.self, from: data)
+    }
+
+    func fetchAllWalletBalances() async throws -> AllWalletBalancesResponse {
+        let data = try await get("/wallets/balances")
+        return try JSONDecoder().decode(AllWalletBalancesResponse.self, from: data)
+    }
+
     // MARK: - SnapTrade API
 
     struct SnaptradeConnectionResponse: Codable, Identifiable {
