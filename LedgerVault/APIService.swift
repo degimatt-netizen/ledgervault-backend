@@ -1060,6 +1060,56 @@ final class APIService {
         try validate(response: response, data: data)
     }
 
+    // MARK: - Forex
+
+    struct ForexPair: Codable, Identifiable {
+        var id: String { symbol }
+        let symbol: String
+        let name: String
+        let last: Double
+        let change: Double
+        let change_pct: Double
+        let currency: String?
+        let market_state: String?
+        let display_name: String?
+    }
+
+    struct ForexResponse: Codable {
+        let pairs: [ForexPair]
+    }
+
+    // MARK: - News
+
+    struct NewsArticle: Codable, Identifiable {
+        var id: String { link }
+        let title: String
+        let link: String
+        let publisher: String
+        let published_at: Int
+        let thumbnail: String?
+        let symbols: [String]?
+    }
+
+    struct NewsResponse: Codable {
+        let articles: [NewsArticle]
+    }
+
+    func fetchForexRates() async throws -> ForexResponse {
+        let req = makeRequest(url: baseURL.appendingPathComponent("market/forex"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ForexResponse.self, from: data)
+    }
+
+    func fetchMarketNews(symbols: [String]) async throws -> NewsResponse {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("market/news"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "symbols", value: symbols.joined(separator: ","))]
+        let req = makeRequest(url: comps.url!)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(NewsResponse.self, from: data)
+    }
+
     // MARK: - Error Handling
 
     private func validate(response: URLResponse, data: Data) throws {

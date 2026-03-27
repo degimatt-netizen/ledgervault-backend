@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 // MARK: - Logo (real image + avatar fallback)
 
@@ -421,16 +422,236 @@ struct MarketSectionHeader: View {
 
 enum MarketSortField { case symbol, last, changePct }
 
-// MARK: - Main View
+// MARK: - Currency flag helper
+private func currencyFlag(_ code: String) -> String {
+    let flags: [String: String] = [
+        "EUR": "🇪🇺", "USD": "🇺🇸", "GBP": "🇬🇧", "JPY": "🇯🇵",
+        "CHF": "🇨🇭", "AUD": "🇦🇺", "CAD": "🇨🇦", "AED": "🇦🇪",
+        "SGD": "🇸🇬", "NZD": "🇳🇿", "HKD": "🇭🇰", "SEK": "🇸🇪",
+        "NOK": "🇳🇴", "DKK": "🇩🇰",
+    ]
+    return flags[code] ?? "🌐"
+}
 
+// MARK: - Forex Row
+struct ForexRowView: View {
+    let pair: APIService.ForexPair
+
+    private var changeColor: Color {
+        pair.change >= 0 ? Color(red: 0.2, green: 0.85, blue: 0.4) : Color(red: 1, green: 0.3, blue: 0.3)
+    }
+
+    private var flags: (String, String) {
+        let parts = (pair.display_name ?? pair.symbol).split(separator: "/").map(String.init)
+        return (currencyFlag(parts.first ?? ""), currencyFlag(parts.last ?? ""))
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            let (baseFlag, quoteFlag) = flags
+            HStack(spacing: 2) {
+                Text(baseFlag).font(.system(size: 22))
+                Text(quoteFlag).font(.system(size: 22)).offset(x: -4)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pair.display_name ?? pair.symbol)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                Text("FOREX").font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.3))
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(String(format: "%.4f", pair.last))
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white)
+                let sign = pair.change >= 0 ? "+" : ""
+                Text("\(sign)\(String(format: "%.4f", pair.change))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(changeColor)
+                Text("\(pair.change >= 0 ? "+" : "")\(String(format: "%.2f", pair.change_pct))%")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(changeColor)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(changeColor.opacity(0.12))
+                    .cornerRadius(5)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - News Article Row
+struct NewsArticleRow: View {
+    let article: APIService.NewsArticle
+
+    private var timeAgo: String {
+        let diff = Date().timeIntervalSince(Date(timeIntervalSince1970: Double(article.published_at)))
+        if diff < 3600  { return "\(max(1, Int(diff / 60)))m ago" }
+        if diff < 86400 { return "\(Int(diff / 3600))h ago" }
+        return "\(Int(diff / 86400))d ago"
+    }
+
+    var body: some View {
+        Button {
+            guard let url = URL(string: article.link) else { return }
+            UIApplication.shared.open(url)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Group {
+                    if let thumb = article.thumbnail, let url = URL(string: thumb) {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .success(let img):
+                                img.resizable().scaledToFill()
+                            default:
+                                Color.white.opacity(0.07)
+                                    .overlay(Image(systemName: "newspaper").foregroundStyle(.white.opacity(0.3)))
+                            }
+                        }
+                    } else {
+                        Color.white.opacity(0.07)
+                            .overlay(Image(systemName: "newspaper").foregroundStyle(.white.opacity(0.3)))
+                    }
+                }
+                .frame(width: 84, height: 64)
+                .clipped()
+                .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(article.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 5) {
+                        Text(article.publisher)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
+                        Text("·").foregroundStyle(.white.opacity(0.2))
+                        Text(timeAgo)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    if let syms = article.symbols, !syms.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(syms.prefix(3), id: \.self) { s in
+                                Text(s)
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background(Color.white.opacity(0.07))
+                                    .cornerRadius(4)
+                            }
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.04))
+            .cornerRadius(12)
+        }
+    }
+}
+
+// MARK: - News Tab
+struct MarketNewsView: View {
+    let watchlistSymbols: [String]
+    @State private var articles: [APIService.NewsArticle] = []
+    @State private var isLoading = false
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if isLoading && articles.isEmpty {
+                Spacer(); ProgressView().tint(.white); Spacer()
+            } else if let err = error {
+                Spacer()
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.orange)
+                    Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Retry") { Task { await load() } }.buttonStyle(.borderedProminent)
+                }
+                .padding()
+                Spacer()
+            } else if articles.isEmpty {
+                Spacer()
+                VStack(spacing: 12) {
+                    Image(systemName: "newspaper").font(.system(size: 48)).foregroundStyle(.white.opacity(0.15))
+                    Text("No news yet").font(.title3.weight(.semibold)).foregroundStyle(.white.opacity(0.6))
+                    Text("Add symbols to your watchlist to see relevant news.")
+                        .font(.subheadline).foregroundStyle(.white.opacity(0.3)).multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 32).padding(.top, 60)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(articles) { article in
+                            NewsArticleRow(article: article)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 24)
+                }
+                .refreshable { await load() }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        isLoading = true; error = nil
+        // Use watchlist symbols; if empty use top indices
+        let syms = watchlistSymbols.isEmpty ? ["SPY", "QQQ", "AAPL", "TSLA"] : watchlistSymbols
+        do {
+            let resp = try await APIService.shared.fetchMarketNews(symbols: syms)
+            articles = resp.articles
+            scheduleNotifications(for: resp.articles)
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private func scheduleNotifications(for articles: [APIService.NewsArticle]) {
+        let lastSeen = UserDefaults.standard.double(forKey: "news_last_seen_ts")
+        let fresh = articles.filter { Double($0.published_at) > lastSeen && Double($0.published_at) > Date().addingTimeInterval(-3600).timeIntervalSince1970 }
+        guard !fresh.isEmpty else { return }
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            guard granted else { return }
+            for article in fresh.prefix(3) {
+                let content = UNMutableNotificationContent()
+                content.title = article.publisher
+                content.body = article.title
+                content.sound = .default
+                content.userInfo = ["url": article.link]
+                let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+                let req = UNNotificationRequest(identifier: article.link, content: content, trigger: trigger)
+                UNUserNotificationCenter.current().add(req)
+            }
+            UserDefaults.standard.set(articles.first.map { Double($0.published_at) } ?? 0, forKey: "news_last_seen_ts")
+        }
+    }
+}
+
+// MARK: - Main View
 struct MarketsView: View {
-    @State private var quotes:    [APIService.MarketQuote] = []
-    @State private var isLoading  = false
-    @State private var error:     String?
-    @State private var showAdd    = false
-    @State private var sortField  = MarketSortField.symbol
-    @State private var sortAsc    = true
-    @State private var searchText = ""
+    @State private var quotes:      [APIService.MarketQuote] = []
+    @State private var forexPairs:  [APIService.ForexPair]   = []
+    @State private var isLoading    = false
+    @State private var error:       String?
+    @State private var showAdd      = false
+    @State private var sortField    = MarketSortField.symbol
+    @State private var sortAsc      = true
+    @State private var searchText   = ""
+    @State private var selectedTab  = 0   // 0=Markets, 1=News
 
     private var sorted: [APIService.MarketQuote] {
         let base = searchText.isEmpty ? quotes : quotes.filter {
@@ -450,50 +671,34 @@ struct MarketsView: View {
 
     private var held:      [APIService.MarketQuote] { sorted.filter { ($0.position ?? 0) != 0 } }
     private var watchOnly: [APIService.MarketQuote] { sorted.filter { ($0.position ?? 0) == 0 && $0.in_watchlist == true } }
+    private var watchlistSymbols: [String] { quotes.filter { $0.in_watchlist == true }.map(\.symbol) }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(red: 0.06, green: 0.06, blue: 0.09).ignoresSafeArea()
                 VStack(spacing: 0) {
-                    sortBar
-                    if isLoading && quotes.isEmpty {
-                        Spacer(); ProgressView().tint(.white); Spacer()
-                    } else if let err = error {
-                        Spacer()
-                        VStack(spacing: 12) {
-                            Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.orange)
-                            Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                            Button("Retry") { Task { await loadData() } }.buttonStyle(.borderedProminent)
-                        }.padding()
-                        Spacer()
+                    // Tab picker
+                    Picker("", selection: $selectedTab) {
+                        Text("Markets").tag(0)
+                        Text("News").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+
+                    if selectedTab == 0 {
+                        marketsContent
                     } else {
-                        ScrollView {
-                            LazyVStack(spacing: 6) {
-                                if !held.isEmpty {
-                                    MarketSectionHeader(title: "My Holdings", count: held.count)
-                                    ForEach(held) { q in
-                                        MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
-                                    }
-                                }
-                                if !watchOnly.isEmpty {
-                                    MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
-                                    ForEach(watchOnly) { q in
-                                        MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
-                                    }
-                                }
-                                if sorted.isEmpty { emptyState }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 24)
-                        }
-                        .refreshable { await loadData() }
+                        MarketNewsView(watchlistSymbols: watchlistSymbols)
                     }
                 }
             }
-            .searchable(text: $searchText,
-                        placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "Search symbol or name")
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search symbol or name"
+            )
             .navigationTitle("Markets")
             .navigationBarTitleDisplayMode(.large)
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -516,6 +721,52 @@ struct MarketsView: View {
             .task { await loadData() }
         }
         .preferredColorScheme(.dark)
+    }
+
+    // MARK: Markets tab content
+    @ViewBuilder
+    private var marketsContent: some View {
+        if isLoading && quotes.isEmpty && forexPairs.isEmpty {
+            Spacer(); ProgressView().tint(.white); Spacer()
+        } else if let err = error {
+            Spacer()
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.orange)
+                Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button("Retry") { Task { await loadData() } }.buttonStyle(.borderedProminent)
+            }.padding()
+            Spacer()
+        } else {
+            VStack(spacing: 0) {
+                sortBar
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        if !held.isEmpty {
+                            MarketSectionHeader(title: "My Holdings", count: held.count)
+                            ForEach(held) { q in
+                                MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                            }
+                        }
+                        if !watchOnly.isEmpty {
+                            MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
+                            ForEach(watchOnly) { q in
+                                MarketRowView(quote: q) { Task { await removeFromWatchlist(q.symbol) } }
+                            }
+                        }
+                        if !forexPairs.isEmpty {
+                            MarketSectionHeader(title: "Forex", count: forexPairs.count)
+                            ForEach(forexPairs) { pair in
+                                ForexRowView(pair: pair)
+                            }
+                        }
+                        if sorted.isEmpty && forexPairs.isEmpty { emptyState }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 24)
+                }
+                .refreshable { await loadData() }
+            }
+        }
     }
 
     // MARK: Sort bar
@@ -564,14 +815,25 @@ struct MarketsView: View {
     // MARK: Data
     private func loadData() async {
         isLoading = true; error = nil
-        do { let r = try await APIService.shared.fetchMarketData(); quotes = r.quotes }
-        catch { self.error = error.localizedDescription }
+        async let quotesTask  = APIService.shared.fetchMarketData()
+        async let forexTask   = APIService.shared.fetchForexRates()
+        do {
+            let (qResp, fResp) = try await (quotesTask, forexTask)
+            quotes     = qResp.quotes
+            forexPairs = fResp.pairs
+        } catch {
+            self.error = error.localizedDescription
+        }
         isLoading = false
     }
+
     private func addToWatchlist(_ sym: String) async {
-        _ = try? await APIService.shared.addToWatchlist(symbol: sym); await loadData()
+        _ = try? await APIService.shared.addToWatchlist(symbol: sym)
+        await loadData()
     }
+
     private func removeFromWatchlist(_ sym: String) async {
-        try? await APIService.shared.removeFromWatchlist(symbol: sym); await loadData()
+        try? await APIService.shared.removeFromWatchlist(symbol: sym)
+        await loadData()
     }
 }
