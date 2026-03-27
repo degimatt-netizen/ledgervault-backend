@@ -3,14 +3,12 @@ import SwiftUI
 // MARK: - Institution Model (private)
 
 private enum ICategory: String {
-    case bank     = "Banks & Neobanks"
     case exchange = "Crypto Exchanges"
     case broker   = "Stock Brokers"
     case wallet   = "Crypto Wallets"
 
     var icon: String {
         switch self {
-        case .bank:     "building.columns.fill"
         case .exchange: "bitcoinsign.circle.fill"
         case .broker:   "chart.bar.fill"
         case .wallet:   "link.circle.fill"
@@ -18,7 +16,6 @@ private enum ICategory: String {
     }
     var color: Color {
         switch self {
-        case .bank:     .blue
         case .exchange: .orange
         case .broker:   .green
         case .wallet:   .purple
@@ -27,28 +24,23 @@ private enum ICategory: String {
 }
 
 private enum IProvider: String {
-    case trueLayer     = "TrueLayer"
-    case saltEdge      = "Salt Edge"
     case apiKey        = "API Key"
     case snapTrade     = "SnapTrade"
     case flanks        = "Flanks"
-    case alpaca        = "Alpaca"
     case vezgo         = "Vezgo"
     case walletConnect = "WalletConnect"
     case rpc           = "RPC"
 
     var isLive: Bool {
         switch self {
-        case .trueLayer, .saltEdge, .apiKey, .rpc: return true
+        case .apiKey, .rpc: return true
         default: return false
         }
     }
     var badgeColor: Color {
         switch self {
-        case .trueLayer: return .blue
-        case .saltEdge:  return .green
-        case .apiKey:    return .orange
-        default:         return .secondary
+        case .apiKey: return .orange
+        default:      return .secondary
         }
     }
 }
@@ -66,55 +58,6 @@ private struct Institution: Identifiable {
 // MARK: - Institution Catalog
 
 private let catalog: [Institution] = [
-
-    // ════════════════════════════════════════════════════════════
-    // BANKS — TrueLayer  (UK / IE / EU)
-    // ════════════════════════════════════════════════════════════
-    .init(id:"revolut",      name:"Revolut",           icon:"r.circle.fill",              color:Color(red:0.42,green:0.20,blue:0.86), category:.bank, provider:.trueLayer,  popular:true),
-    .init(id:"monzo",        name:"Monzo",              icon:"m.circle.fill",              color:Color(red:1.0, green:0.40,blue:0.22), category:.bank, provider:.trueLayer,  popular:true),
-    .init(id:"wise",         name:"Wise",               icon:"w.circle.fill",              color:Color(red:0.16,green:0.72,blue:0.43), category:.bank, provider:.trueLayer,  popular:true),
-    .init(id:"starling",     name:"Starling",           icon:"star.fill",                  color:Color(red:0.13,green:0.65,blue:0.94), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"hsbc",         name:"HSBC",               icon:"building.columns.fill",      color:Color(red:0.84,green:0.0, blue:0.10), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"barclays",     name:"Barclays",           icon:"b.circle.fill",              color:Color(red:0.0, green:0.22,blue:0.58), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"lloyds",       name:"Lloyds",             icon:"l.circle.fill",              color:Color(red:0.0, green:0.42,blue:0.20), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"natwest",      name:"NatWest",            icon:"building.2.fill",            color:Color(red:0.49,green:0.02,blue:0.19), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"santander",    name:"Santander",          icon:"s.circle.fill",              color:Color(red:0.87,green:0.0, blue:0.0),  category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"halifax",      name:"Halifax",            icon:"h.circle.fill",              color:Color(red:0.0, green:0.24,blue:0.58), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"nationwide",   name:"Nationwide",         icon:"n.circle.fill",              color:Color(red:0.0, green:0.34,blue:0.62), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"chase_uk",     name:"Chase UK",           icon:"c.circle.fill",              color:Color(red:0.0, green:0.15,blue:0.38), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"first_direct", name:"First Direct",       icon:"1.circle.fill",              color:Color(red:0.10,green:0.10,blue:0.10), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"tsb",          name:"TSB",                icon:"t.circle.fill",              color:Color(red:0.0, green:0.46,blue:0.70), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"virgin_money", name:"Virgin Money",       icon:"v.circle.fill",              color:Color(red:0.78,green:0.0, blue:0.0),  category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"monese",       name:"Monese",             icon:"m.circle.fill",              color:Color(red:0.0, green:0.56,blue:0.84), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"tide",         name:"Tide",               icon:"waveform.circle.fill",       color:Color(red:0.23,green:0.84,blue:0.71), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"aib",          name:"AIB",                icon:"a.circle.fill",              color:Color(red:0.0, green:0.40,blue:0.20), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"boi",          name:"Bank of Ireland",    icon:"building.columns.fill",      color:Color(red:0.0, green:0.48,blue:0.30), category:.bank, provider:.trueLayer,  popular:false),
-    .init(id:"curve",        name:"Curve",              icon:"creditcard.fill",            color:Color(red:0.07,green:0.07,blue:0.25), category:.bank, provider:.trueLayer,  popular:false),
-
-    // ════════════════════════════════════════════════════════════
-    // BANKS — Salt Edge  (EU wide)
-    // ════════════════════════════════════════════════════════════
-    .init(id:"n26",          name:"N26",                icon:"n.circle.fill",              color:Color(red:0.15,green:0.85,blue:0.65), category:.bank, provider:.saltEdge,   popular:true),
-    .init(id:"bunq",         name:"Bunq",               icon:"bolt.circle.fill",           color:Color(red:0.0, green:0.80,blue:0.63), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"ing",          name:"ING",                icon:"i.circle.fill",              color:Color(red:1.0, green:0.42,blue:0.0),  category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"bnp",          name:"BNP Paribas",        icon:"building.columns.fill",      color:Color(red:0.0, green:0.30,blue:0.60), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"sg",           name:"Société Générale",   icon:"s.circle.fill",              color:Color(red:0.80,green:0.0, blue:0.10), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"deutsche",     name:"Deutsche Bank",      icon:"d.circle.fill",              color:Color(red:0.0, green:0.0, blue:0.60), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"abnamro",      name:"ABN AMRO",           icon:"a.circle.fill",              color:Color(red:0.0, green:0.48,blue:0.78), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"rabobank",     name:"Rabobank",           icon:"r.circle.fill",              color:Color(red:0.86,green:0.33,blue:0.0),  category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"unicredit",    name:"UniCredit",          icon:"u.circle.fill",              color:Color(red:0.84,green:0.0, blue:0.0),  category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"bbva",         name:"BBVA",               icon:"b.circle.fill",              color:Color(red:0.0, green:0.44,blue:0.76), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"caixabank",    name:"CaixaBank",          icon:"c.circle.fill",              color:Color(red:0.0, green:0.38,blue:0.62), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"credit_agri",  name:"Crédit Agricole",    icon:"leaf.fill",                  color:Color(red:0.0, green:0.52,blue:0.16), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"nordea",       name:"Nordea",             icon:"n.circle.fill",              color:Color(red:0.0, green:0.36,blue:0.60), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"commerzbank",  name:"Commerzbank",        icon:"c.circle.fill",              color:Color(red:0.94,green:0.71,blue:0.0),  category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"kbc",          name:"KBC",                icon:"k.circle.fill",              color:Color(red:0.0, green:0.42,blue:0.20), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"belfius",      name:"Belfius",            icon:"b.circle.fill",              color:Color(red:0.72,green:0.0, blue:0.16), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"seb",          name:"SEB",                icon:"s.circle.fill",              color:Color(red:0.0, green:0.44,blue:0.18), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"swedbank",     name:"Swedbank",           icon:"s.circle.fill",              color:Color(red:0.84,green:0.10,blue:0.14), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"handelsbanken",name:"Handelsbanken",      icon:"h.circle.fill",              color:Color(red:0.0, green:0.36,blue:0.62), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"intesa",       name:"Intesa Sanpaolo",    icon:"i.circle.fill",              color:Color(red:0.0, green:0.36,blue:0.62), category:.bank, provider:.saltEdge,   popular:false),
-    .init(id:"postbank",     name:"Postbank",           icon:"envelope.fill",              color:Color(red:0.94,green:0.71,blue:0.0),  category:.bank, provider:.saltEdge,   popular:false),
 
     // ════════════════════════════════════════════════════════════
     // CRYPTO EXCHANGES — API Key  (connected now)
@@ -173,9 +116,9 @@ private let catalog: [Institution] = [
     .init(id:"saxo",         name:"Saxo",               icon:"s.circle.fill",              color:Color(red:0.0, green:0.28,blue:0.55), category:.broker, provider:.flanks,    popular:false),
 
     // ════════════════════════════════════════════════════════════
-    // STOCK BROKERS — Alpaca  (coming soon)
+    // STOCK BROKERS — Alpaca  (API Key)
     // ════════════════════════════════════════════════════════════
-    .init(id:"alpaca",       name:"Alpaca",             icon:"hare.fill",                  color:Color(red:0.95,green:0.80,blue:0.0),  category:.broker, provider:.alpaca,    popular:false),
+    .init(id:"alpaca",       name:"Alpaca",             icon:"hare.fill",                  color:Color(red:0.95,green:0.80,blue:0.0),  category:.broker, provider:.apiKey,    popular:false),
 
     // ════════════════════════════════════════════════════════════
     // CRYPTO WALLETS — WalletConnect  (coming soon)
@@ -210,10 +153,7 @@ struct IntegrationsHubView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var exchangeConnections: [APIService.ExchangeConnectionResponse] = []
-    @State private var bankConnections:     [APIService.BankConnectionResponse]     = []
     @State private var searchText   = ""
-    @State private var showTrueLayer  = false
-    @State private var showSaltEdge   = false
     @State private var showExchanges  = false
     @State private var comingSoonName: String? = nil
 
@@ -255,8 +195,6 @@ struct IntegrationsHubView: View {
             }
             .task { await load() }
             .refreshable { await load() }
-            .sheet(isPresented: $showTrueLayer,  onDismiss: { Task { await load() } }) { BankProviderPickerView() }
-            .sheet(isPresented: $showSaltEdge,   onDismiss: { Task { await load() } }) { SaltEdgeBankConnectionsView() }
             .sheet(isPresented: $showExchanges,  onDismiss: { Task { await load() } }) { ExchangeConnectionsView() }
             .alert("Coming Soon", isPresented: .constant(comingSoonName != nil), actions: {
                 Button("Got It") { comingSoonName = nil }
@@ -297,23 +235,6 @@ struct IntegrationsHubView: View {
 
                 VStack(spacing: 0) {
                     NavigationLink {
-                        BankIntegrationsView(
-                            bankConnections: bankConnections,
-                            onUpdate: { Task { await load() } }
-                        )
-                    } label: {
-                        categoryRow(
-                            icon: "building.columns.fill", iconColor: .blue,
-                            title: "Banks & Neobanks",
-                            subtitle: "TrueLayer · Tink · Plaid · Salt Edge",
-                            badge: bankConnections.count > 0 ? "\(bankConnections.count)" : nil,
-                            badgeColor: .green
-                        )
-                    }
-
-                    Divider().padding(.leading, 68)
-
-                    NavigationLink {
                         CryptoExchangeIntegrationsView(
                             connections: exchangeConnections,
                             onUpdate: { Task { await load() } }
@@ -322,7 +243,7 @@ struct IntegrationsHubView: View {
                         categoryRow(
                             icon: "bitcoinsign.circle.fill", iconColor: .orange,
                             title: "Crypto Exchanges",
-                            subtitle: "API Key · Vezgo · CCXT",
+                            subtitle: "API Key — 17 exchanges",
                             badge: exchangeConnections.count > 0 ? "\(exchangeConnections.count)" : nil,
                             badgeColor: .orange
                         )
@@ -334,7 +255,7 @@ struct IntegrationsHubView: View {
                         categoryRow(
                             icon: "chart.bar.fill", iconColor: .green,
                             title: "Stock Brokers",
-                            subtitle: "SnapTrade · Flanks · Alpaca",
+                            subtitle: "API Key · SnapTrade · Flanks",
                             badge: nil, badgeColor: .green
                         )
                     }
@@ -345,7 +266,7 @@ struct IntegrationsHubView: View {
                         categoryRow(
                             icon: "link.circle.fill", iconColor: .purple,
                             title: "Crypto Wallets",
-                            subtitle: "WalletConnect · Alchemy · Infura",
+                            subtitle: "Address Tracking · WalletConnect",
                             badge: nil, badgeColor: .purple
                         )
                     }
@@ -420,8 +341,6 @@ struct IntegrationsHubView: View {
 
     private func tap(_ inst: Institution) {
         switch inst.provider {
-        case .trueLayer:    showTrueLayer = true
-        case .saltEdge:     showSaltEdge  = true
         case .apiKey:       showExchanges = true
         default:            comingSoonName = inst.name
         }
@@ -479,9 +398,7 @@ struct IntegrationsHubView: View {
 
     private func load() async {
         do {
-            async let ex   = APIService.shared.fetchExchangeConnections()
-            async let bank = APIService.shared.fetchBankConnections()
-            (exchangeConnections, bankConnections) = try await (ex, bank)
+            exchangeConnections = try await APIService.shared.fetchExchangeConnections()
         } catch { }
     }
 }
@@ -698,77 +615,6 @@ private struct IntegrationSectionHeader: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 28).padding(.bottom, 4)
-    }
-}
-
-// MARK: - Bank Integrations View
-
-struct BankIntegrationsView: View {
-    let bankConnections: [APIService.BankConnectionResponse]
-    let onUpdate: () -> Void
-
-    @State private var showTrueLayer = false
-    @State private var showSaltEdge  = false
-    @State private var showPlaid     = false
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                IntegrationSectionHeader(
-                    icon: "building.columns.fill",
-                    iconColors: [.blue, .purple],
-                    title: "Banks & Neobanks",
-                    subtitle: "Connect bank accounts to auto-import transactions via Open Banking."
-                )
-
-                IntegrationProviderCard(
-                    icon: "building.columns.fill",
-                    iconColors: [.blue, .indigo],
-                    name: "TrueLayer",
-                    isLive: true,
-                    description: "UK & EU Open Banking — 100+ banks including Revolut, Wise, Monzo and HSBC.",
-                    brands: [],
-                    connectedCount: bankConnections.filter { $0.provider != "saltedge" && $0.provider != "plaid" }.count
-                ) { showTrueLayer = true }
-
-                IntegrationProviderCard(
-                    icon: "shield.lefthalf.filled",
-                    iconColors: [.green, .teal],
-                    name: "Salt Edge",
-                    isLive: true,
-                    description: "5,000+ banks across Europe via PSD2 Open Banking.",
-                    brands: [],
-                    connectedCount: bankConnections.filter { $0.provider == "saltedge" }.count
-                ) { showSaltEdge = true }
-
-                IntegrationProviderCard(
-                    icon: "creditcard.circle.fill",
-                    iconColors: [Color(red: 0.0, green: 0.42, blue: 0.65), .teal],
-                    name: "Plaid",
-                    isLive: true,
-                    description: "12,000+ banks globally — strong US and growing EU coverage.",
-                    brands: [],
-                    connectedCount: bankConnections.filter { $0.provider == "plaid" }.count
-                ) { showPlaid = true }
-
-                IntegrationProviderCard(
-                    icon: "wave.3.right.circle.fill",
-                    iconColors: [.blue, .cyan],
-                    name: "Tink",
-                    isLive: false,
-                    description: "Visa-owned. 6,000+ connections across Europe.",
-                    brands: [],
-                    connectedCount: 0
-                ) { }
-            }
-            .padding(.bottom, 40)
-        }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle("Banks & Neobanks")
-        .navigationBarTitleDisplayMode(.large)
-        .sheet(isPresented: $showTrueLayer, onDismiss: onUpdate) { BankConnectionsView(sandbox: false) }
-        .sheet(isPresented: $showSaltEdge,  onDismiss: onUpdate) { SaltEdgeBankConnectionsView() }
-        .sheet(isPresented: $showPlaid,     onDismiss: onUpdate) { PlaidBankConnectionsView() }
     }
 }
 
