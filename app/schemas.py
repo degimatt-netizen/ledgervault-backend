@@ -78,6 +78,7 @@ class AccountBase(BaseModel):
     name: str
     account_type: AccountType
     base_currency: str
+    exclude_from_total: bool = False
 
 
 class AccountCreate(AccountBase):
@@ -88,6 +89,7 @@ class AccountUpdate(BaseModel):
     name: Optional[str] = None
     account_type: Optional[AccountType] = None
     base_currency: Optional[str] = None
+    exclude_from_total: Optional[bool] = None
 
 
 class AccountOut(AccountBase):
@@ -175,6 +177,14 @@ class TransactionEventCreate(BaseModel):
     source: str = "manual"
     external_id: Optional[str] = None
     legs: List[TransactionLegCreate]
+
+
+class TransactionEventUpdate(BaseModel):
+    event_type: Optional[EventType] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    date: Optional[str] = None
+    note: Optional[str] = None
 
 
 class TransactionEventOut(BaseModel):

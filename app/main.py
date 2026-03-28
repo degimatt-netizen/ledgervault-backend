@@ -21,7 +21,7 @@ from app.schemas import (
     AccountList, AccountOut, AccountCreate, AccountUpdate,
     AssetList, AssetOut, AssetCreate,
     HoldingList,
-    TransactionEventList, TransactionEventOut, TransactionEventCreate,
+    TransactionEventList, TransactionEventOut, TransactionEventCreate, TransactionEventUpdate,
     TransactionLegList,
     ExchangeConnectionCreate, ExchangeConnectionOut, ExchangeConnectionList, SyncResult,
     RecurringTransactionCreate, RecurringTransactionUpdate,
@@ -112,6 +112,7 @@ for _stmt in [
     )""",
     "CREATE INDEX IF NOT EXISTS ix_watchlist_user_id ON watchlist (user_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_watchlist_user_symbol ON watchlist (user_id, symbol)",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS exclude_from_total BOOLEAN NOT NULL DEFAULT FALSE",
 ]:
     try:
         with engine.connect() as _conn:
@@ -2339,6 +2340,10 @@ def user_full_reset(user_id: str = Depends(require_user_id), db: Session = Depen
         db.query(models.Account).filter(
             models.Account.user_id == user_id
         ).delete(synchronize_session=False)
+    # Clear watchlist for this user
+    db.query(models.WatchlistItem).filter(
+        models.WatchlistItem.user_id == user_id
+    ).delete(synchronize_session=False)
     db.commit()
     return {"status": "ok"}
 
@@ -2538,6 +2543,8 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
     portfolio_items = []
     total_base = cash_total = crypto_total = stock_total = 0.0
 
+    excluded_account_ids = {aid for aid, a in accounts.items() if a.exclude_from_total}
+
     for holding in holdings:
         asset   = assets.get(holding.asset_id)
         account = accounts.get(holding.account_id)
@@ -2572,10 +2579,11 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
             "base_currency":base_currency.upper(),
         })
 
-        total_base += value_base
-        if asset.asset_class == "fiat":           cash_total   += value_base
-        elif asset.asset_class == "crypto":        crypto_total += value_base
-        elif asset.asset_class in ("stock","etf"): stock_total  += value_base
+        if account.id not in excluded_account_ids:
+            total_base += value_base
+            if asset.asset_class == "fiat":           cash_total   += value_base
+            elif asset.asset_class == "crypto":        crypto_total += value_base
+            elif asset.asset_class in ("stock","etf"): stock_total  += value_base
 
     user_leg_event_ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
         .filter(models.TransactionLeg.account_id.in_(accounts.keys())).distinct().all()]
@@ -2743,6 +2751,7 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db),
     item = models.Account(id=str(uuid4()), name=payload.name,
                           account_type=payload.account_type,
                           base_currency=payload.base_currency.upper(),
+                          exclude_from_total=payload.exclude_from_total,
                           user_id=user_id)
     db.add(item); db.commit(); db.refresh(item); return item
 
@@ -2750,9 +2759,10 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db),
 def update_account(account_id: str, payload: AccountUpdate, db: Session = Depends(get_db)):
     item = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not item: raise HTTPException(status_code=404, detail="Account not found")
-    if payload.name is not None:          item.name          = payload.name
-    if payload.account_type is not None:  item.account_type  = payload.account_type
-    if payload.base_currency is not None: item.base_currency = payload.base_currency.upper()
+    if payload.name is not None:               item.name               = payload.name
+    if payload.account_type is not None:       item.account_type       = payload.account_type
+    if payload.base_currency is not None:      item.base_currency      = payload.base_currency.upper()
+    if payload.exclude_from_total is not None: item.exclude_from_total = payload.exclude_from_total
     db.commit(); db.refresh(item); return item
 
 @app.get("/accounts/{account_id}/holdings", response_model=HoldingList)
@@ -2843,6 +2853,20 @@ def list_transaction_legs(db: Session = Depends(get_db), user_id: Optional[str] 
     user_account_ids = [a.id for a in acct_q.all()]
     return {"items": db.query(models.TransactionLeg).filter(
         models.TransactionLeg.account_id.in_(user_account_ids)).all()}
+
+@app.put("/transaction-events/{event_id}", response_model=TransactionEventOut)
+def update_transaction_event(event_id: str, payload: TransactionEventUpdate, db: Session = Depends(get_db)):
+    event = db.query(models.TransactionEvent).filter(
+        models.TransactionEvent.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if payload.event_type is not None:  event.event_type  = payload.event_type
+    if payload.category is not None:    event.category    = payload.category
+    if payload.description is not None: event.description = payload.description
+    if payload.date is not None:        event.date        = payload.date
+    if payload.note is not None:        event.note        = payload.note
+    db.commit(); db.refresh(event)
+    return event
 
 @app.delete("/transaction-events/{event_id}")
 def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
@@ -5001,9 +5025,19 @@ _FOREX_PAIRS = [
     ("USDCAD=X", "USD/CAD"),
     ("GBPEUR=X", "GBP/EUR"),
     ("EURGBP=X", "EUR/GBP"),
+    ("EURJPY=X", "EUR/JPY"),
+    ("EURCHF=X", "EUR/CHF"),
     ("USDAED=X", "USD/AED"),
     ("USDSGD=X", "USD/SGD"),
+    ("USDPLN=X", "USD/PLN"),
+    ("USDNOK=X", "USD/NOK"),
+    ("USDSEK=X", "USD/SEK"),
 ]
+
+# Synthetic inverse pairs — computed from their source pair
+_SYNTHETIC_PAIRS = {
+    "USDEUR": "EURUSD=X",   # 1 / EUR/USD
+}
 
 @app.get("/market/forex")
 def market_forex(user_id: str = Depends(require_user_id)):
@@ -5027,6 +5061,26 @@ def market_forex(user_id: str = Depends(require_user_id)):
         out = {k: v for k, v in q.items() if not k.startswith("_")}
         out["display_name"] = display_name
         result.append(out)
+
+    # Add synthetic inverse pairs
+    for synth_name, source_sym in _SYNTHETIC_PAIRS.items():
+        src = fresh.get(source_sym)
+        if not src or not src.get("last"):
+            continue
+        inv_last = 1.0 / src["last"] if src["last"] else 0
+        inv_change = -src.get("change", 0) * (inv_last ** 2) if src.get("last") else 0
+        inv_change_pct = -src.get("change_pct", 0)
+        result.append({
+            "symbol": synth_name,
+            "name": f"{synth_name[:3]}/{synth_name[3:]}",
+            "last": round(inv_last, 6),
+            "change": round(inv_change, 6),
+            "change_pct": round(inv_change_pct, 4),
+            "currency": synth_name[3:],
+            "market_state": src.get("market_state"),
+            "display_name": f"{synth_name[:3]}/{synth_name[3:]}",
+        })
+
     return {"pairs": result}
 
 

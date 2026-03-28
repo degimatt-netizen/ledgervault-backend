@@ -31,6 +31,7 @@ class Account(Base):
     name = Column(String, nullable=False)
     account_type = Column(String, nullable=False)   # bank, exchange, broker, crypto_wallet, cash
     base_currency = Column(String, nullable=False)
+    exclude_from_total = Column(Boolean, nullable=False, default=False)
 
 
 class Asset(Base):
