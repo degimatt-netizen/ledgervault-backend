@@ -113,6 +113,7 @@ for _stmt in [
     "CREATE INDEX IF NOT EXISTS ix_watchlist_user_id ON watchlist (user_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_watchlist_user_symbol ON watchlist (user_id, symbol)",
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS exclude_from_total BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE crypto_wallets ADD COLUMN IF NOT EXISTS account_id VARCHAR",
 ]:
     try:
         with engine.connect() as _conn:
@@ -5133,7 +5134,7 @@ def market_news(symbols: str = "", user_id: str = Depends(require_user_id)):
 @app.get("/wallets")
 def list_wallets(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
     rows = db.execute(
-        text("SELECT id, chain, address, label, last_synced, created_at "
+        text("SELECT id, chain, address, label, account_id, last_synced, created_at "
              "FROM crypto_wallets WHERE user_id = :uid ORDER BY created_at"),
         {"uid": user_id}
     ).fetchall()
@@ -5142,14 +5143,24 @@ def list_wallets(user_id: str = Depends(require_user_id), db: Session = Depends(
 
 @app.post("/wallets")
 def add_wallet(payload: dict, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
-    chain   = (payload.get("chain") or "").upper().strip()
-    address = (payload.get("address") or "").strip()
-    label   = (payload.get("label") or "").strip() or None
+    chain      = (payload.get("chain") or "").upper().strip()
+    address    = (payload.get("address") or "").strip()
+    label      = (payload.get("label") or "").strip() or None
+    account_id = (payload.get("account_id") or "").strip() or None
 
     if chain not in SUPPORTED_CHAINS:
         raise HTTPException(400, f"Unsupported chain. Supported: {', '.join(SUPPORTED_CHAINS)}")
     if not address:
         raise HTTPException(400, "Address required")
+
+    # Validate account_id belongs to this user
+    if account_id:
+        acct = db.execute(
+            text("SELECT id FROM accounts WHERE id = :id AND user_id = :uid"),
+            {"id": account_id, "uid": user_id}
+        ).fetchone()
+        if not acct:
+            raise HTTPException(404, "Account not found")
 
     # Check duplicate
     existing = db.execute(
@@ -5162,12 +5173,12 @@ def add_wallet(payload: dict, user_id: str = Depends(require_user_id), db: Sessi
     wid = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
-        text("INSERT INTO crypto_wallets (id, user_id, chain, address, label, created_at) "
-             "VALUES (:id, :uid, :c, :a, :l, :ts)"),
-        {"id": wid, "uid": user_id, "c": chain, "a": address, "l": label, "ts": now}
+        text("INSERT INTO crypto_wallets (id, user_id, chain, address, label, account_id, created_at) "
+             "VALUES (:id, :uid, :c, :a, :l, :acc, :ts)"),
+        {"id": wid, "uid": user_id, "c": chain, "a": address, "l": label, "acc": account_id, "ts": now}
     )
     db.commit()
-    return {"id": wid, "chain": chain, "address": address, "label": label}
+    return {"id": wid, "chain": chain, "address": address, "label": label, "account_id": account_id}
 
 
 @app.delete("/wallets/{wallet_id}")
@@ -5185,7 +5196,7 @@ def delete_wallet(wallet_id: str, user_id: str = Depends(require_user_id), db: S
 @app.post("/wallets/{wallet_id}/sync")
 def sync_wallet(wallet_id: str, user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
     row = db.execute(
-        text("SELECT chain, address FROM crypto_wallets WHERE id = :id AND user_id = :uid"),
+        text("SELECT chain, address, account_id FROM crypto_wallets WHERE id = :id AND user_id = :uid"),
         {"id": wallet_id, "uid": user_id}
     ).fetchone()
     if not row:
@@ -5197,6 +5208,29 @@ def sync_wallet(wallet_id: str, user_id: str = Depends(require_user_id), db: Ses
         text("UPDATE crypto_wallets SET last_synced = :ts WHERE id = :id"),
         {"ts": now, "id": wallet_id}
     )
+
+    # If linked to an account, write holdings into the portfolio
+    if row.account_id:
+        for h in holdings:
+            sym = h["symbol"].upper()
+            asset_class = "crypto" if row.chain not in ("ETH", "BNB", "MATIC", "SOL") or sym not in ("USDT", "USDC", "BUSD", "DAI", "TUSD") else "crypto"
+            asset = db.query(models.Asset).filter(models.Asset.symbol == sym).first()
+            if not asset:
+                asset = models.Asset(id=str(uuid4()), symbol=sym, name=h.get("name", sym),
+                                     asset_class="crypto", quote_currency="USD")
+                db.add(asset); db.flush()
+            holding = db.query(models.Holding).filter(
+                models.Holding.account_id == row.account_id,
+                models.Holding.asset_id == asset.id
+            ).first()
+            qty = float(h.get("balance", 0))
+            if not holding:
+                holding = models.Holding(id=str(uuid4()), account_id=row.account_id,
+                                         asset_id=asset.id, quantity=qty, avg_cost=0.0)
+                db.add(holding)
+            else:
+                holding.quantity = qty
+
     db.commit()
     return {
         "wallet_id":   wallet_id,
@@ -5205,6 +5239,7 @@ def sync_wallet(wallet_id: str, user_id: str = Depends(require_user_id), db: Ses
         "holdings":    holdings,
         "total_usd":   sum(h["value_usd"] for h in holdings),
         "synced_at":   now,
+        "account_id":  row.account_id,
     }
 
 
