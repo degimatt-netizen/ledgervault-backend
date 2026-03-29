@@ -114,6 +114,10 @@ for _stmt in [
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_watchlist_user_symbol ON watchlist (user_id, symbol)",
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS exclude_from_total BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE crypto_wallets ADD COLUMN IF NOT EXISTS account_id VARCHAR",
+    # Timestamp for transaction events — enables correct newest-first sorting within same date
+    "ALTER TABLE transaction_events ADD COLUMN IF NOT EXISTS created_at VARCHAR",
+    # Back-fill NULL created_at with the event date so existing rows sort consistently
+    "UPDATE transaction_events SET created_at = date WHERE created_at IS NULL",
 ]:
     try:
         with engine.connect() as _conn:
@@ -2591,7 +2595,8 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
     recent_events = (
         db.query(models.TransactionEvent)
         .filter(models.TransactionEvent.id.in_(user_leg_event_ids))
-        .order_by(models.TransactionEvent.date.desc())
+        .order_by(models.TransactionEvent.date.desc(),
+                  models.TransactionEvent.created_at.desc())
         .all()[:10]
     )
 
@@ -2604,7 +2609,8 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
         "portfolio":       portfolio_items,
         "recent_activity": [
             {"id": e.id, "event_type": e.event_type, "category": e.category,
-             "description": e.description, "date": e.date, "note": e.note}
+             "description": e.description, "date": e.date, "note": e.note,
+             "created_at": e.created_at}
             for e in recent_events
         ],
     }
@@ -2757,9 +2763,11 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db),
     db.add(item); db.commit(); db.refresh(item); return item
 
 @app.put("/accounts/{account_id}", response_model=AccountOut)
-def update_account(account_id: str, payload: AccountUpdate, db: Session = Depends(get_db)):
+def update_account(account_id: str, payload: AccountUpdate, db: Session = Depends(get_db),
+                   user_id: str = Depends(require_user_id)):
     item = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not item: raise HTTPException(status_code=404, detail="Account not found")
+    if item.user_id != user_id: raise HTTPException(status_code=403, detail="Forbidden")
     if payload.name is not None:               item.name               = payload.name
     if payload.account_type is not None:       item.account_type       = payload.account_type
     if payload.base_currency is not None:      item.base_currency      = payload.base_currency.upper()
@@ -2786,9 +2794,11 @@ def list_account_transactions(account_id: str, db: Session = Depends(get_db)):
     return {"items": items}
 
 @app.delete("/accounts/{account_id}")
-def delete_account(account_id: str, db: Session = Depends(get_db)):
+def delete_account(account_id: str, db: Session = Depends(get_db),
+                   user_id: str = Depends(require_user_id)):
     item = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not item: raise HTTPException(status_code=404, detail="Account not found")
+    if item.user_id != user_id: raise HTTPException(status_code=403, detail="Forbidden")
     has_legs = db.query(models.TransactionLeg).filter(
         models.TransactionLeg.account_id == account_id).first() is not None
     has_holdings = db.query(models.Holding).filter(
@@ -2841,7 +2851,8 @@ def list_transaction_events(account_id: str = Query(None), db: Session = Depends
            .filter(models.TransactionLeg.account_id.in_(filter_ids)).distinct().all()]
     items = (db.query(models.TransactionEvent)
              .filter(models.TransactionEvent.id.in_(ids))
-             .order_by(models.TransactionEvent.date.desc()).all())
+             .order_by(models.TransactionEvent.date.desc(),
+                       models.TransactionEvent.created_at.desc()).all())
     return {"items": items}
 
 @app.get("/transaction-legs", response_model=TransactionLegList)
@@ -2856,11 +2867,18 @@ def list_transaction_legs(db: Session = Depends(get_db), user_id: Optional[str] 
         models.TransactionLeg.account_id.in_(user_account_ids)).all()}
 
 @app.put("/transaction-events/{event_id}", response_model=TransactionEventOut)
-def update_transaction_event(event_id: str, payload: TransactionEventUpdate, db: Session = Depends(get_db)):
+def update_transaction_event(event_id: str, payload: TransactionEventUpdate, db: Session = Depends(get_db),
+                              user_id: str = Depends(require_user_id)):
     event = db.query(models.TransactionEvent).filter(
         models.TransactionEvent.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    # Verify the event belongs to this user via transaction legs
+    user_acct_ids = {a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()}
+    event_acct_ids = {l.account_id for l in db.query(models.TransactionLeg).filter(
+        models.TransactionLeg.event_id == event_id).all()}
+    if not event_acct_ids.intersection(user_acct_ids):
+        raise HTTPException(status_code=403, detail="Forbidden")
     if payload.event_type is not None:  event.event_type  = payload.event_type
     if payload.category is not None:    event.category    = payload.category
     if payload.description is not None: event.description = payload.description
@@ -2870,11 +2888,18 @@ def update_transaction_event(event_id: str, payload: TransactionEventUpdate, db:
     return event
 
 @app.delete("/transaction-events/{event_id}")
-def delete_transaction_event(event_id: str, db: Session = Depends(get_db)):
+def delete_transaction_event(event_id: str, db: Session = Depends(get_db),
+                              user_id: str = Depends(require_user_id)):
     try:
         event = db.query(models.TransactionEvent).filter(
             models.TransactionEvent.id == event_id).first()
         if not event: raise HTTPException(status_code=404, detail="Event not found")
+        # Verify ownership via legs
+        user_acct_ids = {a.id for a in db.query(models.Account).filter(models.Account.user_id == user_id).all()}
+        event_acct_ids = {l.account_id for l in db.query(models.TransactionLeg).filter(
+            models.TransactionLeg.event_id == event_id).all()}
+        if not event_acct_ids.intersection(user_acct_ids):
+            raise HTTPException(status_code=403, detail="Forbidden")
         legs = db.query(models.TransactionLeg).filter(
             models.TransactionLeg.event_id == event_id).all()
         for leg in legs:
@@ -2906,6 +2931,7 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
         id=str(uuid4()), event_type=payload.event_type, category=payload.category,
         description=payload.description, date=payload.date, note=payload.note,
         source=payload.source, external_id=payload.external_id,
+        created_at=datetime.now(timezone.utc).isoformat(),
     )
     db.add(event); db.flush()
 

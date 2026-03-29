@@ -66,6 +66,7 @@ class TransactionEvent(Base):
 
     source = Column(String, nullable=False, default="manual")   # manual, api, imported
     external_id = Column(String, nullable=True)
+    created_at = Column(String, nullable=True)   # ISO datetime; set on insert for correct sort order
 
 
 class TransactionLeg(Base):
