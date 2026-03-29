@@ -13,7 +13,7 @@ struct ContentView: View {
                 .tabItem { Label("Markets", systemImage: "chart.bar.fill") }
 
             InvestmentDashboardView()
-                .tabItem { Label("Dashboard", systemImage: "chart.line.uptrend.xyaxis") }
+                .tabItem { Label("Portfolio", systemImage: "chart.line.uptrend.xyaxis") }
 
             MoreView()
                 .tabItem { Label("More", systemImage: "ellipsis.circle.fill") }
@@ -33,6 +33,7 @@ struct MoreView: View {
     @State private var showSecurity      = false
     @State private var showIntegrations  = false
     @State private var showRecurring     = false
+    @State private var showCategories    = false
     @State private var showReset         = false
     @State private var showFAQ           = false
     @State private var showPrivacy       = false
@@ -62,6 +63,8 @@ struct MoreView: View {
                         moreRow("Export / Import", "square.and.arrow.up.on.square", .teal,   badge: nil) { showExportImport = true }
                         rowDivider()
                         moreRow("Recurring",       "repeat",                         .cyan,   badge: nil) { showRecurring    = true }
+                        rowDivider()
+                        moreRow("Categories",      "folder.fill",                 .orange,  badge: nil) { showCategories   = true }
                         rowDivider()
                         moreRow("Integrations",    "puzzlepiece.extension.fill",   .indigo,  badge: nil) { showIntegrations = true }
                     }
@@ -100,6 +103,7 @@ struct MoreView: View {
             .sheet(isPresented: $showSecurity)     { SecurityView() }
             .sheet(isPresented: $showIntegrations) { IntegrationsHubView() }
             .sheet(isPresented: $showRecurring)    { RecurringTransactionsView() }
+            .sheet(isPresented: $showCategories)   { CategoryManagerView() }
             .sheet(isPresented: $showReset)        { ResetDataView() }
             .sheet(isPresented: $showFAQ)          { FAQView() }
             .sheet(isPresented: $showPrivacy)      { PrivacyPoliciesView() }
@@ -166,6 +170,7 @@ struct MoreView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

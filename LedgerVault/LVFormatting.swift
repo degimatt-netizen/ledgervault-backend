@@ -50,6 +50,30 @@ func pctStr(_ v: Double) -> String {
     (v >= 0 ? "+" : "") + v.formatted(.number.precision(.fractionLength(2))) + "%"
 }
 
+// MARK: - Category icons
+
+/// Returns the SF Symbol name for a transaction category.
+func categoryIcon(_ category: String?) -> String {
+    guard let cat = category?.lowercased() else { return "square.grid.2x2.fill" }
+    switch cat {
+    case "food & drink":        return "fork.knife"
+    case "rent":                return "house.fill"
+    case "transport":           return "car.fill"
+    case "bills":               return "bolt.fill"
+    case "entertainment":       return "tv.fill"
+    case "shopping":            return "bag.fill"
+    case "health":              return "heart.fill"
+    case "travel":              return "airplane"
+    case "miscellaneous":       return "square.grid.2x2.fill"
+    case "salary":              return "banknote.fill"
+    case "freelance":           return "laptopcomputer"
+    case "investment return":   return "chart.line.uptrend.xyaxis"
+    case "gift":                return "gift.fill"
+    case "other income":        return "plus.circle.fill"
+    default:                    return "square.grid.2x2.fill"
+    }
+}
+
 // MARK: - Shimmer skeleton
 
 /// Applies an animated shimmer effect to any view — use while data is loading.
@@ -110,6 +134,38 @@ func hapticSuccess() { UINotificationFeedbackGenerator().notificationOccurred(.s
 func hapticWarning() { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
 /// Error — operation failed.
 func hapticError()   { UINotificationFeedbackGenerator().notificationOccurred(.error) }
+
+// MARK: - Receipt storage
+
+/// Stores and retrieves receipt images locally, keyed by transaction ID.
+enum ReceiptStore {
+    private static var dir: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let receipts = docs.appendingPathComponent("receipts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: receipts, withIntermediateDirectories: true)
+        return receipts
+    }
+
+    static func save(_ image: UIImage, for transactionId: String) {
+        guard let data = image.jpegData(compressionQuality: 0.7) else { return }
+        try? data.write(to: dir.appendingPathComponent("\(transactionId).jpg"))
+    }
+
+    static func load(for transactionId: String) -> UIImage? {
+        let url = dir.appendingPathComponent("\(transactionId).jpg")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return UIImage(data: data)
+    }
+
+    static func delete(for transactionId: String) {
+        let url = dir.appendingPathComponent("\(transactionId).jpg")
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    static func exists(for transactionId: String) -> Bool {
+        FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(transactionId).jpg").path)
+    }
+}
 
 // MARK: - Number formatting
 

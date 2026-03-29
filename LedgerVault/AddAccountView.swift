@@ -5,9 +5,10 @@ struct AddAccountView: View {
     let onSaved: () -> Void
     let defaultType: String
 
-    @State private var name         = ""
+    @State private var name              = ""
     @State private var baseCurrency: String
-    @State private var isSaving     = false
+    @State private var excludeFromTotal  = false
+    @State private var isSaving          = false
     @State private var errorMessage: String?
 
     let currencies = ["EUR", "USD", "GBP", "CHF", "CAD", "AUD", "JPY", "PLN", "SEK", "NOK", "CZK"]
@@ -127,6 +128,39 @@ struct AddAccountView: View {
                         }
                     }
 
+                    // ── Exclude from total toggle ────────────────────────────
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.orange.opacity(0.12))
+                                    .frame(width: 40, height: 40)
+                                Image(systemName: "eye.slash.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.orange)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Exclude from Net Worth")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("This account won't count towards your total wealth")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: $excludeFromTotal)
+                                .labelsHidden()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(14)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color(.systemGray5), lineWidth: 1)
+                        )
+                    }
+                    .padding(.horizontal, 20)
+
                     // ── Error ─────────────────────────────────────────────────
                     if let err = errorMessage {
                         HStack(spacing: 8) {
@@ -191,7 +225,8 @@ struct AddAccountView: View {
             _ = try await APIService.shared.createAccount(
                 name: name.trimmingCharacters(in: .whitespaces),
                 accountType: defaultType,
-                baseCurrency: baseCurrency
+                baseCurrency: baseCurrency,
+                excludeFromTotal: excludeFromTotal
             )
             onSaved()
             dismiss()

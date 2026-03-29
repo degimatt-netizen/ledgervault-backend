@@ -55,7 +55,7 @@ struct AddStockView: View {
     /// Derives market session from current time in Eastern Time (handles DST automatically)
     private func timeBasedMarketState() -> String {
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        cal.timeZone = TimeZone(identifier: "America/New_York") ?? .current
         let comps = cal.dateComponents([.hour, .minute, .weekday], from: Date())
         let weekday = comps.weekday ?? 1        // 1 = Sun, 7 = Sat
         guard weekday != 1, weekday != 7 else { return "CLOSED" }
@@ -149,14 +149,14 @@ struct AddStockView: View {
             if let result = selectedResult {
                 HStack(spacing: 12) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12))
+                        RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.10))
                             .frame(width: 46, height: 46)
                         AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(result.symbol)?format=jpg")) { phase in
                             if case .success(let img) = phase {
                                 img.resizable().scaledToFill()
                                     .frame(width: 38, height: 38).clipShape(RoundedRectangle(cornerRadius: 8))
                             } else {
-                                Text(String(result.symbol.prefix(3))).font(.caption.bold()).foregroundColor(.green)
+                                Text(String(result.symbol.prefix(3))).font(.caption.bold()).foregroundColor(.blue)
                             }
                         }
                     }
@@ -203,14 +203,14 @@ struct AddStockView: View {
                             Button { selectResult(r) } label: {
                                 HStack(spacing: 10) {
                                     ZStack {
-                                        RoundedRectangle(cornerRadius: 7).fill(Color.green.opacity(0.10))
+                                        RoundedRectangle(cornerRadius: 7).fill(Color.blue.opacity(0.08))
                                             .frame(width: 32, height: 32)
                                         AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(r.symbol)?format=jpg")) { phase in
                                             if case .success(let img) = phase {
                                                 img.resizable().scaledToFill()
                                                     .frame(width: 26, height: 26).clipShape(RoundedRectangle(cornerRadius: 5))
                                             } else {
-                                                Text(String(r.symbol.prefix(2))).font(.caption2.bold()).foregroundColor(.green)
+                                                Text(String(r.symbol.prefix(2))).font(.caption2.bold()).foregroundColor(.blue)
                                             }
                                         }
                                     }

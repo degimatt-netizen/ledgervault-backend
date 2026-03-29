@@ -53,7 +53,10 @@ struct OnboardingView: View {
         return UIImage(data: data)
     }
     private var selectedDial: Country {
-        countries.first { $0.id == dialId } ?? countries.first { $0.id == "MT" }!
+        countries.first { $0.id == dialId }
+        ?? countries.first { $0.id == "MT" }
+        ?? countries.first
+        ?? Country(id: "MT", name: "Malta", flag: "🇲🇹", dialCode: "+356")
     }
 
     var body: some View {
@@ -67,7 +70,7 @@ struct OnboardingView: View {
 
                 // ── Wordmark + progress ───────────────────────────────────
                 VStack(spacing: 20) {
-                    LVWordmark(shieldSize: 36)
+                    LVWordmark(shieldSize: 42)
                     HStack(spacing: 8) {
                         ForEach(0..<totalSteps) { i in
                             Capsule()
@@ -433,7 +436,8 @@ struct OnboardingView: View {
     private func nextStep() {
         if step == 1 {
             dobError   = profileDob.trimmingCharacters(in: .whitespaces).isEmpty
-            phoneError = phoneNumber.trimmingCharacters(in: .whitespaces).isEmpty
+            let digits = phoneNumber.filter { $0.isNumber }
+            phoneError = digits.count < 6 || digits.count > 15
             guard !dobError && !phoneError else { return }
             profilePhone = phoneNumber
             Task { try? await APIService.shared.updateProfile(phone: phoneNumber) }

@@ -56,7 +56,11 @@ extension URL {
     }
 
     static func stockLogo(_ symbol: String) -> URL? {
-        // FMP stock logos — free without API key
+        // Parqet has broader coverage including European stocks
+        URL(string: "https://assets.parqet.com/logos/symbol/\(symbol.uppercased())?format=jpg")
+    }
+
+    static func stockLogoFMP(_ symbol: String) -> URL? {
         URL(string: "https://financialmodelingprep.com/image-stock/\(symbol.uppercased()).png")
     }
 }

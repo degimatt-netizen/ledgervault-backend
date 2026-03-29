@@ -11,6 +11,7 @@ struct TransactionDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showDeleteAlert = false
+    @State private var showEdit = false
     @State private var isDeleting = false
 
     private var txLegs: [APIService.TransactionLeg] {
@@ -169,6 +170,30 @@ struct TransactionDetailView: View {
                     .background(Color(.secondarySystemGroupedBackground))
                     .cornerRadius(16)
 
+                    // ── Receipt card ─────────────────────────────────────
+                    if let receipt = ReceiptStore.load(for: tx.id) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Image(systemName: "camera.fill")
+                                    .foregroundStyle(.orange)
+                                Text("Receipt")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 14)
+
+                            Image(uiImage: receipt)
+                                .resizable()
+                                .scaledToFit()
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 14)
+                        }
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(16)
+                    }
+
                     // ── Movements card ────────────────────────────────────
                     if !txLegs.isEmpty {
                         VStack(alignment: .leading, spacing: 0) {
@@ -212,17 +237,35 @@ struct TransactionDetailView: View {
             .navigationTitle("Transaction")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showEdit = true } label: {
+                        Image(systemName: "pencil.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .font(.title3)
+                    }
+                    .accessibilityLabel("Edit transaction")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Close") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showEdit) {
+                EditTransactionView(tx: tx) {
+                    onDeleted()  // triggers reload in parent
                 }
             }
             .alert("Delete Transaction?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     Task {
                         isDeleting = true
-                        try? await APIService.shared.deleteTransactionEvent(id: tx.id)
-                        onDeleted()
-                        dismiss()
+                        do {
+                            try await APIService.shared.deleteTransactionEvent(id: tx.id)
+                            onDeleted()
+                            dismiss()
+                        } catch {
+                            isDeleting = false
+                            hapticError()
+                        }
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -292,20 +335,22 @@ struct TransactionDetailView: View {
 
     private func eventIcon(_ t: String) -> String {
         switch t.lowercased() {
-        case "income":   return "arrow.down.circle.fill"
-        case "expense":  return "arrow.up.circle.fill"
-        case "transfer": return "arrow.left.arrow.right.circle.fill"
-        case "trade":    return "chart.line.uptrend.xyaxis.circle.fill"
-        default:         return "circle.fill"
+        case "income":     return "arrow.down.circle.fill"
+        case "expense":    return "arrow.up.circle.fill"
+        case "transfer":   return "arrow.left.arrow.right.circle.fill"
+        case "conversion": return "arrow.triangle.2.circlepath.circle.fill"
+        case "trade":      return "chart.line.uptrend.xyaxis.circle.fill"
+        default:           return "circle.fill"
         }
     }
 
     private func eventColor(_ t: String) -> Color {
         switch t.lowercased() {
-        case "income":  return .green
-        case "expense": return .red
-        case "trade":   return .orange
-        default:        return .blue
+        case "income":     return .green
+        case "expense":    return .red
+        case "trade":      return .orange
+        case "conversion": return .purple
+        default:           return .blue
         }
     }
 }
@@ -327,7 +372,7 @@ struct TransactionsView: View {
     @State private var customEnd:   Date = Date()
     @State private var showDateRangePicker = false
 
-    let filters = ["All", "Income", "Expense", "Transfer", "Trade"]
+    let filters = ["All", "Income", "Expense", "Transfer", "Conversion", "Trade"]
     let periods: [(label: String, key: String)] = [
         ("All Time", "All"),
         ("Today",    "Today"),
@@ -380,7 +425,8 @@ struct TransactionsView: View {
     // ── Date grouping ──────────────────────────────────────────────────────────
     private var groupedTransactions: [(String, [APIService.TransactionEvent])] {
         let dict = Dictionary(grouping: filtered) { $0.date }
-        return dict.sorted { $0.key > $1.key }.map { ($0.key, $0.value) }
+        // Sort groups newest-date first; within each date reverse so newest-added appears first
+        return dict.sorted { $0.key > $1.key }.map { ($0.key, Array($0.value.reversed())) }
     }
 
     private func sectionTitle(for dateString: String) -> String {
@@ -546,36 +592,46 @@ struct TransactionsView: View {
                     .background(Color(.systemGroupedBackground))
                     .safeAreaInset(edge: .top, spacing: 0) { filterHeader }
                 } else {
-                    List {
-                        ForEach(groupedTransactions, id: \.0) { dateStr, txs in
-                            Section {
-                                ForEach(txs, id: \.id) { tx in
-                                    Button { selectedTx = tx } label: { txRow(tx) }
-                                        .buttonStyle(.plain)
-                                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                                }
-                                .onDelete { offsets in
-                                    Task { await deleteItems(offsets, from: txs) }
-                                }
-                            } header: {
-                                let net = dayNet(for: txs)
-                                HStack {
-                                    Text(sectionTitle(for: dateStr))
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundColor(.secondary)
-                                        .textCase(nil)
-                                    Spacer()
-                                    if net != 0 {
-                                        Text((net >= 0 ? "+" : "−") + fmtCurrency(abs(net), currency: baseCurrency))
-                                            .font(.caption2.bold())
-                                            .foregroundColor(net >= 0 ? .green : .red)
-                                            .textCase(nil)
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(groupedTransactions, id: \.0) { dateStr, txs in
+                                VStack(alignment: .leading, spacing: 0) {
+                                    // Section header
+                                    let net = dayNet(for: txs)
+                                    HStack {
+                                        Text(sectionTitle(for: dateStr))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        if net != 0 {
+                                            Text((net >= 0 ? "+" : "−") + fmtCurrency(abs(net), currency: baseCurrency))
+                                                .font(.caption2.bold())
+                                                .foregroundColor(net >= 0 ? .green : .red)
+                                        }
                                     }
+                                    .padding(.horizontal, 4)
+                                    .padding(.bottom, 6)
+
+                                    // Card with rows
+                                    VStack(spacing: 0) {
+                                        ForEach(Array(txs.enumerated()), id: \.element.id) { idx, tx in
+                                            if idx > 0 {
+                                                Divider().padding(.leading, 62)
+                                            }
+                                            Button { selectedTx = tx } label: { txRow(tx) }
+                                                .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                    .background(Color(.secondarySystemGroupedBackground))
+                                    .cornerRadius(16)
                                 }
                             }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
                     }
-                    .listStyle(.insetGrouped)
                     .safeAreaInset(edge: .top, spacing: 0) { filterHeader }
                 }
             }
@@ -655,21 +711,21 @@ struct TransactionsView: View {
         let isCrypto  = asset?.asset_class.lowercased() == "crypto"
         let evColor   = eventColor(tx.event_type)
 
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             // ── Icon ──────────────────────────────────────────────────────
             ZStack {
-                Circle()
-                    .fill(evColor.opacity(0.12))
-                    .frame(width: 46, height: 46)
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(evColor.opacity(0.10))
+                    .frame(width: 44, height: 44)
                 if let asset, isStock {
                     AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(asset.symbol)?format=jpg")) { phase in
                         switch phase {
                         case .success(let img):
                             img.resizable().scaledToFill()
-                                .frame(width: 34, height: 34).clipShape(Circle())
+                                .frame(width: 32, height: 32).clipShape(RoundedRectangle(cornerRadius: 8))
                         default:
                             Image(systemName: eventIcon(tx.event_type))
-                                .foregroundColor(evColor).font(.system(size: 18))
+                                .foregroundColor(evColor).font(.system(size: 16, weight: .semibold))
                         }
                     }
                 } else if let asset, isCrypto,
@@ -679,21 +735,24 @@ struct TransactionsView: View {
                         switch phase {
                         case .success(let img):
                             img.resizable().scaledToFit()
-                                .frame(width: 34, height: 34).clipShape(Circle())
+                                .frame(width: 32, height: 32).clipShape(RoundedRectangle(cornerRadius: 8))
                         default:
                             Image(systemName: eventIcon(tx.event_type))
-                                .foregroundColor(evColor).font(.system(size: 18))
+                                .foregroundColor(evColor).font(.system(size: 16, weight: .semibold))
                         }
                     }
                 } else {
-                    Image(systemName: eventIcon(tx.event_type))
+                    let icon = (isIncome || isExpense) && tx.category != nil
+                        ? categoryIcon(tx.category)
+                        : eventIcon(tx.event_type)
+                    Image(systemName: icon)
                         .foregroundColor(evColor)
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                 }
             }
 
             // ── Left content ──────────────────────────────────────────────
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(tx.description ?? tx.event_type.capitalized)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.primary)
@@ -701,17 +760,17 @@ struct TransactionsView: View {
 
                 HStack(spacing: 5) {
                     if isTrade, let qty = tradeAssetQty(tx), let price = tradeUnitPrice(tx) {
-                        Text("\(qty.formatted(.number.precision(.fractionLength(0...5)))) \(asset?.symbol ?? "") @ $\(price.formatted(.number.precision(.fractionLength(2))))")
-                            .font(.caption2)
+                        Text("\(qty.formatted(.number.precision(.fractionLength(0...5)))) \(asset?.symbol ?? "") @ \(symbol)\(price.formatted(.number.precision(.fractionLength(2))))")
+                            .font(.caption)
                             .foregroundColor(.secondary)
                     } else {
                         if let cat = tx.category, !cat.isEmpty {
                             Text(cat)
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(evColor.opacity(0.10))
-                                .foregroundColor(evColor)
-                                .clipShape(Capsule())
+                                .font(.caption2.weight(.medium))
+                                .foregroundColor(evColor.opacity(0.8))
+                        }
+                        if let cat = tx.category, !cat.isEmpty, accName != nil {
+                            Text("·").font(.caption2).foregroundColor(.secondary)
                         }
                         if let name = accName {
                             Text(name)
@@ -729,22 +788,18 @@ struct TransactionsView: View {
             VStack(alignment: .trailing, spacing: 3) {
                 if amt > 0 {
                     Text("\(isExpense || isTrade ? "−" : isIncome ? "+" : isTransfer ? "⇄ " : "")\(symbol)\(amt.formatted(.number.precision(.fractionLength(2))))")
-                        .font(.callout.weight(.bold))
+                        .font(.subheadline.weight(.bold).monospacedDigit())
                         .foregroundColor(amtColor)
                 }
                 if isTrade, let asset {
                     Text(asset.symbol)
                         .font(.caption2.weight(.medium))
                         .foregroundColor(.secondary)
-                } else if let accName {
-                    Text(accName)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     // ── Data loading ───────────────────────────────────────────────────────────
@@ -834,27 +889,33 @@ struct TransactionsView: View {
     private func deleteItems(_ offsets: IndexSet, from txs: [APIService.TransactionEvent]) async {
         hapticWarning()
         for tx in offsets.map({ txs[$0] }) {
-            try? await APIService.shared.deleteTransactionEvent(id: tx.id)
+            do {
+                try await APIService.shared.deleteTransactionEvent(id: tx.id)
+            } catch {
+                hapticError()
+            }
         }
         await load()
     }
 
     private func eventIcon(_ t: String) -> String {
         switch t.lowercased() {
-        case "income":   return "arrow.down.circle.fill"
-        case "expense":  return "arrow.up.circle.fill"
-        case "transfer": return "arrow.left.arrow.right.circle.fill"
-        case "trade":    return "chart.line.uptrend.xyaxis.circle.fill"
-        default:         return "circle.fill"
+        case "income":     return "arrow.down.circle.fill"
+        case "expense":    return "arrow.up.circle.fill"
+        case "transfer":   return "arrow.left.arrow.right.circle.fill"
+        case "conversion": return "arrow.triangle.2.circlepath.circle.fill"
+        case "trade":      return "chart.line.uptrend.xyaxis.circle.fill"
+        default:           return "circle.fill"
         }
     }
 
     private func eventColor(_ t: String) -> Color {
         switch t.lowercased() {
-        case "income":  return .green
-        case "expense": return .red
-        case "trade":   return .orange
-        default:        return .blue
+        case "income":     return .green
+        case "expense":    return .red
+        case "trade":      return .orange
+        case "conversion": return .purple
+        default:           return .blue
         }
     }
 }

@@ -115,11 +115,17 @@ struct ProfileView: View {
     }
 
     private var selectedCountry: Country {
-        countries.first { $0.id == countryId } ?? countries.first { $0.id == "MT" }!
+        countries.first { $0.id == countryId }
+        ?? countries.first { $0.id == "MT" }
+        ?? countries.first
+        ?? Country(id: "MT", name: "Malta", flag: "🇲🇹", dialCode: "+356")
     }
 
     private var selectedDial: Country {
-        countries.first { $0.id == dialId } ?? countries.first { $0.id == "MT" }!
+        countries.first { $0.id == dialId }
+        ?? countries.first { $0.id == "MT" }
+        ?? countries.first
+        ?? Country(id: "MT", name: "Malta", flag: "🇲🇹", dialCode: "+356")
     }
 
     private var initials: String {
@@ -394,7 +400,9 @@ struct ProfileView: View {
                             .foregroundColor(.white)
                             .cornerRadius(20)
                             .padding(.bottom, 40)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
+                    .animation(.easeOut(duration: 0.25), value: showSavedBanner)
                 }
             }
         }
@@ -487,12 +495,13 @@ struct ProfileView: View {
     private func save() {
         // Validate required fields
         dobError   = dobStr.trimmingCharacters(in: .whitespaces).isEmpty
-        phoneError = phone.trimmingCharacters(in: .whitespaces).isEmpty
+        let phoneDigits = phone.filter { $0.isNumber }
+        phoneError = phoneDigits.count < 6 || phoneDigits.count > 15
 
         if dobError || phoneError {
             var missing: [String] = []
             if dobError   { missing.append("Date of Birth") }
-            if phoneError { missing.append("Mobile Number") }
+            if phoneError { missing.append("Valid Mobile Number (6–15 digits)") }
             validationMessage = "Please enter your \(missing.joined(separator: " and ")) before saving."
             showValidationAlert = true
             return
@@ -510,8 +519,11 @@ struct ProfileView: View {
                 await MainActor.run {
                     dobLocked   = true
                     phoneLocked = true
+                    hapticSuccess()
                     showSavedBanner = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSavedBanner = false }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        dismiss()
+                    }
                 }
             } catch {
                 await MainActor.run {

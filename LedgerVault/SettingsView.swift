@@ -72,6 +72,23 @@ struct SettingsView: View {
                         Label("Weekly Portfolio Summary", systemImage: "chart.bar.doc.horizontal")
                     }
                     .disabled(notifStatus == .denied)
+                    .onChange(of: notifWeeklySummary) { _, enabled in
+                        if enabled {
+                            var comps = DateComponents(); comps.weekday = 2; comps.hour = 9; comps.minute = 0
+                            let content = UNMutableNotificationContent()
+                            content.title = "📈 Weekly Portfolio Summary"
+                            content.body = "Open LedgerVault to review your portfolio performance this week."
+                            content.sound = .default
+                            let req = UNNotificationRequest(
+                                identifier: "weekly_summary",
+                                content: content,
+                                trigger: UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+                            )
+                            UNUserNotificationCenter.current().add(req)
+                        } else {
+                            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["weekly_summary"])
+                        }
+                    }
 
                     if notifStatus == .denied {
                         HStack(spacing: 10) {

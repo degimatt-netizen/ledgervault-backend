@@ -9,6 +9,7 @@ struct EditAccountView: View {
     @State private var name: String
     @State private var accountType: String
     @State private var baseCurrency: String
+    @State private var excludeFromTotal: Bool
     @State private var errorMessage: String?
 
     private let accountTypes = ["bank", "exchange", "broker", "crypto_wallet", "cash"]
@@ -20,6 +21,7 @@ struct EditAccountView: View {
         _name = State(initialValue: account.name)
         _accountType = State(initialValue: account.account_type)
         _baseCurrency = State(initialValue: account.base_currency)
+        _excludeFromTotal = State(initialValue: account.exclude_from_total ?? false)
     }
 
     var body: some View {
@@ -37,6 +39,17 @@ struct EditAccountView: View {
                     Picker("Base Currency", selection: $baseCurrency) {
                         ForEach(currencies, id: \.self) { currency in
                             Text(currency).tag(currency)
+                        }
+                    }
+                }
+
+                Section {
+                    Toggle(isOn: $excludeFromTotal) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Exclude from Net Worth")
+                            Text("This account won't count towards your total wealth")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
@@ -67,7 +80,8 @@ struct EditAccountView: View {
                 id: account.id,
                 name: name,
                 accountType: accountType,
-                baseCurrency: baseCurrency
+                baseCurrency: baseCurrency,
+                excludeFromTotal: excludeFromTotal
             )
             onSaved()
             dismiss()

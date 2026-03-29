@@ -4,13 +4,17 @@ import Charts
 // ── InvestmentDashboardView ───────────────────────────────────────────────────
 struct InvestmentDashboardView: View {
 
-    @AppStorage("baseCurrency") private var baseCurrency = "USD"
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("baseCurrency") private var appBaseCurrency = "USD"
+    @State private var localCurrency: String = ""
 
     @State private var valuation:    APIService.ValuationResponse?
     @State private var accounts:     [APIService.Account] = []
     @State private var cryptoImages: [String: String]     = [:]
     @State private var isLoading     = true
     @State private var errorMessage: String?
+
+    private var baseCurrency: String { localCurrency.isEmpty ? appBaseCurrency : localCurrency }
 
     enum SortMode: String, CaseIterable {
         case value = "Value", gain = "Gain %", name = "Name"
@@ -93,10 +97,10 @@ struct InvestmentDashboardView: View {
                     emptyState
                 } else {
                     ScrollView {
-                        VStack(spacing: 20) {
+                        VStack(spacing: 16) {
                             totalCard
-                            allocationChart
                             allocationCards
+                            allocationChart
                             if !stockItems.isEmpty {
                                 holdingsSection(title: "Stocks", items: stockItems, isStock: true)
                             }
@@ -109,7 +113,7 @@ struct InvestmentDashboardView: View {
                     }
                 }
             }
-            .navigationTitle("Dashboard")
+            .navigationTitle("Portfolio")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -133,11 +137,12 @@ struct InvestmentDashboardView: View {
                                 .foregroundColor(.primary)
                         }
 
-                        // Currency menu
+                        // Currency menu (local to Portfolio only)
                         Menu {
                             ForEach(Self.currencies, id: \.self) { currency in
                                 Button {
-                                    baseCurrency = currency
+                                    localCurrency = currency
+                                    Task { await load() }
                                 } label: {
                                     Label(currency,
                                           systemImage: baseCurrency == currency ? "checkmark" : "")
@@ -155,9 +160,11 @@ struct InvestmentDashboardView: View {
                     }
                 }
             }
-            .task { await load() }
+            .task {
+                if localCurrency.isEmpty { localCurrency = appBaseCurrency }
+                await load()
+            }
             .refreshable { await load() }
-            .onChange(of: baseCurrency) { _, _ in Task { await load() } }
         }
     }
 
@@ -210,168 +217,283 @@ struct InvestmentDashboardView: View {
                 .font(.headline)
                 .padding(.horizontal, 2)
 
-            HStack(alignment: .center, spacing: 20) {
+            HStack(alignment: .center, spacing: 24) {
                 // Donut
                 Chart(slices) { slice in
                     SectorMark(
                         angle: .value("Value", slice.value),
                         innerRadius: .ratio(0.58),
-                        angularInset: 1.5
+                        angularInset: 2
                     )
                     .foregroundStyle(slice.color)
-                    .cornerRadius(4)
+                    .cornerRadius(5)
                 }
-                .frame(width: 130, height: 130)
+                .frame(width: 140, height: 140)
                 .overlay {
                     VStack(spacing: 2) {
                         Text(fmtValue(totalValue))
                             .font(.caption2.bold())
-                            .minimumScaleFactor(0.6)
+                            .minimumScaleFactor(0.5)
                             .lineLimit(1)
                         Text("Total")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
-                    .padding(8)
+                    .padding(10)
                 }
 
                 // Legend
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(slices) { slice in
                         HStack(spacing: 8) {
-                            Circle()
+                            RoundedRectangle(cornerRadius: 3)
                                 .fill(slice.color)
-                                .frame(width: 10, height: 10)
+                                .frame(width: 12, height: 12)
                             Text(slice.label)
-                                .font(.caption.bold())
+                                .font(.caption.weight(.semibold))
                                 .lineLimit(1)
                             Spacer()
                             Text(totalValue > 0
                                  ? String(format: "%.1f%%", (slice.value / totalValue) * 100)
                                  : "—")
-                                .font(.caption)
+                                .font(.caption.bold())
                                 .foregroundColor(.secondary)
                         }
                     }
                 }
             }
         }
-        .padding(16)
+        .padding(18)
         .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(16)
+        .cornerRadius(20)
     }
 
     // ── Total portfolio card ───────────────────────────────────────────────────
     private var totalCard: some View {
-        VStack(spacing: 8) {
-            Text("Total Portfolio")
-                .font(.caption).foregroundColor(.secondary)
-            Text(fmtValue(totalValue))
-                .font(.system(size: 38, weight: .bold, design: .rounded))
-                .minimumScaleFactor(0.7).lineLimit(1)
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Image(systemName: totalPL >= 0 ? "arrow.up.right" : "arrow.down.right")
-                        .font(.caption.bold())
-                        .foregroundColor(totalPL >= 0 ? .green : .red)
-                    Text((totalPL >= 0 ? "+" : "") + fmtValue(totalPL))
-                        .font(.subheadline.bold())
-                        .foregroundColor(totalPL >= 0 ? .green : .red)
+        let plPositive = totalPL >= 0
+
+        return VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Text("Investments")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.white.opacity(0.75))
+                Spacer()
+                HStack(spacing: 5) {
+                    Circle().fill(Color(red: 0.4, green: 1.0, blue: 0.6)).frame(width: 6, height: 6)
+                    Text("LIVE")
+                        .font(.caption2.bold())
+                        .foregroundColor(.white.opacity(0.9))
                 }
-                Text(pctStr(totalPLPct))
-                    .font(.subheadline.bold())
-                    .foregroundColor(totalPLPct >= 0 ? .green : .red)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(Color.white.opacity(0.18))
+                .clipShape(Capsule())
             }
-            Text("Invested \(fmtValue(totalCost))")
-                .font(.caption).foregroundColor(.secondary)
+
+            // Value
+            Text(fmtValue(totalValue))
+                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .minimumScaleFactor(0.6).lineLimit(1)
+                .padding(.top, 8)
+
+            Text(baseCurrency)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.white.opacity(0.5))
+                .padding(.top, 2)
+
+            // Allocation bar
+            if totalValue > 0 {
+                GeometryReader { geo in
+                    HStack(spacing: 3) {
+                        if totalStocks > 0 {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color(red: 0.4, green: 1.0, blue: 0.7))
+                                .frame(width: max(4, geo.size.width * (totalStocks / totalValue)))
+                        }
+                        if totalCrypto > 0 {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color(red: 1.0, green: 0.70, blue: 0.3))
+                                .frame(width: max(4, geo.size.width * (totalCrypto / totalValue)))
+                        }
+                    }
+                }
+                .frame(height: 5)
+                .padding(.top, 18)
+
+                HStack(spacing: 14) {
+                    HStack(spacing: 5) {
+                        Circle().fill(Color(red: 0.4, green: 1.0, blue: 0.7)).frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Stocks").font(.caption2).foregroundColor(.white.opacity(0.6))
+                            Text("\(totalValue > 0 ? Int((totalStocks / totalValue) * 100) : 0)%")
+                                .font(.caption2.bold()).foregroundColor(.white.opacity(0.9))
+                        }
+                    }
+                    HStack(spacing: 5) {
+                        Circle().fill(Color(red: 1.0, green: 0.70, blue: 0.3)).frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Crypto").font(.caption2).foregroundColor(.white.opacity(0.6))
+                            Text("\(totalValue > 0 ? Int((totalCrypto / totalValue) * 100) : 0)%")
+                                .font(.caption2.bold()).foregroundColor(.white.opacity(0.9))
+                        }
+                    }
+                    Spacer()
+                    // P&L inline badge
+                    HStack(spacing: 4) {
+                        Image(systemName: plPositive ? "arrow.up.right" : "arrow.down.right")
+                            .font(.caption2.bold())
+                        Text((plPositive ? "+" : "") + pctStr(totalPLPct))
+                            .font(.caption.bold())
+                    }
+                    .foregroundColor(plPositive ? Color(red: 0.4, green: 1.0, blue: 0.6) : Color(red: 1.0, green: 0.5, blue: 0.5))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                }
+                .padding(.top, 10)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 20)
-        .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(16)
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.04, green: 0.48, blue: 0.32),
+                        Color(red: 0.04, green: 0.34, blue: 0.52)
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                RadialGradient(
+                    colors: [Color.white.opacity(0.10), Color.clear],
+                    center: .topTrailing, startRadius: 0, endRadius: 220
+                )
+            }
+        )
+        .cornerRadius(26)
+        .shadow(color: Color(red: 0.04, green: 0.38, blue: 0.28).opacity(0.4), radius: 16, x: 0, y: 6)
         .padding(.top, 8)
     }
 
-    // ── Allocation cards (horizontal scroll) ──────────────────────────────────
+    // ── 2×2 stat tile grid ────────────────────────────────────────────────────
     private var allocationCards: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                miniCard(
-                    icon: "chart.bar.fill", iconColor: .green,
-                    title: "Stocks", value: fmtValue(totalStocks),
-                    sub: totalValue > 0
-                        ? "\((totalStocks / totalValue * 100).formatted(.number.precision(.fractionLength(1))))% of total"
-                        : "—"
-                )
-                miniCard(
-                    icon: "bitcoinsign.circle.fill", iconColor: .orange,
-                    title: "Crypto", value: fmtValue(totalCrypto),
-                    sub: totalValue > 0
-                        ? "\((totalCrypto / totalValue * 100).formatted(.number.precision(.fractionLength(1))))% of total"
-                        : "—"
-                )
-                // P&L card
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 5) {
-                        Image(systemName: totalPL >= 0 ? "chart.line.uptrend.xyaxis" : "chart.line.downtrend.xyaxis")
-                            .font(.caption.bold())
-                            .foregroundColor(totalPL >= 0 ? .green : .red)
-                        Text("P&L").font(.caption).foregroundColor(.secondary)
-                    }
-                    Text((totalPL >= 0 ? "+" : "") + fmtValue(totalPL))
-                        .font(.headline.bold())
-                        .foregroundColor(totalPL >= 0 ? .green : .red)
-                    Text(pctStr(totalPLPct))
-                        .font(.caption.bold())
-                        .foregroundColor(totalPLPct >= 0 ? .green : .red)
-                    Text("vs \(fmtValue(totalCost)) cost")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                .frame(width: 150)
-                .padding(14)
-                .background(Color(.secondarySystemGroupedBackground))
-                .cornerRadius(14)
+        let plColor: Color = totalPL >= 0 ? Color(red: 0.09, green: 0.70, blue: 0.45)
+                                          : Color(red: 0.97, green: 0.25, blue: 0.36)
+        let topHolding  = allItems.max(by: { $0.value_in_base < $1.value_in_base })
+        let topPL: Double = {
+            guard let t = topHolding, t.avg_cost > 0 else { return 0 }
+            return ((t.price_usd - t.avg_cost) / t.avg_cost) * 100
+        }()
 
-                // Top holding card
-                if let top = allItems.max(by: { $0.value_in_base < $1.value_in_base }) {
-                    let topPL = top.avg_cost > 0
-                        ? ((top.price_usd - top.avg_cost) / top.avg_cost) * 100 : 0.0
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "star.fill")
-                                .font(.caption.bold()).foregroundColor(.yellow)
-                            Text("Top Holding").font(.caption).foregroundColor(.secondary)
-                        }
-                        Text(top.symbol).font(.headline.bold())
-                        Text(fmtValue(top.value_in_base)).font(.subheadline.bold())
-                        Text(pctStr(topPL))
-                            .font(.caption.bold())
-                            .foregroundColor(topPL >= 0 ? .green : .red)
-                    }
-                    .frame(width: 150)
-                    .padding(14)
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .cornerRadius(14)
+        return VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                // Stocks tile
+                statTile(
+                    icon: "chart.bar.fill", accent: Color(red: 0.09, green: 0.70, blue: 0.45),
+                    title: "Stocks",
+                    value: fmtValue(totalStocks),
+                    badge: totalValue > 0
+                        ? "\(Int((totalStocks / totalValue) * 100))%"
+                        : "—"
+                )
+                // Crypto tile
+                statTile(
+                    icon: "bitcoinsign.circle.fill", accent: .orange,
+                    title: "Crypto",
+                    value: fmtValue(totalCrypto),
+                    badge: totalValue > 0
+                        ? "\(Int((totalCrypto / totalValue) * 100))%"
+                        : "—"
+                )
+            }
+            HStack(spacing: 12) {
+                // P&L tile
+                statTile(
+                    icon: totalPL >= 0 ? "arrow.up.right.circle.fill" : "arrow.down.right.circle.fill",
+                    accent: plColor,
+                    title: "P&L",
+                    value: (totalPL >= 0 ? "+" : "") + fmtValue(totalPL),
+                    badge: pctStr(totalPLPct),
+                    valueColor: plColor
+                )
+                // Top holding tile
+                if let top = topHolding {
+                    let tColor: Color = topPL >= 0
+                        ? Color(red: 0.09, green: 0.70, blue: 0.45)
+                        : Color(red: 0.97, green: 0.25, blue: 0.36)
+                    statTile(
+                        icon: "star.fill", accent: Color(red: 0.85, green: 0.65, blue: 0.10),
+                        title: "Best Hold",
+                        value: top.symbol,
+                        badge: pctStr(topPL),
+                        badgeColor: tColor
+                    )
+                } else {
+                    statTile(
+                        icon: "list.bullet.circle.fill", accent: .indigo,
+                        title: "Positions",
+                        value: "\(allItems.count)",
+                        badge: "\(stockItems.count) stocks · \(cryptoItems.count) crypto"
+                    )
                 }
             }
-            .padding(.horizontal, 1)
         }
     }
 
-    private func miniCard(icon: String, iconColor: Color, title: String, value: String, sub: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.caption.bold()).foregroundColor(iconColor)
-                Text(title).font(.caption).foregroundColor(.secondary)
+    @ViewBuilder
+    private func statTile(
+        icon: String, accent: Color, title: String,
+        value: String, badge: String,
+        valueColor: Color? = nil, badgeColor: Color? = nil
+    ) -> some View {
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(accent.opacity(0.13))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: icon)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(accent)
+                }
+                Spacer()
+                Text(badge)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(badgeColor ?? accent)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background((badgeColor ?? accent).opacity(0.10))
+                    .clipShape(Capsule())
             }
-            Text(value).font(.headline.bold())
-            Text(sub).font(.caption).foregroundColor(.secondary)
+
+            Spacer()
+
+            Text(value)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(valueColor ?? .primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+                .padding(.top, 14)
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.top, 3)
+
+            Text("Investment")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.top, 1)
         }
-        .frame(width: 150)
-        .padding(14)
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground))
-        .cornerRadius(14)
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color(red: 0.83, green: 0.67, blue: 0.22).opacity(0.5), lineWidth: 1.5)
+        )
     }
 
     // ── Holdings section ───────────────────────────────────────────────────────
@@ -380,15 +502,27 @@ struct InvestmentDashboardView: View {
         items: [APIService.ValuationPortfolioItem],
         isStock: Bool
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let accent: Color = isStock ? Color(red: 0.18, green: 0.80, blue: 0.44) : .orange
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: isStock ? "chart.bar.fill" : "bitcoinsign.circle.fill")
-                    .foregroundColor(isStock ? .green : .orange)
-                    .font(.subheadline)
-                Text(title).font(.headline)
+                HStack(spacing: 8) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(accent.opacity(0.12))
+                            .frame(width: 28, height: 28)
+                        Image(systemName: isStock ? "chart.bar.fill" : "bitcoinsign.circle.fill")
+                            .foregroundColor(accent)
+                            .font(.caption.bold())
+                    }
+                    Text(title).font(.headline)
+                }
                 Spacer()
-                Text("\(items.count) holding\(items.count == 1 ? "" : "s")")
-                    .font(.caption).foregroundColor(.secondary)
+                Text("\(items.count) position\(items.count == 1 ? "" : "s")")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
             }
             .padding(.horizontal, 2)
 
@@ -396,12 +530,12 @@ struct InvestmentDashboardView: View {
                 ForEach(items) { item in
                     holdingRow(item, isStock: isStock)
                     if item.id != items.last?.id {
-                        Divider().padding(.leading, 60)
+                        Divider().padding(.leading, 62)
                     }
                 }
             }
             .background(Color(.secondarySystemGroupedBackground))
-            .cornerRadius(16)
+            .cornerRadius(20)
         }
     }
 
@@ -411,11 +545,15 @@ struct InvestmentDashboardView: View {
         let costBase = item.price_usd > 0 ? item.value_in_base * (item.avg_cost / item.price_usd) : 0.0
         let plBase   = item.value_in_base - costBase
 
-        HStack(spacing: 14) {
+        let accent: Color = isStock ? Color(red: 0.09, green: 0.70, blue: 0.45) : .orange
+        let plColor: Color = pl >= 0 ? Color(red: 0.09, green: 0.70, blue: 0.45)
+                                     : Color(red: 0.97, green: 0.25, blue: 0.36)
+
+        return HStack(spacing: 14) {
             ZStack {
                 if isStock {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.green.opacity(0.12))
+                        .fill(accent.opacity(0.10))
                         .frame(width: 44, height: 44)
                     AsyncImage(url: URL(string: "https://assets.parqet.com/logos/symbol/\(item.symbol)?format=jpg")) { phase in
                         switch phase {
@@ -425,12 +563,12 @@ struct InvestmentDashboardView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                         default:
                             Text(String(item.symbol.prefix(3)))
-                                .font(.caption.bold()).foregroundColor(.green)
+                                .font(.caption.bold()).foregroundColor(accent)
                         }
                     }
                 } else {
                     Circle()
-                        .fill(Color.orange.opacity(0.12))
+                        .fill(accent.opacity(0.10))
                         .frame(width: 44, height: 44)
                     if let url = cryptoImages[item.symbol.uppercased()].flatMap(URL.init) {
                         AsyncImage(url: url) { phase in
@@ -440,12 +578,12 @@ struct InvestmentDashboardView: View {
                                     .frame(width: 32, height: 32).clipShape(Circle())
                             default:
                                 Text(String(item.symbol.prefix(3)))
-                                    .font(.caption.bold()).foregroundColor(.orange)
+                                    .font(.caption.bold()).foregroundColor(accent)
                             }
                         }
                     } else {
                         Text(String(item.symbol.prefix(3)))
-                            .font(.caption.bold()).foregroundColor(.orange)
+                            .font(.caption.bold()).foregroundColor(accent)
                     }
                 }
             }
@@ -463,10 +601,10 @@ struct InvestmentDashboardView: View {
                 if item.avg_cost > 0 {
                     Text((plBase >= 0 ? "+" : "") + fmtValue(plBase))
                         .font(.caption.bold())
-                        .foregroundColor(pl >= 0 ? .green : .red)
+                        .foregroundColor(plColor)
                     Text(pctStr(pl))
                         .font(.caption2.bold())
-                        .foregroundColor(pl >= 0 ? .green : .red)
+                        .foregroundColor(plColor)
                 }
             }
         }

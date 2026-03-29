@@ -116,8 +116,20 @@ struct AccountDetailView: View {
                     // Holdings section (stocks/crypto/stablecoin)
                     if !holdings.isEmpty {
                         holdingsSection
+                    } else if !isLoading && ["broker", "crypto_wallet"].contains(liveAccount.account_type) {
+                        VStack(spacing: 8) {
+                            Image(systemName: "chart.line.downtrend.xyaxis")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary)
+                            Text("No holdings yet")
+                                .font(.headline).foregroundStyle(.secondary)
+                            Text("Add a trade to start tracking this account.")
+                                .font(.subheadline).foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
                     }
-
 
                     // Recent transactions
                     transactionsSection
@@ -160,8 +172,12 @@ struct AccountDetailView: View {
             .alert("Delete Account?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     Task {
-                        try? await APIService.shared.deleteAccount(id: account.id)
-                        dismiss()
+                        do {
+                            try await APIService.shared.deleteAccount(id: account.id)
+                            dismiss()
+                        } catch {
+                            hapticError()
+                        }
                     }
                 }
                 Button("Cancel", role: .cancel) {}

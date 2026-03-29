@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 struct ResetDataView: View {
     @Environment(\.dismiss) private var dismiss
@@ -209,6 +210,16 @@ struct ResetDataView: View {
                 try await APIService.shared.fullReset()
                 // Clear local-only data that the backend can't reach
                 UserDefaults.standard.removeObject(forKey: "price_alerts_v1")
+                UserDefaults.standard.removeObject(forKey: "customExpenseCats")
+                UserDefaults.standard.removeObject(forKey: "customIncomeCats")
+                UserDefaults.standard.removeObject(forKey: "customForexSymbols")
+                UserDefaults.standard.removeObject(forKey: "hiddenForexSymbols")
+                // Clear in-memory alerts state and remove all pending notifications
+                await MainActor.run {
+                    AlertsManager.shared.alerts = []
+                }
+                UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+                UNUserNotificationCenter.current().removeAllDeliveredNotifications()
                 successMessage = "Everything has been reset. Your app is starting fresh."
             } else {
                 try await APIService.shared.clearTransactions()

@@ -55,6 +55,7 @@ struct ExchangeConnectionsView: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add exchange connection")
                 }
             }
             .refreshable { await load() }

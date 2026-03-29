@@ -54,6 +54,7 @@ struct RecurringTransactionsView: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add recurring transaction")
                 }
             }
             .refreshable { await load() }

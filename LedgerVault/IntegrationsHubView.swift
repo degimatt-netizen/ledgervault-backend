@@ -33,7 +33,7 @@ private enum IProvider: String {
 
     var isLive: Bool {
         switch self {
-        case .apiKey, .rpc: return true
+        case .apiKey, .rpc, .snapTrade: return true
         default: return false
         }
     }
@@ -93,8 +93,8 @@ private let catalog: [Institution] = [
     // ════════════════════════════════════════════════════════════
     // STOCK BROKERS — SnapTrade  (coming soon)
     // ════════════════════════════════════════════════════════════
-    .init(id:"t212",         name:"Trading 212",        icon:"t.circle.fill",              color:Color(red:0.0, green:0.42,blue:0.95), category:.broker, provider:.snapTrade, popular:true),
-    .init(id:"ibkr",         name:"IBKR",               icon:"i.circle.fill",              color:Color(red:0.80,green:0.0, blue:0.0),  category:.broker, provider:.snapTrade, popular:true),
+    .init(id:"t212",         name:"Trading 212",        icon:"t.circle.fill",              color:Color(red:0.0, green:0.42,blue:0.95), category:.broker, provider:.snapTrade, popular:false),
+    .init(id:"ibkr",         name:"IBKR",               icon:"i.circle.fill",              color:Color(red:0.80,green:0.0, blue:0.0),  category:.broker, provider:.snapTrade, popular:false),
     .init(id:"etoro",        name:"eToro",              icon:"e.circle.fill",              color:Color(red:0.0, green:0.62,blue:0.36), category:.broker, provider:.snapTrade, popular:false),
     .init(id:"robinhood",    name:"Robinhood",          icon:"r.circle.fill",              color:Color(red:0.0, green:0.75,blue:0.40), category:.broker, provider:.snapTrade, popular:false),
     .init(id:"degiro",       name:"Degiro",             icon:"d.circle.fill",              color:Color(red:0.84,green:0.10,blue:0.10), category:.broker, provider:.snapTrade, popular:false),
@@ -153,8 +153,9 @@ struct IntegrationsHubView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var exchangeConnections: [APIService.ExchangeConnectionResponse] = []
-    @State private var searchText   = ""
-    @State private var showExchanges  = false
+    @State private var searchText        = ""
+    @State private var showExchanges     = false
+    @State private var showStockBrokers  = false
     @State private var comingSoonName: String? = nil
 
     private var searchResults: [Institution] {
@@ -195,7 +196,8 @@ struct IntegrationsHubView: View {
             }
             .task { await load() }
             .refreshable { await load() }
-            .sheet(isPresented: $showExchanges,  onDismiss: { Task { await load() } }) { ExchangeConnectionsView() }
+            .sheet(isPresented: $showExchanges,    onDismiss: { Task { await load() } }) { ExchangeConnectionsView() }
+            .sheet(isPresented: $showStockBrokers, onDismiss: { Task { await load() } }) { NavigationStack { StockIntegrationsView() } }
             .alert("Coming Soon", isPresented: .constant(comingSoonName != nil), actions: {
                 Button("Got It") { comingSoonName = nil }
             }, message: {
@@ -341,8 +343,9 @@ struct IntegrationsHubView: View {
 
     private func tap(_ inst: Institution) {
         switch inst.provider {
-        case .apiKey:       showExchanges = true
-        default:            comingSoonName = inst.name
+        case .apiKey:       showExchanges    = true
+        case .snapTrade:    showStockBrokers = true
+        default:            comingSoonName   = inst.name
         }
     }
 
@@ -647,24 +650,15 @@ struct CryptoExchangeIntegrationsView: View {
                 ) { showExchanges = true }
 
                 IntegrationProviderCard(
-                    icon: "circle.grid.3x3.fill",
-                    iconColors: [.purple, .indigo],
-                    name: "Vezgo",
-                    isLive: false,
-                    description: "One API for 40+ CEX, 30+ blockchain networks and 500+ wallets. Balances, trades and full history.",
-                    brands: ["Kraken", "ByBit", "Crypto.com", "Bitpanda", "Nexo", "BitPay", "500+ wallets"],
+                    icon: "hare.fill",
+                    iconColors: [.yellow, .orange],
+                    name: "Alpaca",
+                    isLive: true,
+                    description: "Commission-free stock & crypto API. Connect with your own Alpaca API key for live or paper trading.",
+                    brands: ["US Stocks", "ETFs", "Crypto", "Fractional shares", "Paper Trading"],
                     connectedCount: 0
-                ) { }
+                ) { showExchanges = true }
 
-                IntegrationProviderCard(
-                    icon: "terminal.fill",
-                    iconColors: [Color(.systemGray), Color(.systemGray2)],
-                    name: "CCXT",
-                    isLive: false,
-                    description: "Open-source library supporting 100+ exchanges. Maximum flexibility with no aggregator fees.",
-                    brands: ["100+ exchanges", "Binance", "Kraken", "ByBit", "Crypto.com", "Bitfinex"],
-                    connectedCount: 0
-                ) { }
             }
             .padding(.bottom, 40)
         }
@@ -714,25 +708,6 @@ struct StockIntegrationsView: View {
                     connectedCount: 0
                 ) { showExchanges = true }
 
-                IntegrationProviderCard(
-                    icon: "chart.pie.fill",
-                    iconColors: [Color(red: 0.2, green: 0.5, blue: 0.9), .purple],
-                    name: "Flanks",
-                    isLive: false,
-                    description: "Open Wealth platform covering 300+ European banks and brokers — Trade Republic, XTB, Freetrade, Scalable Capital and Saxo.",
-                    brands: ["Trade Republic", "XTB", "Freetrade", "Scalable", "Saxo", "EU-wide"],
-                    connectedCount: 0
-                ) { }
-
-                IntegrationProviderCard(
-                    icon: "arrow.up.doc.fill",
-                    iconColors: [.blue, .cyan],
-                    name: "CSV Import",
-                    isLive: false,
-                    description: "Import trade history from a broker-exported CSV. Works with almost any broker worldwide.",
-                    brands: ["Any broker", "Degiro", "Freetrade", "Fidelity", "Saxo", "Hargreaves"],
-                    connectedCount: 0
-                ) { }
             }
             .padding(.bottom, 40)
         }
