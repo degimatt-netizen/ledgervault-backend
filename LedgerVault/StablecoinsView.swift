@@ -8,9 +8,29 @@ struct StablecoinsView: View {
     @State private var showAdd = false
     @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
+    @State private var orderedIds: [String] = []
+
+    private let orderKey = "stablecoins_account_order"
 
     var stableWallets: [APIService.Account] {
-        accounts.filter { ["cash", "stablecoin_wallet"].contains($0.account_type) }
+        let filtered = accounts.filter { ["cash", "stablecoin_wallet"].contains($0.account_type) }
+        if orderedIds.isEmpty { return filtered }
+        let ordered = orderedIds.compactMap { id in filtered.first { $0.id == id } }
+        let new     = filtered.filter { !orderedIds.contains($0.id) }
+        return ordered + new
+    }
+
+    private func loadOrder() {
+        orderedIds = (UserDefaults.standard.array(forKey: orderKey) as? [String]) ?? []
+    }
+    private func saveOrder(_ ids: [String]) {
+        orderedIds = ids
+        UserDefaults.standard.set(ids, forKey: orderKey)
+    }
+    private func moveAccounts(from source: IndexSet, to destination: Int) {
+        var ids = stableWallets.map { $0.id }
+        ids.move(fromOffsets: source, toOffset: destination)
+        saveOrder(ids)
     }
 
     // Native balance (in the account's own currency — no FX conversion)
@@ -89,7 +109,9 @@ struct StablecoinsView: View {
                                 } label: { Label("Delete", systemImage: "trash") }
                             }
                         }
+                        .onMove(perform: moveAccounts)
                     }
+                    .environment(\.editMode, .constant(.active))
                 }
             }
             .navigationTitle("Stablecoins")
@@ -100,7 +122,7 @@ struct StablecoinsView: View {
                     }
                 }
             }
-            .task { await load() }
+            .task { loadOrder(); await load() }
             .refreshable { await load() }
             .sheet(isPresented: $showAdd) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "cash")

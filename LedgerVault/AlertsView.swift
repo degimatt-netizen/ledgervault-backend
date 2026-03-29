@@ -20,9 +20,15 @@ struct PriceAlert: Codable, Identifiable {
 }
 
 // ── Alerts Manager ────────────────────────────────────────────────────────────
+@MainActor
 class AlertsManager: ObservableObject {
     static let shared = AlertsManager()
-    private let key = "price_alerts_v1"
+
+    /// Returns a user-scoped key so different users on the same device never share alerts.
+    private var key: String {
+        let uid = UserDefaults.standard.string(forKey: "profile_user_id") ?? ""
+        return uid.isEmpty ? "price_alerts_v1" : "price_alerts_v1_\(uid)"
+    }
 
     @Published var alerts: [PriceAlert] = []
     @Published var notificationsEnabled = false
@@ -33,6 +39,12 @@ class AlertsManager: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([PriceAlert].self, from: data) else { return }
         alerts = decoded
+    }
+
+    /// Call after sign-out or account deletion to wipe local alert data for this user.
+    func clearForCurrentUser() {
+        UserDefaults.standard.removeObject(forKey: key)
+        alerts = []
     }
 
     func save() {
@@ -70,10 +82,9 @@ class AlertsManager: ObservableObject {
     }
 
     func checkNotificationStatus() {
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            DispatchQueue.main.async {
-                self.notificationsEnabled = settings.authorizationStatus == .authorized
-            }
+        Task {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            notificationsEnabled = settings.authorizationStatus == .authorized
         }
     }
 

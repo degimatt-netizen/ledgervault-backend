@@ -92,6 +92,7 @@ struct SignInView: View {
     @AppStorage("profile_name")     private var profileName     = ""
     @AppStorage("profile_email")    private var profileEmail    = ""
     @AppStorage("profile_nickname") private var profileNickname = ""
+    @AppStorage("profile_user_id")  private var profileUserId   = ""
 
     private enum Tab: Hashable { case signIn, signUp }
     private enum F            { case name, email, password, confirm }
@@ -463,7 +464,8 @@ struct SignInView: View {
                         totpChallengePassword = password
                         showTotpChallenge     = true
                     } else if let token = resp.access_token {
-                        finishSignIn(token: token, email: resp.email ?? e, name: resp.name ?? "")
+                        finishSignIn(token: token, email: resp.email ?? e, name: resp.name ?? "",
+                                     userId: resp.user_id ?? "")
                     }
                 }
             } catch {
@@ -493,7 +495,8 @@ struct SignInView: View {
                     if resp.status == "needs_verification" {
                         withAnimation { pendingEmail = e }
                     } else if let token = resp.access_token {
-                        finishSignIn(token: token, email: resp.email ?? e, name: resp.name ?? n)
+                        finishSignIn(token: token, email: resp.email ?? e, name: resp.name ?? n,
+                                     userId: resp.user_id ?? "")
                     }
                 }
             } catch {
@@ -511,10 +514,11 @@ struct SignInView: View {
         }
     }
 
-    private func finishSignIn(token: String, email: String, name: String) {
+    private func finishSignIn(token: String, email: String, name: String, userId: String = "") {
         KeychainHelper.save(token, account: "auth_token")
         profileEmail = email
         profileName  = name.isEmpty ? profileName : name
+        if !userId.isEmpty { profileUserId = userId }
         if !name.isEmpty, profileNickname.isEmpty {
             if let first = name.split(separator: " ").first {
                 let suffixes = ["_vault", "_fx", "_trade", "_hq"]
@@ -578,7 +582,8 @@ struct SignInView: View {
                             if tab == .signUp && resp.is_new_user == false {
                                 errorMsg = "An account with this Apple ID already exists. Please use Sign In."
                             } else {
-                                finishSignIn(token: token, email: resp.email ?? cachedEmail, name: resp.name ?? cachedName)
+                                finishSignIn(token: token, email: resp.email ?? cachedEmail, name: resp.name ?? cachedName,
+                                             userId: resp.user_id ?? "")
                             }
                         }
                     }
@@ -705,7 +710,8 @@ struct SignInView: View {
                     if tab == .signUp && resp.is_new_user == false {
                         errorMsg = "An account with this Google account already exists. Please use Sign In."
                     } else {
-                        finishSignIn(token: token, email: resp.email ?? googleEmail, name: resp.name ?? googleName)
+                        finishSignIn(token: token, email: resp.email ?? googleEmail, name: resp.name ?? googleName,
+                                     userId: resp.user_id ?? "")
                     }
                 }
             }

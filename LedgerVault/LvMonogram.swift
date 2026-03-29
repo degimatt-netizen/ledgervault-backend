@@ -11,75 +11,77 @@ enum LVBrand {
     static let green     = Color(red: 0.15, green: 0.78, blue: 0.38)
 }
 
-// MARK: - Shield Outline ─────────────────────────────────────────────────────
+// MARK: - Shield Shape ───────────────────────────────────────────────────────
 
-/// Classic heraldic shield with concave centre-top notch, matching the anymark logo.
+/// Geometric shield — modern squircle top, straight sides tapering to a sharp point.
+/// Matches the app icon exactly (tall proportions, 22% corner radius, waist at 52%).
 private struct ShieldPath: Shape {
     func path(in rect: CGRect) -> Path {
         let w = rect.width, h = rect.height
         return Path { p in
-            let r = w * 0.09          // corner radius
+            let r     = w * 0.22           // large top corner radius (squircle feel)
+            let left  = CGFloat(0)
+            let right = w
+            let top   = CGFloat(0)
+            let waist = h * 0.52           // straight sides end here
+            let tipY  = h * 0.97
+            let tipX  = w * 0.50
 
-            // ── Top edge with centre notch ───────────────────────────────
-            p.move(to: .init(x: w * 0.10 + r, y: h * 0.04))
-            p.addLine(to: .init(x: w * 0.41, y: h * 0.04))
-            // concave notch (curves downward in the centre)
-            p.addQuadCurve(to: .init(x: w * 0.59, y: h * 0.04),
-                           control: .init(x: w * 0.50, y: h * 0.155))
-            p.addLine(to: .init(x: w * 0.90 - r, y: h * 0.04))
+            // ── Top-left corner ──────────────────────────────────────
+            p.move(to: .init(x: left, y: top + r))
+            p.addQuadCurve(to: .init(x: left + r, y: top),
+                           control: .init(x: left, y: top))
 
-            // top-right corner
-            p.addQuadCurve(to: .init(x: w * 0.90, y: h * 0.04 + r),
-                           control: .init(x: w * 0.90, y: h * 0.04))
+            // ── Top edge ──────────────────────────────────────────────
+            p.addLine(to: .init(x: right - r, y: top))
 
-            // ── Right side ──────────────────────────────────────────────
-            p.addLine(to: .init(x: w * 0.90, y: h * 0.56))
-            p.addCurve(to: .init(x: w * 0.50, y: h * 0.965),
-                       control1: .init(x: w * 0.90, y: h * 0.835),
-                       control2: .init(x: w * 0.72, y: h * 0.965))
+            // ── Top-right corner ──────────────────────────────────────
+            p.addQuadCurve(to: .init(x: right, y: top + r),
+                           control: .init(x: right, y: top))
 
-            // ── Left side ───────────────────────────────────────────────
-            p.addCurve(to: .init(x: w * 0.10, y: h * 0.56),
-                       control1: .init(x: w * 0.28, y: h * 0.965),
-                       control2: .init(x: w * 0.10, y: h * 0.835))
-            p.addLine(to: .init(x: w * 0.10, y: h * 0.04 + r))
+            // ── Right side straight ───────────────────────────────────
+            p.addLine(to: .init(x: right, y: waist))
 
-            // top-left corner
-            p.addQuadCurve(to: .init(x: w * 0.10 + r, y: h * 0.04),
-                           control: .init(x: w * 0.10, y: h * 0.04))
+            // ── Right shoulder → tip ──────────────────────────────────
+            p.addCurve(to: .init(x: tipX, y: tipY),
+                       control1: .init(x: right, y: waist + (tipY - waist) * 0.45),
+                       control2: .init(x: tipX + w * 0.10, y: tipY - h * 0.02))
+
+            // ── Tip → left shoulder ───────────────────────────────────
+            p.addCurve(to: .init(x: left, y: waist),
+                       control1: .init(x: tipX - w * 0.10, y: tipY - h * 0.02),
+                       control2: .init(x: left, y: waist + (tipY - waist) * 0.45))
+
+            // ── Left side up ──────────────────────────────────────────
+            p.addLine(to: .init(x: left, y: top + r))
             p.closeSubpath()
         }
     }
 }
 
-// MARK: - Inner 2 × 2 Reticle Mark ──────────────────────────────────────────
+// MARK: - Inner Window Mark ──────────────────────────────────────────────────
 
-/// Four rounded squares in a 2 × 2 grid — top-left fully opaque,
-/// the others progressively lighter, creating the crosshair / scope reticle.
-private struct ReticleMark: View {
+/// Four small rounded squares in a 2×2 grid — the "vault windows" at the heart of the shield.
+/// Proportions match the app icon: sq = 15.8% of shield size, gap = 4.4%, corner = 26%.
+private struct WindowMark: View {
     let size: CGFloat
     var tint: Color = .white
 
     var body: some View {
-        let sq  = size * 0.155
-        let gap = size * 0.038
-        let off = sq / 2 + gap / 2
-
-        ZStack {
-            square(tint, 1.00, x: -off, y: -off, sq: sq)   // top-left (solid)
-            square(tint, 0.60, x:  off, y: -off, sq: sq)   // top-right
-            square(tint, 0.60, x: -off, y:  off, sq: sq)   // bottom-left
-            square(tint, 0.30, x:  off, y:  off, sq: sq)   // bottom-right
+        let sq  = size * 0.158
+        let gap = size * 0.044
+        let cr  = sq * 0.26
+        VStack(spacing: gap) {
+            HStack(spacing: gap) {
+                RoundedRectangle(cornerRadius: cr).fill(tint).frame(width: sq, height: sq)
+                RoundedRectangle(cornerRadius: cr).fill(tint).frame(width: sq, height: sq)
+            }
+            HStack(spacing: gap) {
+                RoundedRectangle(cornerRadius: cr).fill(tint).frame(width: sq, height: sq)
+                RoundedRectangle(cornerRadius: cr).fill(tint).frame(width: sq, height: sq)
+            }
         }
-    }
-
-    @ViewBuilder
-    private func square(_ color: Color, _ opacity: Double,
-                        x: CGFloat, y: CGFloat, sq: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: sq * 0.22)
-            .fill(color.opacity(opacity))
-            .frame(width: sq, height: sq)
-            .offset(x: x, y: y)
+        .offset(y: -size * 0.10)   // shift grid into upper portion of shield
     }
 }
 
@@ -87,28 +89,17 @@ private struct ReticleMark: View {
 
 struct LVMonogram: View {
     var size: CGFloat = 90
+    var tint: Color = .white
+    /// Override the inner window colour. When nil, navy is used for white shields,
+    /// white for all others (navy, .primary, custom colours).
+    var windowTint: Color? = nil
 
     var body: some View {
         ZStack {
-            // Navy gradient fill
             ShieldPath()
-                .fill(LinearGradient(
-                    colors: [LVBrand.navyMid, LVBrand.navy],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ))
+                .fill(tint)
 
-            // Subtle top-highlight for depth
-            ShieldPath()
-                .fill(LinearGradient(
-                    colors: [Color.white.opacity(0.10), Color.clear],
-                    startPoint: .top,
-                    endPoint: UnitPoint(x: 0.5, y: 0.45)
-                ))
-
-            // 2×2 reticle, nudged slightly upward inside the shield
-            ReticleMark(size: size)
-                .offset(y: -size * 0.02)
+            WindowMark(size: size, tint: windowTint ?? (tint == LVBrand.navy ? .white : LVBrand.navy))
         }
         .frame(width: size, height: size)
     }
@@ -123,12 +114,12 @@ struct LVWordmark: View {
     var textColor: Color = .white
 
     var body: some View {
-        HStack(spacing: shieldSize * 0.22) {
-            LVMonogram(size: shieldSize)
+        HStack(spacing: shieldSize * 0.24) {
+            LVMonogram(size: shieldSize, tint: textColor)
             Text("LedgerVault")
-                .font(.system(size: shieldSize * 0.43, weight: .bold, design: .default))
+                .font(.system(size: shieldSize * 0.48, weight: .semibold, design: .default))
                 .foregroundStyle(textColor)
-                .tracking(-0.4)
+                .tracking(-0.3)
         }
     }
 }

@@ -5,6 +5,15 @@ import Combine
 
 @main
 struct LedgerVaultApp: App {
+    // Configure a generous persistent image cache so logos load instantly after first visit
+    init() {
+        URLCache.shared = URLCache(
+            memoryCapacity: 50 * 1024 * 1024,   // 50 MB in-memory
+            diskCapacity:  200 * 1024 * 1024,   // 200 MB on disk
+            diskPath: "LedgerVault_ImageCache"
+        )
+    }
+
     @AppStorage("theme")                  private var theme              = "dark"
     @AppStorage("isSignedIn")             private var isSignedIn         = false
     @AppStorage("requiresAuth")           private var requiresAuth       = false
@@ -61,6 +70,7 @@ struct LedgerVaultApp: App {
                 }
             }
             .task { await startPriceAlertChecker() }
+            .task { scheduleWeeklySummaryNotification() }
             .onAppear {
                 AlertsManager.shared.checkNotificationStatus()
                 inactivityMonitor.onLock = {
@@ -108,11 +118,62 @@ struct LedgerVaultApp: App {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
             guard isSignedIn else { continue }
-            let hasActive = AlertsManager.shared.alerts.contains { $0.isActive && !$0.triggered }
-            guard hasActive else { continue }
             if let rates = try? await APIService.shared.fetchRates() {
-                AlertsManager.shared.checkPrices(rates.prices)
+                // Price alerts
+                let hasActive = AlertsManager.shared.alerts.contains { $0.isActive && !$0.triggered }
+                if hasActive { AlertsManager.shared.checkPrices(rates.prices) }
+                // Volatility alerts — notify if any watchlist item moved >4% since last check
+                checkVolatility(rates.prices)
             }
+        }
+    }
+
+    private func checkVolatility(_ prices: [String: Double]) {
+        guard UserDefaults.standard.object(forKey: "notifPriceAlerts") as? Bool != false else { return }
+        let stored = UserDefaults.standard.dictionary(forKey: "last_prices") as? [String: Double] ?? [:]
+        var alerts: [(symbol: String, pct: Double)] = []
+        for (sym, price) in prices {
+            guard let prev = stored[sym], prev > 0 else { continue }
+            let pct = ((price - prev) / prev) * 100
+            if abs(pct) >= 4 { alerts.append((sym, pct)) }
+        }
+        // Save current prices for next comparison
+        UserDefaults.standard.set(prices, forKey: "last_prices")
+        guard !alerts.isEmpty else { return }
+        let top = alerts.sorted { abs($0.pct) > abs($1.pct) }.prefix(2)
+        let center = UNUserNotificationCenter.current()
+        for item in top {
+            let content = UNMutableNotificationContent()
+            content.title = "📊 Market Volatility: \(item.symbol)"
+            let dir = item.pct > 0 ? "up" : "down"
+            content.body = "\(item.symbol) moved \(dir) \(String(format: "%.1f", abs(item.pct)))% in the last 5 minutes."
+            content.sound = .default
+            let req = UNNotificationRequest(identifier: "vol_\(item.symbol)_\(Date().timeIntervalSince1970)", content: content, trigger: nil)
+            center.add(req)
+        }
+    }
+
+    /// Schedules a repeating Monday 9am local notification for the weekly portfolio summary.
+    private func scheduleWeeklySummaryNotification() {
+        guard UserDefaults.standard.bool(forKey: "notifWeeklySummary") else {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["weekly_summary"])
+            return
+        }
+        let center = UNUserNotificationCenter.current()
+        center.getPendingNotificationRequests { requests in
+            // Only schedule if not already scheduled
+            guard !requests.contains(where: { $0.identifier == "weekly_summary" }) else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "📈 Weekly Portfolio Summary"
+            content.body = "Open LedgerVault to review your portfolio performance this week."
+            content.sound = .default
+            var components = DateComponents()
+            components.weekday = 2  // Monday
+            components.hour = 9
+            components.minute = 0
+            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+            let request = UNNotificationRequest(identifier: "weekly_summary", content: content, trigger: trigger)
+            center.add(request)
         }
     }
 }
@@ -128,24 +189,21 @@ struct LockScreenView: View {
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(Color(.systemBackground).opacity(0.85))
-                .background(.ultraThinMaterial)
-                .ignoresSafeArea()
+            LVBrand.navy.ignoresSafeArea()
 
             VStack(spacing: 32) {
                 Spacer()
 
-                LVWordmark(shieldSize: 52, textColor: .primary)
+                LVWordmark(shieldSize: 52, textColor: .white)
 
                 Text("Locked")
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.6))
 
                 if let error = authError {
                     Text(error)
                         .font(.caption)
-                        .foregroundColor(.red)
+                        .foregroundColor(.red.opacity(0.8))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                 }
@@ -158,10 +216,10 @@ struct LockScreenView: View {
                         Text("Unlock")
                     }
                     .font(.headline)
-                    .foregroundColor(.primary)
+                    .foregroundColor(LVBrand.navy)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 16))
                 }
                 .padding(.horizontal, 32)
                 .padding(.bottom, 48)

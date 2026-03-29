@@ -141,18 +141,24 @@ struct CryptoWalletDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         Button { showEdit = true } label: { Image(systemName: "pencil") }
+                            .accessibilityLabel("Edit account")
                         Button(role: .destructive) { showDeleteAlert = true } label: {
                             Image(systemName: "trash").foregroundColor(.red)
                         }
+                        .accessibilityLabel("Delete account")
                     }
                 }
             }
             .alert("Delete \(liveAccount.name)?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     Task {
-                        try? await APIService.shared.deleteAccount(id: account.id)
-                        onDeleted()
-                        dismiss()
+                        do {
+                            try await APIService.shared.deleteAccount(id: account.id)
+                            onDeleted()
+                            dismiss()
+                        } catch {
+                            hapticError()
+                        }
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -268,9 +274,29 @@ struct CryptoStocksView: View {
     @State private var showAddCrypto = false
     @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
+    @State private var orderedIds: [String] = []
+
+    private let orderKey = "crypto_account_order"
 
     var cryptoWallets: [APIService.Account] {
-        accounts.filter { $0.account_type == "crypto_wallet" }
+        let filtered = accounts.filter { $0.account_type == "crypto_wallet" }
+        if orderedIds.isEmpty { return filtered }
+        let ordered = orderedIds.compactMap { id in filtered.first { $0.id == id } }
+        let new     = filtered.filter { !orderedIds.contains($0.id) }
+        return ordered + new
+    }
+
+    private func loadOrder() {
+        orderedIds = (UserDefaults.standard.array(forKey: orderKey) as? [String]) ?? []
+    }
+    private func saveOrder(_ ids: [String]) {
+        orderedIds = ids
+        UserDefaults.standard.set(ids, forKey: orderKey)
+    }
+    private func moveAccounts(from source: IndexSet, to destination: Int) {
+        var ids = cryptoWallets.map { $0.id }
+        ids.move(fromOffsets: source, toOffset: destination)
+        saveOrder(ids)
     }
 
     private func accountValue(for wallet: APIService.Account) -> Double {
@@ -368,7 +394,9 @@ struct CryptoStocksView: View {
                                 } label: { Label("Delete", systemImage: "trash") }
                             }
                         }
+                        .onMove(perform: moveAccounts)
                     }
+                    .environment(\.editMode, .constant(.active))
                 }
             }
             .navigationTitle("Crypto")
@@ -382,7 +410,7 @@ struct CryptoStocksView: View {
                     }
                 }
             }
-            .task { await load() }
+            .task { loadOrder(); await load() }
             .sheet(isPresented: $showAdd) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "crypto_wallet")
             }

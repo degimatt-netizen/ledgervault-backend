@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 
 struct HomeView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("baseCurrency") private var baseCurrency = "USD"
 
     @State private var valuation: APIService.ValuationResponse?
@@ -35,7 +36,9 @@ struct HomeView: View {
     }
 
     private func fiatBalance(accountTypes: [String]) -> Double {
-        let relevantAccounts = accounts.filter { accountTypes.contains($0.account_type) }
+        let relevantAccounts = accounts.filter {
+            accountTypes.contains($0.account_type) && !($0.exclude_from_total ?? false)
+        }
         return relevantAccounts.reduce(0.0) { total, account in
             let nativeBalance = legs
                 .filter { $0.account_id == account.id }
@@ -65,13 +68,12 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    netWorthHero
-                    accountGrid
-                    if !investmentPositions.isEmpty { topHoldingsSection }
+                    portfolioCard
                     recentActivitySection
                     updatedFooter
                 }
                 .padding(.horizontal, 16)
+                .padding(.top, 28)
                 .padding(.bottom, 24)
             }
             .background(Color(.systemGroupedBackground))
@@ -229,24 +231,158 @@ struct HomeView: View {
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.18, green: 0.25, blue: 0.82),
-                    Color(red: 0.44, green: 0.18, blue: 0.78)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Group {
+                if colorScheme == .dark {
+                    ZStack {
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.08, green: 0.10, blue: 0.22),
+                                Color(red: 0.14, green: 0.08, blue: 0.28)
+                            ],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
+                        RadialGradient(
+                            colors: [Color(red: 0.30, green: 0.55, blue: 0.95).opacity(0.15), Color.clear],
+                            center: .topLeading, startRadius: 0, endRadius: 220
+                        )
+                    }
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.18, green: 0.25, blue: 0.82),
+                            Color(red: 0.44, green: 0.18, blue: 0.78)
+                        ],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                }
+            }
         )
         .cornerRadius(26)
-        .shadow(color: .blue.opacity(0.25), radius: 16, x: 0, y: 6)
+        .shadow(
+            color: colorScheme == .dark
+                ? Color(red: 0.10, green: 0.06, blue: 0.22).opacity(0.7)
+                : .blue.opacity(0.25),
+            radius: 16, x: 0, y: 6
+        )
     }
 
     private var allocationSegments: [(Double, Color, String)] {
         [(cash, .blue, "Cash"),
          (stablecoins, .teal, "Stable"),
-         (stocks, .green, "Stocks"),
+         (stocks, Color(red: 0.18, green: 0.80, blue: 0.44), "Stocks"),
          (crypto, .orange, "Crypto")]
+    }
+
+    // MARK: - Revolut-style Portfolio Card
+
+    @ViewBuilder
+    private var portfolioCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+
+            // Header
+            HStack(spacing: 6) {
+                Text("Total Portfolio")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                Spacer()
+                HStack(spacing: 4) {
+                    Circle().fill(Color(red: 0.2, green: 0.9, blue: 0.5)).frame(width: 6, height: 6)
+                    Text("LIVE").font(.caption2.bold()).foregroundStyle(.white.opacity(0.65))
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Capsule())
+            }
+
+            // Amount
+            Group {
+                if isLoading && valuation == nil {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.white.opacity(0.15))
+                        .frame(width: 200, height: 46)
+                        .shimmer()
+                } else {
+                    Text(fmt(total))
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(.top, 10)
+
+            Text(baseCurrency)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.35))
+                .padding(.top, 2)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+                .padding(.vertical, 20)
+
+            // Category rows
+            VStack(spacing: 0) {
+                NavigationLink(destination: BanksView()) {
+                    portfolioRow("Cash", sub: "Bank accounts",
+                                 icon: "banknote.fill", color: Color(red: 0.22, green: 0.46, blue: 0.97),
+                                 amount: cash)
+                }.buttonStyle(.plain)
+                portfolioDivider()
+                NavigationLink(destination: StablecoinsView()) {
+                    portfolioRow("Stablecoins", sub: "USDT · USDC",
+                                 icon: "link.circle.fill", color: .teal,
+                                 amount: stablecoins)
+                }.buttonStyle(.plain)
+                portfolioDivider()
+                NavigationLink(destination: StocksView()) {
+                    portfolioRow("Stocks", sub: "Equities & ETFs",
+                                 icon: "chart.bar.fill", color: Color(red: 0.09, green: 0.70, blue: 0.45),
+                                 amount: stocks)
+                }.buttonStyle(.plain)
+                portfolioDivider()
+                NavigationLink(destination: CryptoStocksView()) {
+                    portfolioRow("Crypto", sub: "BTC · ETH · SOL",
+                                 icon: "bitcoinsign.circle.fill", color: .orange,
+                                 amount: crypto)
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(red: 0.09, green: 0.11, blue: 0.19))
+        .cornerRadius(26)
+        .shadow(color: Color.black.opacity(0.22), radius: 20, x: 0, y: 8)
+    }
+
+    @ViewBuilder
+    private func portfolioRow(_ title: String, sub: String, icon: String, color: Color, amount: Double) -> some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(color).frame(width: 44, height: 44)
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(sub)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            Spacer()
+            Text(fmt(amount))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+        }
+        .padding(.vertical, 11)
+    }
+
+    private func portfolioDivider() -> some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.07))
+            .frame(height: 1)
+            .padding(.leading, 58)
     }
 
     // MARK: - Performance Chart
@@ -354,31 +490,24 @@ struct HomeView: View {
             HStack(spacing: 12) {
                 NavigationLink(destination: BanksView()) {
                     accountTile(title: "Cash", subtitle: "Bank accounts",
-                                icon: "banknote.fill", amount: cash,
-                                gradientColors: [Color(red: 0.20, green: 0.48, blue: 0.98),
-                                                 Color(red: 0.07, green: 0.22, blue: 0.76)])
+                                icon: "banknote.fill", amount: cash, accent: .blue)
                 }.buttonStyle(.plain)
 
                 NavigationLink(destination: StablecoinsView()) {
                     accountTile(title: "Stablecoins", subtitle: "USDT · USDC",
-                                icon: "link.circle.fill", amount: stablecoins,
-                                gradientColors: [Color(red: 0.05, green: 0.74, blue: 0.74),
-                                                 Color(red: 0.02, green: 0.48, blue: 0.58)])
+                                icon: "link.circle.fill", amount: stablecoins, accent: .teal)
                 }.buttonStyle(.plain)
             }
             HStack(spacing: 12) {
                 NavigationLink(destination: StocksView()) {
                     accountTile(title: "Stocks", subtitle: "Equities & ETFs",
                                 icon: "chart.bar.fill", amount: stocks,
-                                gradientColors: [Color(red: 0.16, green: 0.82, blue: 0.44),
-                                                 Color(red: 0.04, green: 0.54, blue: 0.26)])
+                                accent: Color(red: 0.18, green: 0.80, blue: 0.44))
                 }.buttonStyle(.plain)
 
                 NavigationLink(destination: CryptoStocksView()) {
                     accountTile(title: "Crypto", subtitle: "BTC · ETH · SOL",
-                                icon: "bitcoinsign.circle.fill", amount: crypto,
-                                gradientColors: [Color(red: 1.00, green: 0.60, blue: 0.12),
-                                                 Color(red: 0.88, green: 0.32, blue: 0.04)])
+                                icon: "bitcoinsign.circle.fill", amount: crypto, accent: .orange)
                 }.buttonStyle(.plain)
             }
         }
@@ -386,29 +515,28 @@ struct HomeView: View {
 
     @ViewBuilder
     private func accountTile(title: String, subtitle: String, icon: String,
-                             amount: Double, gradientColors: [Color]) -> some View {
-        let pct       = total > 0 && amount > 0 ? Int((amount / total) * 100) : 0
-        let shadowClr = gradientColors.first ?? .clear
+                             amount: Double, accent: Color) -> some View {
+        let pct = total > 0 && amount > 0 ? Int((amount / total) * 100) : 0
 
         VStack(alignment: .leading, spacing: 0) {
 
             // ── Top row: icon + allocation badge ──
             HStack(alignment: .top) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.white.opacity(0.22))
-                        .frame(width: 40, height: 40)
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(accent.opacity(0.12))
+                        .frame(width: 36, height: 36)
                     Image(systemName: icon)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(accent)
                 }
                 Spacer()
                 if pct > 0 {
                     Text("\(pct)%")
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Color.white.opacity(0.22))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(accent)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(accent.opacity(0.10))
                         .clipShape(Capsule())
                 }
             }
@@ -417,34 +545,31 @@ struct HomeView: View {
 
             // ── Amount ──
             Text(fmt(amount))
-                .font(.system(size: 21, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
-                .padding(.top, 18)
+                .padding(.top, 16)
 
             // ── Labels ──
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.top, 5)
+                .foregroundStyle(.primary)
+                .padding(.top, 4)
 
             Text(subtitle)
                 .font(.caption2)
-                .foregroundStyle(.white.opacity(0.72))
+                .foregroundStyle(.secondary)
                 .padding(.top, 2)
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 148, alignment: .leading)
-        .background {
-            LinearGradient(
-                colors: gradientColors,
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 24))
-        .shadow(color: shadowClr.opacity(0.38), radius: 12, x: 0, y: 6)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color(red: 0.83, green: 0.67, blue: 0.22).opacity(0.6), lineWidth: 1.5)
+        )
     }
 
     // MARK: - Top Holdings
@@ -540,7 +665,12 @@ struct HomeView: View {
                 }
             }
 
-            let activity = valuation?.recent_activity ?? []
+            let activity = (valuation?.recent_activity ?? [])
+                .sorted {
+                    if $0.date != $1.date { return $0.date > $1.date }
+                    // Same date — use created_at for newest-first ordering
+                    return ($0.created_at ?? $0.date) > ($1.created_at ?? $1.date)
+                }
 
             if activity.isEmpty {
                 VStack(spacing: 10) {
@@ -623,7 +753,10 @@ struct HomeView: View {
                             .font(.caption.bold()).foregroundColor(.orange)
                     }
                 } else {
-                    Image(systemName: eventIcon(item.event_type))
+                    let icon = (isIncome || isExpense) && item.category != nil
+                        ? categoryIcon(item.category)
+                        : eventIcon(item.event_type)
+                    Image(systemName: icon)
                         .foregroundColor(eventColor(item.event_type))
                         .font(.system(size: 16))
                 }
@@ -795,20 +928,22 @@ struct HomeView: View {
 
     private func eventIcon(_ t: String) -> String {
         switch t.lowercased() {
-        case "income":   return "arrow.down.circle.fill"
-        case "expense":  return "arrow.up.circle.fill"
-        case "transfer": return "arrow.left.arrow.right.circle.fill"
-        case "trade":    return "chart.line.uptrend.xyaxis.circle.fill"
-        default:         return "circle.fill"
+        case "income":     return "arrow.down.circle.fill"
+        case "expense":    return "arrow.up.circle.fill"
+        case "transfer":   return "arrow.left.arrow.right.circle.fill"
+        case "conversion": return "arrow.triangle.2.circlepath.circle.fill"
+        case "trade":      return "chart.line.uptrend.xyaxis.circle.fill"
+        default:           return "circle.fill"
         }
     }
 
     private func eventColor(_ t: String) -> Color {
         switch t.lowercased() {
-        case "income":  return .green
-        case "expense": return .red
-        case "trade":   return .orange
-        default:        return .blue
+        case "income":     return .green
+        case "expense":    return .red
+        case "trade":      return .orange
+        case "conversion": return .purple
+        default:           return .blue
         }
     }
 }

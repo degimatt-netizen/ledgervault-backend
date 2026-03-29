@@ -8,6 +8,17 @@ final class APIService {
 
     static var authToken: String? { KeychainHelper.read(account: "auth_token") }
 
+    /// Safely build a URL with query items — throws instead of force-unwrapping.
+    private func url(path: String, query: [URLQueryItem]? = nil) throws -> URL {
+        guard var components = URLComponents(
+            url: baseURL.appendingPathComponent(path),
+            resolvingAgainstBaseURL: false
+        ) else { throw URLError(.badURL) }
+        if let query { components.queryItems = query }
+        guard let url = components.url else { throw URLError(.badURL) }
+        return url
+    }
+
     private func makeRequest(url: URL, method: String = "GET", body: Data? = nil) -> URLRequest {
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -170,11 +181,12 @@ final class APIService {
         let name: String
         let account_type: String
         let base_currency: String
+        let exclude_from_total: Bool?
     }
 
     struct AccountList: Codable { let items: [Account] }
-    struct CreateAccountRequest: Codable { let name: String; let account_type: String; let base_currency: String }
-    struct UpdateAccountRequest: Codable { let name: String; let account_type: String; let base_currency: String }
+    struct CreateAccountRequest: Codable { let name: String; let account_type: String; let base_currency: String; let exclude_from_total: Bool }
+    struct UpdateAccountRequest: Codable { let name: String; let account_type: String; let base_currency: String; let exclude_from_total: Bool }
 
     // MARK: - Assets
 
@@ -314,6 +326,7 @@ final class APIService {
         let description: String?
         let date: String
         let note: String?
+        let created_at: String?
     }
 
     struct ValuationResponse: Codable {
@@ -438,16 +451,16 @@ final class APIService {
         return try JSONDecoder().decode(AccountList.self, from: data).items
     }
 
-    func createAccount(name: String, accountType: String, baseCurrency: String) async throws -> Account {
-        let body = try JSONEncoder().encode(CreateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency))
+    func createAccount(name: String, accountType: String, baseCurrency: String, excludeFromTotal: Bool = false) async throws -> Account {
+        let body = try JSONEncoder().encode(CreateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency, exclude_from_total: excludeFromTotal))
         let req = makeRequest(url: baseURL.appendingPathComponent("accounts"), method: "POST", body: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(Account.self, from: data)
     }
 
-    func updateAccount(id: String, name: String, accountType: String, baseCurrency: String) async throws -> Account {
-        let body = try JSONEncoder().encode(UpdateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency))
+    func updateAccount(id: String, name: String, accountType: String, baseCurrency: String, excludeFromTotal: Bool = false) async throws -> Account {
+        let body = try JSONEncoder().encode(UpdateAccountRequest(name: name, account_type: accountType, base_currency: baseCurrency, exclude_from_total: excludeFromTotal))
         let req = makeRequest(url: baseURL.appendingPathComponent("accounts/\(id)"), method: "PUT", body: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
@@ -482,17 +495,15 @@ final class APIService {
     // MARK: - Search API
 
     func searchCrypto(query: String) async throws -> [CryptoSearchResult] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("search/crypto"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "q", value: query)]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let u = try url(path: "search/crypto", query: [URLQueryItem(name: "q", value: query)])
+        let (data, response) = try await URLSession.shared.data(from: u)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(CryptoSearchResponse.self, from: data).results
     }
 
     func searchStocks(query: String) async throws -> [StockSearchResult] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("search/stocks"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "q", value: query)]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let u = try url(path: "search/stocks", query: [URLQueryItem(name: "q", value: query)])
+        let (data, response) = try await URLSession.shared.data(from: u)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(StockSearchResponse.self, from: data).results
     }
@@ -541,6 +552,23 @@ final class APIService {
         return try JSONDecoder().decode(TransactionEvent.self, from: data)
     }
 
+    struct TransactionEventUpdateRequest: Codable {
+        let event_type: String?
+        let category: String?
+        let description: String?
+        let date: String?
+        let note: String?
+    }
+
+    func updateTransactionEvent(id: String, eventType: String? = nil, category: String? = nil, description: String? = nil, date: String? = nil, note: String? = nil) async throws -> TransactionEvent {
+        let payload = TransactionEventUpdateRequest(event_type: eventType, category: category, description: description, date: date, note: note)
+        let body = try JSONEncoder().encode(payload)
+        let req = makeRequest(url: baseURL.appendingPathComponent("transaction-events/\(id)"), method: "PUT", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(TransactionEvent.self, from: data)
+    }
+
     func deleteTransactionEvent(id: String) async throws {
         let req = makeRequest(url: baseURL.appendingPathComponent("transaction-events/\(id)"), method: "DELETE")
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -550,21 +578,19 @@ final class APIService {
     // MARK: - Valuation & Rates
 
     func fetchValuation(baseCurrency: String) async throws -> ValuationResponse {
-        var components = URLComponents(url: baseURL.appendingPathComponent("valuation"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "base_currency", value: baseCurrency)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "valuation", query: [URLQueryItem(name: "base_currency", value: baseCurrency)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(ValuationResponse.self, from: data)
     }
 
     func fetchPortfolioHistory(days: Int = 30, baseCurrency: String) async throws -> PortfolioHistoryResponse {
-        var components = URLComponents(url: baseURL.appendingPathComponent("portfolio/history"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        let u = try url(path: "portfolio/history", query: [
             URLQueryItem(name: "days", value: "\(days)"),
             URLQueryItem(name: "base_currency", value: baseCurrency)
-        ]
-        let req = makeRequest(url: components.url!)
+        ])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(PortfolioHistoryResponse.self, from: data)
@@ -644,6 +670,7 @@ final class APIService {
         let chain: String
         let address: String
         let label: String?
+        let account_id: String?
         let last_synced: String?
         let created_at: String?
     }
@@ -679,9 +706,10 @@ final class APIService {
         return try JSONDecoder().decode(WalletListResponse.self, from: data).wallets
     }
 
-    func addWallet(chain: String, address: String, label: String?) async throws -> CryptoWallet {
+    func addWallet(chain: String, address: String, label: String?, accountId: String?) async throws -> CryptoWallet {
         var bodyDict: [String: Any] = ["chain": chain, "address": address]
         if let l = label, !l.isEmpty { bodyDict["label"] = l }
+        if let a = accountId, !a.isEmpty { bodyDict["account_id"] = a }
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
         let req = makeRequest(url: baseURL.appendingPathComponent("wallets"), method: "POST", body: body)
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -724,18 +752,16 @@ final class APIService {
     struct SnaptradeAuthURLResponse: Codable { let auth_url: String; let registered: Bool }
 
     func snaptradeRegisterAndAuthURL(userID: String) async throws -> SnaptradeAuthURLResponse {
-        var components = URLComponents(url: baseURL.appendingPathComponent("snaptrade/auth-url"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "snaptrade/auth-url", query: [URLQueryItem(name: "user_id", value: userID)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(SnaptradeAuthURLResponse.self, from: data)
     }
 
     func fetchSnaptradeConnections(userID: String) async throws -> [SnaptradeConnectionResponse] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("snaptrade/connections"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "snaptrade/connections", query: [URLQueryItem(name: "user_id", value: userID)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(SnaptradeConnectionListResponse.self, from: data).items
@@ -770,18 +796,16 @@ final class APIService {
     struct VezgoAuthURLResponse: Codable { let auth_url: String }
 
     func vezgoAuthURL(userID: String) async throws -> VezgoAuthURLResponse {
-        var components = URLComponents(url: baseURL.appendingPathComponent("vezgo/auth-url"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "vezgo/auth-url", query: [URLQueryItem(name: "user_id", value: userID)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(VezgoAuthURLResponse.self, from: data)
     }
 
     func fetchVezgoConnections(userID: String) async throws -> [VezgoConnectionResponse] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("vezgo/connections"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "vezgo/connections", query: [URLQueryItem(name: "user_id", value: userID)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(VezgoConnectionListResponse.self, from: data).items
@@ -825,9 +849,8 @@ final class APIService {
     }
 
     func fetchFlanksConnections(userID: String) async throws -> [FlanksConnectionResponse] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("flanks/connections"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "flanks/connections", query: [URLQueryItem(name: "user_id", value: userID)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(FlanksConnectionListResponse.self, from: data).items
@@ -920,23 +943,18 @@ final class APIService {
     struct BankCallbackResponse: Codable { let items: [BankConnectionResponse] }
 
     func getBankAuthURL(sandbox: Bool = false) async throws -> String {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("bank-connections/auth-url"),
-            resolvingAgainstBaseURL: false)!
-        if sandbox { components.queryItems = [URLQueryItem(name: "sandbox", value: "true")] }
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let query = sandbox ? [URLQueryItem(name: "sandbox", value: "true")] : nil
+        let u = try url(path: "bank-connections/auth-url", query: query)
+        let (data, response) = try await URLSession.shared.data(from: u)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(BankAuthUrlResponse.self, from: data).auth_url
     }
 
     func completeBankAuth(code: String, sandbox: Bool = false) async throws -> [BankConnectionResponse] {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("bank-connections/callback"),
-            resolvingAgainstBaseURL: false)!
         var items = [URLQueryItem(name: "code", value: code)]
         if sandbox { items.append(URLQueryItem(name: "sandbox", value: "true")) }
-        components.queryItems = items
-        var request = URLRequest(url: components.url!)
+        let u = try url(path: "bank-connections/callback", query: items)
+        var request = URLRequest(url: u)
         request.httpMethod = "POST"
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
@@ -982,11 +1000,8 @@ final class APIService {
     }
 
     func linkBankToAccount(connID: String, accountID: String) async throws -> BankConnectionResponse {
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("bank-connections/\(connID)/link"),
-            resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "account_id", value: accountID)]
-        var request = URLRequest(url: components.url!)
+        let u = try url(path: "bank-connections/\(connID)/link", query: [URLQueryItem(name: "account_id", value: accountID)])
+        var request = URLRequest(url: u)
         request.httpMethod = "PUT"
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
@@ -1015,23 +1030,19 @@ final class APIService {
     }
 
     func plaidAuthURL(userID: String = "default_user") async throws -> PlaidAuthURLResponse {
-        var components = URLComponents(url: baseURL.appendingPathComponent("bank-connections-plaid/auth-url"),
-                                       resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userID)]
-        let req = makeRequest(url: components.url!)
+        let u = try url(path: "bank-connections-plaid/auth-url", query: [URLQueryItem(name: "user_id", value: userID)])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(PlaidAuthURLResponse.self, from: data)
     }
 
     func plaidExchangeToken(publicToken: String, userID: String = "default_user") async throws -> PlaidExchangeResponse {
-        var components = URLComponents(url: baseURL.appendingPathComponent("bank-connections-plaid/exchange"),
-                                       resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        let u = try url(path: "bank-connections-plaid/exchange", query: [
             URLQueryItem(name: "public_token", value: publicToken),
             URLQueryItem(name: "user_id",      value: userID),
-        ]
-        let req = makeRequest(url: components.url!, method: "POST")
+        ])
+        let req = makeRequest(url: u, method: "POST")
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(PlaidExchangeResponse.self, from: data)
@@ -1065,12 +1076,11 @@ final class APIService {
     }
 
     func scanWalletAddress(address: String, chain: String) async throws -> WalletScanResult {
-        var components = URLComponents(url: baseURL.appendingPathComponent("wallet-scan"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        let u = try url(path: "wallet-scan", query: [
             URLQueryItem(name: "address", value: address),
             URLQueryItem(name: "chain",   value: chain),
-        ]
-        let req = makeRequest(url: components.url!)
+        ])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(WalletScanResult.self, from: data)
@@ -1185,9 +1195,8 @@ final class APIService {
     }
 
     func fetchMarketNews(symbols: [String]) async throws -> NewsResponse {
-        var comps = URLComponents(url: baseURL.appendingPathComponent("market/news"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "symbols", value: symbols.joined(separator: ","))]
-        let req = makeRequest(url: comps.url!)
+        let u = try url(path: "market/news", query: [URLQueryItem(name: "symbols", value: symbols.joined(separator: ","))])
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(NewsResponse.self, from: data)

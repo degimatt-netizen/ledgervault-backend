@@ -28,11 +28,17 @@ private func chainInfo(_ symbol: String) -> ChainInfo {
 // MARK: - Main View
 struct CryptoWalletsView: View {
     @State private var wallets: [APIService.CryptoWallet] = []
+    @State private var accounts: [APIService.Account] = []
     @State private var syncResults: [String: APIService.WalletSyncResponse] = [:]  // wallet_id → result
     @State private var loading = false
     @State private var syncing: Set<String> = []
     @State private var showAdd = false
     @State private var errorMsg: String?
+
+    private func accountName(for id: String?) -> String? {
+        guard let id else { return nil }
+        return accounts.first(where: { $0.id == id })?.name
+    }
 
     var body: some View {
         NavigationView {
@@ -103,6 +109,7 @@ struct CryptoWalletsView: View {
                 ForEach(wallets) { wallet in
                     WalletCard(
                         wallet: wallet,
+                        accountName: accountName(for: wallet.account_id),
                         syncResult: syncResults[wallet.id],
                         isSyncing: syncing.contains(wallet.id),
                         onSync: { await syncWallet(wallet) },
@@ -121,7 +128,10 @@ struct CryptoWalletsView: View {
         loading = true
         defer { loading = false }
         do {
-            wallets = try await APIService.shared.fetchWallets()
+            async let w = APIService.shared.fetchWallets()
+            async let a = APIService.shared.fetchAccounts()
+            wallets = try await w
+            accounts = (try? await a) ?? []
         } catch {
             errorMsg = error.localizedDescription
         }
@@ -152,6 +162,7 @@ struct CryptoWalletsView: View {
 // MARK: - Wallet Card
 private struct WalletCard: View {
     let wallet: APIService.CryptoWallet
+    let accountName: String?
     let syncResult: APIService.WalletSyncResponse?
     let isSyncing: Bool
     let onSync: () async -> Void
@@ -160,9 +171,10 @@ private struct WalletCard: View {
     @State private var showDeleteConfirm = false
     private let info: ChainInfo
 
-    init(wallet: APIService.CryptoWallet, syncResult: APIService.WalletSyncResponse?,
+    init(wallet: APIService.CryptoWallet, accountName: String?, syncResult: APIService.WalletSyncResponse?,
          isSyncing: Bool, onSync: @escaping () async -> Void, onDelete: @escaping () async -> Void) {
         self.wallet = wallet
+        self.accountName = accountName
         self.syncResult = syncResult
         self.isSyncing = isSyncing
         self.onSync = onSync
@@ -197,6 +209,15 @@ private struct WalletCard: View {
                     Text(shortAddress(wallet.address))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
+                    if let acct = accountName {
+                        HStack(spacing: 4) {
+                            Image(systemName: "link")
+                                .font(.system(size: 9))
+                            Text(acct)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(.teal)
+                    }
                 }
 
                 Spacer()
@@ -312,23 +333,23 @@ private struct WalletCard: View {
 // MARK: - Add Wallet Sheet
 struct AddWalletSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedChain = "BTC"
-    @State private var address = ""
-    @State private var label = ""
-    @State private var isAdding = false
+    @State private var selectedChain  = "BTC"
+    @State private var address        = ""
+    @State private var label          = ""
+    @State private var selectedAcctId = ""
+    @State private var accounts: [APIService.Account] = []
+    @State private var isAdding  = false
     @State private var errorMsg: String?
 
     var body: some View {
         NavigationView {
             Form {
-                Section("Chain") {
-                    Picker("Blockchain", selection: $selectedChain) {
+                Section("Blockchain") {
+                    Picker("Chain", selection: $selectedChain) {
                         ForEach(chains, id: \.symbol) { c in
                             HStack {
-                                Text(c.symbol)
-                                    .font(.system(.body, design: .monospaced))
-                                Text("· \(c.name)")
-                                    .foregroundStyle(.secondary)
+                                Text(c.symbol).font(.system(.body, design: .monospaced))
+                                Text("· \(c.name)").foregroundStyle(.secondary)
                             }
                             .tag(c.symbol)
                         }
@@ -350,23 +371,37 @@ struct AddWalletSheet: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if let err = errorMsg {
-                    Section {
-                        Text(err).foregroundStyle(.red).font(.caption)
+                Section {
+                    if accounts.isEmpty {
+                        Text("No accounts found. Create one first.")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                    } else {
+                        Picker("Link to Account", selection: $selectedAcctId) {
+                            Text("None (track only)").tag("")
+                            ForEach(accounts) { acct in
+                                Text(acct.name).tag(acct.id)
+                            }
+                        }
                     }
+                } header: {
+                    Text("Portfolio Account")
+                } footer: {
+                    Text("Syncing will update the linked account's holdings automatically.")
+                        .foregroundStyle(.secondary)
+                }
+
+                if let err = errorMsg {
+                    Section { Text(err).foregroundStyle(.red).font(.caption) }
                 }
             }
             .navigationTitle("Add Wallet")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        Task { await addWallet() }
-                    }
-                    .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty || isAdding)
+                    Button("Add") { Task { await addWallet() } }
+                        .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty || isAdding)
                 }
             }
             .overlay {
@@ -375,19 +410,26 @@ struct AddWalletSheet: View {
                     ProgressView()
                 }
             }
+            .task { await loadAccounts() }
         }
+    }
+
+    private func loadAccounts() async {
+        accounts = (try? await APIService.shared.fetchAccounts()) ?? []
     }
 
     private func addWallet() async {
         isAdding = true
         defer { isAdding = false }
-        let addr = address.trimmingCharacters(in: .whitespaces)
-        let lbl  = label.trimmingCharacters(in: .whitespaces)
+        let addr   = address.trimmingCharacters(in: .whitespaces)
+        let lbl    = label.trimmingCharacters(in: .whitespaces)
+        let acctId = selectedAcctId.isEmpty ? nil : selectedAcctId
         do {
             _ = try await APIService.shared.addWallet(
                 chain: selectedChain,
                 address: addr,
-                label: lbl.isEmpty ? nil : lbl
+                label: lbl.isEmpty ? nil : lbl,
+                accountId: acctId
             )
             dismiss()
         } catch {

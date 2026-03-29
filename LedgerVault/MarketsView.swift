@@ -5,43 +5,28 @@ import UserNotifications
 // MARK: - Logo image loader (primary → fallback → avatar)
 
 struct LogoImageView<Placeholder: View>: View {
-    let primary: URL?
-    let fallback: URL?
+    let urls: [URL]
     let placeholder: Placeholder
 
-    @State private var useFallback   = false
-    @State private var showFallback2 = false
+    @State private var urlIndex = 0
 
     var body: some View {
         Group {
-            if showFallback2 {
+            if urlIndex >= urls.count {
                 placeholder
-            } else if useFallback, let url = fallback {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
-                    case .failure(_):
-                        placeholder.onAppear { showFallback2 = true }
-                    default:
-                        placeholder
-                    }
-                }
-            } else if let url = primary {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
-                    case .failure(_):
-                        placeholder.onAppear { useFallback = true }
-                    default:
-                        placeholder
-                    }
-                }
             } else {
-                placeholder
+                AsyncImage(url: urls[urlIndex]) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable().scaledToFit()
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    case .failure:
+                        placeholder.onAppear { urlIndex += 1 }
+                    default:
+                        placeholder
+                    }
+                }
+                .id(urlIndex) // force view refresh when index changes
             }
         }
     }
@@ -52,27 +37,35 @@ struct LogoImageView<Placeholder: View>: View {
 struct SymbolLogo: View {
     let symbol: String
 
-    // Strip exchange suffixes to get the base ticker for logo lookup
+    // Strip exchange suffix to get the base ticker
     private var cleanSymbol: String {
-        symbol
-            .replacingOccurrences(of: "-USD", with: "")
-            .replacingOccurrences(of: ".L",   with: "")
-            .replacingOccurrences(of: ".AS",  with: "")
-            .replacingOccurrences(of: ".PA",  with: "")
-            .replacingOccurrences(of: ".DE",  with: "")
-            .replacingOccurrences(of: ".AE",  with: "")
-            .replacingOccurrences(of: ".MI",  with: "")
-            .replacingOccurrences(of: ".SW",  with: "")
-            .replacingOccurrences(of: ".HK",  with: "")
-            .replacingOccurrences(of: ".T",   with: "")
+        // Remove known exchange suffixes
+        let suffixes = ["-USD", ".L", ".AS", ".PA", ".DE", ".AE", ".MI", ".SW",
+                        ".HK", ".T", ".TO", ".AX", ".MX", ".SA", ".NE", ".VI",
+                        ".ST", ".CO", ".OL", ".HE", ".BR", ".LS", ".MC", ".IR",
+                        ".WA", ".PR", ".BU", ".AT", ".IS", ".SR", ".KW", ".QA",
+                        ".CA", ".XD", ".F", ".BE", ".MU", ".DU", ".HA", ".TI"]
+        var s = symbol
+        for suffix in suffixes {
+            if s.hasSuffix(suffix) { s = String(s.dropLast(suffix.count)); break }
+        }
+        return s
     }
 
-    // Try multiple logo sources in order
-    private var primaryLogoURL: URL? {
-        URL(string: "https://financialmodelingprep.com/image-stock/\(cleanSymbol).png")
-    }
-    private var fallbackLogoURL: URL? {
-        URL(string: "https://assets.parqet.com/logos/symbol/\(cleanSymbol)?format=jpg")
+    // Logo sources tried in order
+    private var logoURLs: [URL] {
+        let encoded = symbol.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? symbol
+        let cleanEncoded = cleanSymbol.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? cleanSymbol
+        return [
+            // 1. Parqet with full symbol (covers many international stocks like MC.PA, MBG.DE)
+            URL(string: "https://assets.parqet.com/logos/symbol/\(encoded)?format=jpg"),
+            // 2. Parqet with clean symbol (US tickers like AAPL, TSLA)
+            URL(string: "https://assets.parqet.com/logos/symbol/\(cleanEncoded)?format=jpg"),
+            // 3. FMP with clean symbol
+            URL(string: "https://financialmodelingprep.com/image-stock/\(cleanEncoded).png"),
+            // 4. Logo.dev using ticker as domain hint (works for many large companies)
+            URL(string: "https://img.logo.dev/ticker/\(cleanEncoded)?token=pk_public&size=64"),
+        ].compactMap { $0 }
     }
 
     private var avatarColor: Color {
@@ -81,13 +74,11 @@ struct SymbolLogo: View {
     }
 
     private var initials: String {
-        let clean = symbol.replacingOccurrences(of: "-USD", with: "")
-                          .replacingOccurrences(of: ".L", with: "").replacingOccurrences(of: ".AS", with: "")
-        return String(clean.prefix(2)).uppercased()
+        String(cleanSymbol.prefix(2)).uppercased()
     }
 
     var body: some View {
-        LogoImageView(primary: primaryLogoURL, fallback: fallbackLogoURL, placeholder: avatarFallback)
+        LogoImageView(urls: logoURLs, placeholder: avatarFallback)
             .frame(width: 40, height: 40)
     }
 
@@ -135,8 +126,12 @@ struct SparklineView: View {
                 SparklineShape(prices: prices)
                     .stroke(lineColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                     .shadow(color: lineColor.opacity(0.4), radius: 3)
+            } else if loaded {
+                Text("No chart")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.secondary.opacity(0.5))
             } else {
-                Capsule().fill(Color.secondary.opacity(0.15))
+                Capsule().fill(Color.secondary.opacity(0.1))
             }
         }
         .frame(width: 68, height: 30)
@@ -742,27 +737,89 @@ struct MarketNewsView: View {
 // MARK: - Main View
 struct MarketsView: View {
     @AppStorage("theme") private var theme = "dark"
+    @AppStorage("customForexSymbols") private var customForexJSON = "[]"
+    @AppStorage("hiddenForexSymbols") private var hiddenForexJSON = "[]"
     @State private var quotes:      [APIService.MarketQuote] = []
     @State private var forexPairs:  [APIService.ForexPair]   = []
+    @State private var customForexPairs: [APIService.ForexPair] = []
     @State private var isLoading    = false
     @State private var error:       String?
     @State private var showAdd      = false
-    @State private var isEditMode   = false
+    @State private var showAddForex = false
+    @State private var isEditMode      = false
+    @State private var isForexEditMode = false
     @State private var sortField    = MarketSortField.symbol
     @State private var sortAsc      = true
-    @State private var searchText   = ""
     @State private var selectedTab  = 0   // 0=Markets, 1=News
     @State private var lastUpdated: Date? = nil
+
+    private var customSymbols: [String] {
+        (try? JSONDecoder().decode([String].self, from: Data(customForexJSON.utf8))) ?? []
+    }
+
+    private var hiddenSymbols: Set<String> {
+        Set((try? JSONDecoder().decode([String].self, from: Data(hiddenForexJSON.utf8))) ?? [])
+    }
+
+    private var visibleForexPairs: [APIService.ForexPair] {
+        let hidden = hiddenSymbols
+        return forexPairs.filter { !hidden.contains($0.symbol) }
+    }
+
+    private func hideForexSymbol(_ sym: String) {
+        var hidden = Array(hiddenSymbols)
+        hidden.append(sym)
+        hiddenForexJSON = (try? String(data: JSONEncoder().encode(hidden), encoding: .utf8)) ?? "[]"
+    }
+
+    private func addCustomForexSymbol(_ sym: String) {
+        var syms = customSymbols
+        let upper = sym.uppercased()
+        guard !syms.contains(upper) else { return }
+        syms.append(upper)
+        customForexJSON = (try? String(data: JSONEncoder().encode(syms), encoding: .utf8)) ?? "[]"
+    }
+
+    private func removeCustomForexSymbol(_ sym: String) {
+        var syms = customSymbols
+        syms.removeAll { $0 == sym.uppercased() }
+        customForexJSON = (try? String(data: JSONEncoder().encode(syms), encoding: .utf8)) ?? "[]"
+        customForexPairs.removeAll { $0.symbol == sym.uppercased() }
+    }
+
+    private func loadCustomForexPairs() async {
+        let syms = customSymbols
+        guard !syms.isEmpty else { customForexPairs = []; return }
+        var results: [APIService.ForexPair] = []
+        await withTaskGroup(of: APIService.ForexPair?.self) { group in
+            for sym in syms {
+                group.addTask {
+                    guard let q = try? await APIService.shared.fetchStockQuote(symbol: "\(sym)=X") else { return nil }
+                    let base = String(sym.prefix(3))
+                    let quote = String(sym.suffix(3))
+                    let change = q.price * (q.change_pct / 100.0)
+                    return APIService.ForexPair(
+                        symbol: sym,
+                        name: "\(base)/\(quote)",
+                        last: q.price,
+                        change: change,
+                        change_pct: q.change_pct,
+                        currency: q.currency,
+                        market_state: q.market_state,
+                        display_name: "\(base)/\(quote)"
+                    )
+                }
+            }
+            for await r in group { if let r { results.append(r) } }
+        }
+        customForexPairs = results
+    }
 
     // Auto-refresh every 5 s (backend cache prevents hammering Yahoo Finance)
     private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     private var sorted: [APIService.MarketQuote] {
-        let base = searchText.isEmpty ? quotes : quotes.filter {
-            $0.symbol.localizedCaseInsensitiveContains(searchText) ||
-            $0.name.localizedCaseInsensitiveContains(searchText)
-        }
-        return base.sorted {
+        quotes.sorted {
             let r: Bool
             switch sortField {
             case .symbol:    r = $0.symbol < $1.symbol
@@ -799,33 +856,41 @@ struct MarketsView: View {
                     }
                 }
             }
-            .searchable(
-                text: $searchText,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search symbol or name"
-            )
             .navigationTitle("Markets")
             .navigationBarTitleDisplayMode(.large)
             .toolbarColorScheme(theme == "dark" ? .dark : nil, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showAdd = true } label: {
-                        Image(systemName: "plus.circle.fill").font(.title3).foregroundStyle(.green)
+                    HStack(spacing: 16) {
+                        Button { showAdd = true } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(Color.green)
+                        }
+                        .accessibilityLabel("Add to Watchlist")
+                        Button { Task { await loadData() } } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .foregroundStyle(isLoading ? Color.secondary.opacity(0.4) : Color.secondary)
+                        }
+                        .disabled(isLoading)
+                        .accessibilityLabel("Refresh")
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await loadData() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .foregroundStyle(isLoading ? Color.secondary.opacity(0.4) : Color.secondary)
-                    }.disabled(isLoading)
                 }
             }
             .sheet(isPresented: $showAdd) {
-                AddWatchlistSheet { sym in await addToWatchlist(sym) }
+                AddToWatchlistSheet { sym in
+                    Task { await addToWatchlist(sym) }
+                }
             }
             .task { await loadData() }
             .onReceive(timer) { _ in
                 Task { await silentRefresh() }
+            }
+            .sheet(isPresented: $showAddForex) {
+                AddForexPairSheet { symbol in
+                    addCustomForexSymbol(symbol)
+                    Task { await loadCustomForexPairs() }
+                }
             }
         }
         .preferredColorScheme(theme == "light" ? .light : theme == "dark" ? .dark : nil)
@@ -834,7 +899,7 @@ struct MarketsView: View {
     // MARK: Markets tab content
     @ViewBuilder
     private var marketsContent: some View {
-        if isLoading && quotes.isEmpty && forexPairs.isEmpty {
+        if isLoading && quotes.isEmpty && forexPairs.isEmpty && customForexPairs.isEmpty {
             Spacer(); ProgressView().tint(.white); Spacer()
         } else if let err = error {
             Spacer()
@@ -860,10 +925,10 @@ struct MarketsView: View {
                                 MarketSectionHeader(title: "Watchlist", count: watchOnly.count)
                                 Spacer()
                                 Button(isEditMode ? "Done" : "Edit") {
-                                    withAnimation { isEditMode.toggle() }
+                                    isEditMode.toggle()
                                 }
                                 .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(isEditMode ? Color.red : Color.accentColor)
+                                .foregroundStyle(Color.accentColor)
                                 .padding(.trailing, 4)
                             }
                             ForEach(watchOnly) { q in
@@ -872,13 +937,69 @@ struct MarketsView: View {
                                 }
                             }
                         }
-                        if !forexPairs.isEmpty {
-                            MarketSectionHeader(title: "Forex", count: forexPairs.count)
-                            ForEach(forexPairs) { pair in
+                        let visible = visibleForexPairs
+                        let totalForexCount = visible.count + customForexPairs.count
+                        HStack {
+                            Text("FOREX")
+                                .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary).tracking(1)
+                            if totalForexCount > 0 {
+                                Text("\(totalForexCount)")
+                                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(Color(UIColor.tertiarySystemFill)).cornerRadius(5)
+                            }
+                            Spacer()
+                            if totalForexCount > 0 {
+                                Button(isForexEditMode ? "Done" : "Edit") {
+                                    isForexEditMode.toggle()
+                                }
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.accentColor)
+                            }
+                            Button { showAddForex = true } label: {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.system(size: 16)).foregroundStyle(.green)
+                            }
+                            .padding(.leading, 12)
+                        }
+                        .padding(.horizontal, 4).padding(.top, 18).padding(.bottom, 6)
+                        ForEach(visible) { pair in
+                            HStack(spacing: 0) {
+                                Button {
+                                    hapticMedium()
+                                    hideForexSymbol(pair.symbol)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .font(.system(size: 22)).foregroundStyle(.red)
+                                }
+                                .opacity(isForexEditMode ? 1 : 0)
+                                .frame(width: isForexEditMode ? 30 : 0)
+                                .clipped()
+                                .allowsHitTesting(isForexEditMode)
+                                .padding(.trailing, isForexEditMode ? 8 : 0)
+                                .animation(.easeInOut(duration: 0.2), value: isForexEditMode)
                                 ForexRowView(pair: pair)
                             }
                         }
-                        if sorted.isEmpty && forexPairs.isEmpty { emptyState }
+                        ForEach(customForexPairs) { pair in
+                            HStack(spacing: 0) {
+                                Button {
+                                    hapticMedium()
+                                    removeCustomForexSymbol(pair.symbol)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .font(.system(size: 22)).foregroundStyle(.red)
+                                }
+                                .opacity(isForexEditMode ? 1 : 0)
+                                .frame(width: isForexEditMode ? 30 : 0)
+                                .clipped()
+                                .allowsHitTesting(isForexEditMode)
+                                .padding(.trailing, isForexEditMode ? 8 : 0)
+                                .animation(.easeInOut(duration: 0.2), value: isForexEditMode)
+                                ForexRowView(pair: pair)
+                            }
+                        }
+                        if sorted.isEmpty && visible.isEmpty && customForexPairs.isEmpty { emptyState }
                     }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 24)
@@ -939,14 +1060,8 @@ struct MarketsView: View {
         VStack(spacing: 16) {
             Image(systemName: "chart.line.uptrend.xyaxis").font(.system(size: 52)).foregroundStyle(.secondary)
             Text("No instruments yet").font(.title3.weight(.semibold)).foregroundStyle(.primary)
-            Text("Connect a broker or exchange to see your holdings,\nor tap + to add symbols to your watchlist.")
+            Text("Connect a broker or exchange to see your holdings,\nor search above to add symbols to your watchlist.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button { showAdd = true } label: {
-                Label("Add Symbol", systemImage: "plus")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 22).padding(.vertical, 12)
-                    .background(Color.green.opacity(0.18)).foregroundStyle(.green).cornerRadius(22)
-            }
         }
         .padding(.top, 60).padding(.horizontal, 32)
     }
@@ -961,9 +1076,14 @@ struct MarketsView: View {
             quotes     = qResp.quotes
             forexPairs = fResp.pairs
             lastUpdated = Date()
+        } catch is CancellationError {
+            // Swallow — happens when a new refresh races with an in-flight load
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Same for underlying URL cancellations
         } catch {
             self.error = error.localizedDescription
         }
+        await loadCustomForexPairs()
         isLoading = false
     }
 
@@ -977,6 +1097,7 @@ struct MarketsView: View {
             forexPairs = fResp.pairs
             lastUpdated = Date()
         }
+        await loadCustomForexPairs()
     }
 
     private func addToWatchlist(_ sym: String) async {
@@ -990,5 +1111,220 @@ struct MarketsView: View {
         try? await APIService.shared.removeFromWatchlist(symbol: sym)
         await loadData()
         if watchOnly.isEmpty { withAnimation { isEditMode = false } }
+    }
+}
+
+// MARK: - Add Forex Pair Sheet
+private struct AddForexPairSheet: View {
+    let onAdd: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var input = ""
+    @State private var error: String?
+    @State private var isLoading = false
+    @FocusState private var focused: Bool
+
+    // Common suggestions
+    private let suggestions = ["GBPJPY", "AUDUSD", "USDCHF", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "GBPUSD", "AUDNZD"]
+
+    private var sanitized: String { input.uppercased().filter { $0.isLetter }.prefix(6).description }
+    private var isValid: Bool { sanitized.count == 6 }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("e.g. GBPJPY, AUDUSD", text: $input)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .focused($focused)
+                        .onChange(of: input) { _, v in
+                            input = v.uppercased().filter { $0.isLetter }
+                            if input.count > 6 { input = String(input.prefix(6)) }
+                            error = nil
+                        }
+                } header: {
+                    Text("Currency Pair")
+                } footer: {
+                    Text("Enter a 6-letter forex code: first 3 = base currency, last 3 = quote currency.")
+                }
+
+                if let err = error {
+                    Section {
+                        Label(err, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .font(.subheadline)
+                    }
+                }
+
+                Section("Suggestions") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(suggestions, id: \.self) { s in
+                                Button(s) { input = s }
+                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(Color(UIColor.tertiarySystemFill))
+                                    .cornerRadius(8)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+            .navigationTitle("Add Forex Pair")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isLoading {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Button("Add") { Task { await validate() } }
+                            .disabled(!isValid)
+                            .bold()
+                    }
+                }
+            }
+            .onAppear { focused = true }
+        }
+    }
+
+    private func validate() async {
+        guard isValid else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            _ = try await APIService.shared.fetchStockQuote(symbol: "\(sanitized)=X")
+            onAdd(sanitized)
+            dismiss()
+        } catch {
+            let base = String(sanitized.prefix(3))
+            let quote = String(sanitized.suffix(3))
+            self.error = "Pair '\(base)/\(quote)' not found. Check the code and try again."
+        }
+    }
+}
+
+// MARK: - Add to Watchlist Sheet
+private struct AddToWatchlistSheet: View {
+    let onAdd: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var results: [APIService.StockSearchResult] = []
+    @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>?
+    @State private var addedSymbols: Set<String> = []
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isSearching {
+                    VStack(spacing: 16) {
+                        Spacer()
+                        ProgressView()
+                        Text("Searching…").font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                } else if results.isEmpty && searchText.count >= 2 {
+                    VStack(spacing: 12) {
+                        Spacer()
+                        Image(systemName: "magnifyingglass").font(.largeTitle).foregroundStyle(.secondary)
+                        Text("No results for \"\(searchText)\"")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                } else if results.isEmpty {
+                    VStack(spacing: 12) {
+                        Spacer()
+                        Image(systemName: "magnifyingglass.circle.fill")
+                            .font(.system(size: 52)).foregroundStyle(.secondary.opacity(0.4))
+                        Text("Search for a stock or crypto")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Text("Type at least 2 characters to search")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                } else {
+                    List(results) { result in
+                        let alreadyAdded = addedSymbols.contains(result.symbol)
+                        Button {
+                            guard !alreadyAdded else { return }
+                            onAdd(result.symbol)
+                            addedSymbols.insert(result.symbol)
+                        } label: {
+                            HStack(spacing: 12) {
+                                SymbolLogo(symbol: result.symbol).frame(width: 36, height: 36)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(result.symbol)
+                                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.primary)
+                                    Text(result.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    if result.type != "crypto",
+                                       let exch = result.exchange, !exch.isEmpty {
+                                        let info = exchangeInfo(exch)
+                                        Text("\(info.flag) \(info.name)")
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(.secondary)
+                                    } else if result.type == "crypto" {
+                                        Text("🪙 Crypto")
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if alreadyAdded {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.title3).foregroundStyle(.green)
+                                } else {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.title3).foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(alreadyAdded)
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search stocks & crypto")
+            .navigationTitle("Add to Watchlist")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+            .onChange(of: searchText) { _, val in
+                let q = val.trimmingCharacters(in: .whitespaces)
+                searchTask?.cancel()
+                if q.count < 2 { results = []; isSearching = false; return }
+                searchTask = Task {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    guard !Task.isCancelled else { return }
+                    isSearching = true
+                    async let stockTask = APIService.shared.searchStocks(query: q)
+                    async let cryptoTask = APIService.shared.searchCrypto(query: q)
+                    let stocks = (try? await stockTask) ?? []
+                    let cryptos = (try? await cryptoTask) ?? []
+                    let stockSymbols = Set(stocks.map { $0.symbol.uppercased() })
+                    let cryptoAsStocks = cryptos
+                        .filter { !stockSymbols.contains($0.symbol.uppercased()) } // deduplicate
+                        .map { c in
+                            APIService.StockSearchResult(
+                                symbol: c.symbol, name: c.name, exchange: nil,
+                                exchange_code: nil, type: "crypto",
+                                asset_class: c.asset_class, quote_currency: c.quote_currency,
+                                price_usd: c.price_usd, change_pct: nil, market_state: nil
+                            )
+                        }
+                    results = stocks + cryptoAsStocks
+                    isSearching = false
+                }
+            }
+        }
     }
 }

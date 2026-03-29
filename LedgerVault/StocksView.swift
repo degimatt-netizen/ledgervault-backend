@@ -134,18 +134,24 @@ struct BrokerDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         Button { showEdit = true } label: { Image(systemName: "pencil") }
+                            .accessibilityLabel("Edit account")
                         Button(role: .destructive) { showDeleteAlert = true } label: {
                             Image(systemName: "trash").foregroundColor(.red)
                         }
+                        .accessibilityLabel("Delete account")
                     }
                 }
             }
             .alert("Delete \(liveAccount.name)?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     Task {
-                        try? await APIService.shared.deleteAccount(id: account.id)
-                        onDeleted()
-                        dismiss()
+                        do {
+                            try await APIService.shared.deleteAccount(id: account.id)
+                            onDeleted()
+                            dismiss()
+                        } catch {
+                            hapticError()
+                        }
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -237,9 +243,29 @@ struct StocksView: View {
     @State private var showAddStock = false
     @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
+    @State private var orderedIds: [String] = []
+
+    private let orderKey = "stocks_account_order"
 
     var brokers: [APIService.Account] {
-        accounts.filter { $0.account_type == "broker" }
+        let filtered = accounts.filter { $0.account_type == "broker" }
+        if orderedIds.isEmpty { return filtered }
+        let ordered = orderedIds.compactMap { id in filtered.first { $0.id == id } }
+        let new     = filtered.filter { !orderedIds.contains($0.id) }
+        return ordered + new
+    }
+
+    private func loadOrder() {
+        orderedIds = (UserDefaults.standard.array(forKey: orderKey) as? [String]) ?? []
+    }
+    private func saveOrder(_ ids: [String]) {
+        orderedIds = ids
+        UserDefaults.standard.set(ids, forKey: orderKey)
+    }
+    private func moveAccounts(from source: IndexSet, to destination: Int) {
+        var ids = brokers.map { $0.id }
+        ids.move(fromOffsets: source, toOffset: destination)
+        saveOrder(ids)
     }
 
     private func accountValue(for broker: APIService.Account) -> Double {
@@ -307,8 +333,15 @@ struct StocksView: View {
                                             .font(.system(size: 22))
                                     }
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(broker.name)
-                                            .font(.headline).foregroundColor(.primary)
+                                        HStack(spacing: 6) {
+                                            Text(broker.name)
+                                                .font(.headline).foregroundColor(.primary)
+                                            if broker.exclude_from_total ?? false {
+                                                Image(systemName: "eye.slash.fill")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.orange)
+                                            }
+                                        }
                                         Text("Broker · \(broker.base_currency)")
                                             .font(.caption).foregroundColor(.secondary)
                                         let count = holdingCount(for: broker)
@@ -337,7 +370,9 @@ struct StocksView: View {
                                 } label: { Label("Delete", systemImage: "trash") }
                             }
                         }
+                        .onMove(perform: moveAccounts)
                     }
+                    .environment(\.editMode, .constant(.active))
                 }
             }
             .navigationTitle("Stocks")
@@ -351,7 +386,7 @@ struct StocksView: View {
                     }
                 }
             }
-            .task { await load() }
+            .task { loadOrder(); await load() }
             .sheet(isPresented: $showAdd) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "broker")
             }

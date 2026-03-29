@@ -49,6 +49,18 @@ struct BankDetailView: View {
                                     Text(fmt(balance))
                                         .font(.system(size: 30, weight: .bold, design: .rounded))
                                         .foregroundColor(balance >= 0 ? .primary : .red)
+                                    if liveAccount.exclude_from_total ?? false {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "eye.slash.fill")
+                                                .font(.caption2)
+                                            Text("Excluded from Net Worth")
+                                                .font(.caption2.weight(.medium))
+                                        }
+                                        .foregroundColor(.orange)
+                                        .padding(.horizontal, 10).padding(.vertical, 4)
+                                        .background(Color.orange.opacity(0.1))
+                                        .clipShape(Capsule())
+                                    }
                                 }
                                 HStack(spacing: 0) {
                                     Spacer()
@@ -110,15 +122,25 @@ struct BankDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         Button { showEdit = true } label: { Image(systemName: "pencil") }
+                            .accessibilityLabel("Edit account")
                         Button(role: .destructive) { showDeleteAlert = true } label: {
                             Image(systemName: "trash").foregroundColor(.red)
                         }
+                        .accessibilityLabel("Delete account")
                     }
                 }
             }
             .alert("Delete \(liveAccount.name)?", isPresented: $showDeleteAlert) {
                 Button("Delete", role: .destructive) {
-                    Task { try? await APIService.shared.deleteAccount(id: account.id); onDeleted(); dismiss() }
+                    Task {
+                        do {
+                            try await APIService.shared.deleteAccount(id: account.id)
+                            onDeleted()
+                            dismiss()
+                        } catch {
+                            hapticError()
+                        }
+                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { Text("This will permanently delete this account and all its transactions.") }
@@ -244,9 +266,29 @@ struct BanksView: View {
     @State private var showAddAccount = false
     @State private var selectedAccount: APIService.Account?
     @State private var errorMessage: String?
+    @State private var orderedBankIds: [String] = []   // custom drag-sort order
+
+    private let orderKey = "banks_account_order"
 
     var banks: [APIService.Account] {
-        accounts.filter { $0.account_type == "bank" }
+        let filtered = accounts.filter { $0.account_type == "bank" }
+        if orderedBankIds.isEmpty { return filtered }
+        let ordered = orderedBankIds.compactMap { id in filtered.first { $0.id == id } }
+        let new     = filtered.filter { !orderedBankIds.contains($0.id) }
+        return ordered + new
+    }
+
+    private func loadOrder() {
+        orderedBankIds = (UserDefaults.standard.array(forKey: orderKey) as? [String]) ?? []
+    }
+    private func saveOrder(_ ids: [String]) {
+        orderedBankIds = ids
+        UserDefaults.standard.set(ids, forKey: orderKey)
+    }
+    private func moveAccounts(from source: IndexSet, to destination: Int) {
+        var ids = banks.map { $0.id }
+        ids.move(fromOffsets: source, toOffset: destination)
+        saveOrder(ids)
     }
 
     // Net balance always in the account's own native currency
@@ -299,8 +341,15 @@ struct BanksView: View {
                                             .font(.system(size: 22))
                                     }
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(account.name)
-                                            .font(.headline).foregroundColor(.primary)
+                                        HStack(spacing: 6) {
+                                            Text(account.name)
+                                                .font(.headline).foregroundColor(.primary)
+                                            if account.exclude_from_total ?? false {
+                                                Image(systemName: "eye.slash.fill")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.orange)
+                                            }
+                                        }
                                         Text("Bank · \(account.base_currency)")
                                             .font(.caption).foregroundColor(.secondary)
                                         let count = txCount(for: account)
@@ -328,7 +377,9 @@ struct BanksView: View {
                                 } label: { Label("Delete", systemImage: "trash") }
                             }
                         }
+                        .onMove(perform: moveAccounts)
                     }
+                    .environment(\.editMode, .constant(.active))
                 }
             }
             .navigationTitle("Banks")
@@ -339,7 +390,7 @@ struct BanksView: View {
                     }
                 }
             }
-            .task { await load() }
+            .task { loadOrder(); await load() }
             .refreshable { await load() }
             .sheet(isPresented: $showAddAccount) {
                 AddAccountView(onSaved: { Task { await load() } }, defaultType: "bank")
