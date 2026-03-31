@@ -8,6 +8,7 @@ struct AddAccountView: View {
     @State private var name              = ""
     @State private var baseCurrency: String
     @State private var excludeFromTotal  = false
+    @State private var isOffsetAccount   = false
     @State private var isSaving          = false
     @State private var errorMessage: String?
 
@@ -70,10 +71,10 @@ struct AddAccountView: View {
                             .padding(.horizontal, 20)
 
                         HStack(spacing: 12) {
-                            Image(systemName: typeConfig.icon)
-                                .foregroundColor(typeConfig.color)
+                            Image(systemName: isOffsetAccount ? "minus.circle.fill" : typeConfig.icon)
+                                .foregroundColor(isOffsetAccount ? .red : typeConfig.color)
                                 .frame(width: 20)
-                            TextField(typeConfig.placeholder, text: $name)
+                            TextField(isOffsetAccount ? "e.g. Rent Budget, Tax Reserve" : typeConfig.placeholder, text: $name)
                                 .font(.body)
                                 .autocorrectionDisabled()
                             if !name.isEmpty {
@@ -126,6 +127,57 @@ struct AddAccountView: View {
                             }
                             .padding(.horizontal, 20)
                         }
+                    }
+
+                    // ── Offset / liability account toggle ─────────────────────
+                    if defaultType == "bank" || defaultType == "cash" {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 14) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.red.opacity(0.10))
+                                        .frame(width: 40, height: 40)
+                                    Image(systemName: "minus.circle.fill")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.red)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Offset / Liability Account")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("Holds a negative balance to cancel reserved money from your net worth")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: $isOffsetAccount)
+                                    .labelsHidden()
+                                    .tint(.red)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .background(Color(.systemBackground))
+                            .cornerRadius(14)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(isOffsetAccount ? Color.red.opacity(0.4) : Color(.systemGray5), lineWidth: 1)
+                            )
+
+                            if isOffsetAccount {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "lightbulb.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.yellow)
+                                    Text("Example: Create a \"Rent Budget\" account. Transfer €2,700 from Revolut → Rent Budget to reserve it. Net worth shows €0 impact. When you spend rent money, transfer back to reduce the offset.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(Color.yellow.opacity(0.07))
+                                .cornerRadius(10)
+                            }
+                        }
+                        .padding(.horizontal, 20)
                     }
 
                     // ── Exclude from total toggle ────────────────────────────

@@ -32,8 +32,10 @@ func ccySymbol(_ code: String) -> String {
 
 /// Formats a monetary value with its currency symbol.
 /// e.g. fmtCurrency(1234.5, currency: "USD")  →  "$1,234.50"
+/// e.g. fmtCurrency(-2700,  currency: "EUR")  →  "-€2,700.00"  (minus before symbol)
 func fmtCurrency(_ v: Double, currency: String) -> String {
-    ccySymbol(currency) + v.formatted(.number.precision(.fractionLength(2)))
+    let absStr = abs(v).formatted(.number.precision(.fractionLength(2)))
+    return v < 0 ? "-\(ccySymbol(currency))\(absStr)" : "\(ccySymbol(currency))\(absStr)"
 }
 
 /// Formats a USD market price with auto-scaling precision:

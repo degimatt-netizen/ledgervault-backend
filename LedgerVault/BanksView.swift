@@ -303,12 +303,7 @@ struct BanksView: View {
     }
 
     private func fmtBalance(_ v: Double, currency: String) -> String {
-        switch currency.uppercased() {
-        case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
-        case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
-        case "EUR": return "€\(v.formatted(.number.precision(.fractionLength(2))))"
-        default:    return "\(currency) \(v.formatted(.number.precision(.fractionLength(2))))"
-        }
+        fmtCurrency(v, currency: currency)
     }
 
     var body: some View {
@@ -344,7 +339,15 @@ struct BanksView: View {
                                         HStack(spacing: 6) {
                                             Text(account.name)
                                                 .font(.headline).foregroundColor(.primary)
-                                            if account.exclude_from_total ?? false {
+                                            let bal = accountBalance(for: account)
+                                            if bal < 0 {
+                                                Text("OFFSET")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(.red)
+                                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                                    .background(Color.red.opacity(0.12))
+                                                    .clipShape(Capsule())
+                                            } else if account.exclude_from_total ?? false {
                                                 Image(systemName: "eye.slash.fill")
                                                     .font(.caption2)
                                                     .foregroundColor(.orange)

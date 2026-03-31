@@ -43,11 +43,7 @@ struct StablecoinsView: View {
     }
 
     private func fmtBalance(_ v: Double, currency: String) -> String {
-        switch currency.uppercased() {
-        case "USD": return "$\(v.formatted(.number.precision(.fractionLength(2))))"
-        case "GBP": return "£\(v.formatted(.number.precision(.fractionLength(2))))"
-        default:    return "\(currency) \(v.formatted(.number.precision(.fractionLength(2))))"
-        }
+        fmtCurrency(v, currency: currency)
     }
 
     var body: some View {
@@ -80,8 +76,19 @@ struct StablecoinsView: View {
                                             .font(.system(size: 22))
                                     }
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(wallet.name)
-                                            .font(.headline).foregroundColor(.primary)
+                                        HStack(spacing: 6) {
+                                            Text(wallet.name)
+                                                .font(.headline).foregroundColor(.primary)
+                                            let bal = accountBalance(for: wallet)
+                                            if bal < 0 {
+                                                Text("OFFSET")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(.red)
+                                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                                    .background(Color.red.opacity(0.12))
+                                                    .clipShape(Capsule())
+                                            }
+                                        }
                                         Text("Stablecoin · \(wallet.base_currency)")
                                             .font(.caption).foregroundColor(.secondary)
                                         let count = txCount(for: wallet)
