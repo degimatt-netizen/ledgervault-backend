@@ -336,3 +336,32 @@ class RecurringTransactionOut(BaseModel):
 
 class RecurringTransactionList(BaseModel):
     items: List[RecurringTransactionOut]
+
+
+# -------------------------
+# Account Profiles
+# -------------------------
+
+class AccountProfileCreate(BaseModel):
+    name: str
+    emoji: str = "👤"
+    account_ids: List[str] = []
+
+
+class AccountProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    emoji: Optional[str] = None
+    account_ids: Optional[List[str]] = None
+    sort_order: Optional[int] = None
+
+
+class AccountProfileOut(BaseModel):
+    id: str
+    name: str
+    emoji: str
+    account_ids: List[str]
+    sort_order: Optional[int] = None
+
+
+class AccountProfileList(BaseModel):
+    items: List[AccountProfileOut]

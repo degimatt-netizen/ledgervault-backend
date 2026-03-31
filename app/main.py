@@ -31,6 +31,7 @@ from app.schemas import (
     ForgotPasswordRequest, ResetPasswordRequest, SocialAuthRequest, AuthResponse,
     UpdateProfileRequest,
     TotpSetupResponse, TotpVerifyRequest, TotpStatusResponse,
+    AccountProfileCreate, AccountProfileUpdate, AccountProfileOut, AccountProfileList,
 )
 
 app = FastAPI(title="LedgerVault API", version="4.3.0")
@@ -124,6 +125,17 @@ for _stmt in [
     "ALTER TABLE bank_connections ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     # user_id on recurring_transactions — isolates each user's recurring rules
     "ALTER TABLE recurring_transactions ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+    # Account profiles — named groups of accounts for filtered portfolio views
+    """CREATE TABLE IF NOT EXISTS account_profiles (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        name VARCHAR NOT NULL,
+        emoji VARCHAR,
+        account_ids TEXT NOT NULL DEFAULT '[]',
+        sort_order VARCHAR,
+        created_at VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_account_profiles_user_id ON account_profiles (user_id)",
 ]:
     try:
         with engine.connect() as _conn:
@@ -2518,9 +2530,23 @@ def get_crypto_quote(symbol: str):
         raise HTTPException(status_code=404, detail=f"Price not found for {sym}")
     return {"symbol": sym, "price_usd": price}
 
+def _profile_account_ids(profile_id: Optional[str], user_id: Optional[str], db: Session) -> Optional[set]:
+    """Return the set of account IDs for a profile, or None (= all accounts)."""
+    if not profile_id or not user_id:
+        return None
+    prof = db.query(models.AccountProfile).filter_by(id=profile_id, user_id=user_id).first()
+    if not prof:
+        return None
+    try:
+        ids = json.loads(prof.account_ids or "[]")
+        return set(ids) if ids else None
+    except Exception:
+        return None
+
 # ── Valuation ─────────────────────────────────
 @app.get("/valuation")
-def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
+def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None),
+              db: Session = Depends(get_db),
               user_id: Optional[str] = Depends(get_user_id)):
     try: fx = _fetch_live_fx()
     except: fx = FALLBACK_FX
@@ -2531,7 +2557,10 @@ def valuation(base_currency: str = "EUR", db: Session = Depends(get_db),
         acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
-    accounts  = {a.id: a for a in acct_q.all()}
+    all_accounts = {a.id: a for a in acct_q.all()}
+    # Apply profile filter if requested
+    profile_ids = _profile_account_ids(profile_id, user_id, db)
+    accounts = {k: v for k, v in all_accounts.items() if profile_ids is None or k in profile_ids}
     holdings  = db.query(models.Holding).filter(
         models.Holding.account_id.in_(accounts.keys())).all()
     assets    = {a.id: a for a in db.query(models.Asset).all()}
@@ -2627,9 +2656,11 @@ _hist_cache: dict = {"ts": 0, "key": "", "data": None}
 HIST_CACHE_TTL = 3600  # 1 hour
 
 @app.get("/portfolio/history")
-def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = Depends(get_db),
+def portfolio_history(days: int = 30, base_currency: str = "EUR",
+                      profile_id: Optional[str] = Query(None),
+                      db: Session = Depends(get_db),
                       user_id: Optional[str] = Depends(get_user_id)):
-    cache_key = f"{days}:{base_currency.upper()}:{user_id or ''}"
+    cache_key = f"{days}:{base_currency.upper()}:{user_id or ''}:{profile_id or ''}"
     if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < HIST_CACHE_TTL:
         return _hist_cache["data"]
 
@@ -2642,7 +2673,9 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
         acct_q = acct_q.filter(models.Account.user_id == user_id)
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
-    user_account_ids = {a.id for a in acct_q.all()}
+    all_ids = {a.id for a in acct_q.all()}
+    profile_filter = _profile_account_ids(profile_id, user_id, db)
+    user_account_ids = all_ids if profile_filter is None else all_ids & profile_filter
 
     holdings = db.query(models.Holding).filter(
         _sqlfunc.abs(models.Holding.quantity) > 0.000001,   # include negative (offset/liability accounts)
@@ -2981,6 +3014,60 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
         ))
 
     db.commit(); db.refresh(event); return event
+
+# ── Account Profiles ───────────────────────────
+
+def _profile_out(p: models.AccountProfile) -> AccountProfileOut:
+    try:
+        ids = json.loads(p.account_ids or "[]")
+    except Exception:
+        ids = []
+    return AccountProfileOut(
+        id=p.id, name=p.name,
+        emoji=p.emoji or "👤",
+        account_ids=ids,
+        sort_order=int(p.sort_order) if p.sort_order else 0,
+    )
+
+@app.get("/profiles", response_model=AccountProfileList)
+def list_profiles(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    profiles = db.query(models.AccountProfile).filter_by(user_id=user_id).all()
+    return {"items": [_profile_out(p) for p in profiles]}
+
+@app.post("/profiles", response_model=AccountProfileOut)
+def create_profile(payload: AccountProfileCreate, user_id: str = Depends(require_user_id),
+                   db: Session = Depends(get_db)):
+    prof = models.AccountProfile(
+        id=str(uuid4()), user_id=user_id,
+        name=payload.name.strip(), emoji=payload.emoji,
+        account_ids=json.dumps(payload.account_ids),
+        sort_order="0",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(prof); db.commit(); db.refresh(prof)
+    return _profile_out(prof)
+
+@app.put("/profiles/{profile_id}", response_model=AccountProfileOut)
+def update_profile(profile_id: str, payload: AccountProfileUpdate,
+                   user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+    prof = db.query(models.AccountProfile).filter_by(id=profile_id, user_id=user_id).first()
+    if not prof:
+        raise HTTPException(404, "Profile not found")
+    if payload.name is not None:        prof.name        = payload.name.strip()
+    if payload.emoji is not None:       prof.emoji       = payload.emoji
+    if payload.account_ids is not None: prof.account_ids = json.dumps(payload.account_ids)
+    if payload.sort_order is not None:  prof.sort_order  = str(payload.sort_order)
+    db.commit(); db.refresh(prof)
+    return _profile_out(prof)
+
+@app.delete("/profiles/{profile_id}")
+def delete_profile(profile_id: str, user_id: str = Depends(require_user_id),
+                   db: Session = Depends(get_db)):
+    prof = db.query(models.AccountProfile).filter_by(id=profile_id, user_id=user_id).first()
+    if not prof:
+        raise HTTPException(404, "Profile not found")
+    db.delete(prof); db.commit()
+    return {"status": "ok"}
 
 # ── Exchange Connections ───────────────────────
 @app.get("/exchange-connections", response_model=ExchangeConnectionList)
@@ -4995,13 +5082,16 @@ def market_sparkline(symbol: str, user_id: str = Depends(require_user_id)):
 
 
 @app.get("/market/data")
-def market_data(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
+def market_data(profile_id: Optional[str] = Query(None),
+                user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
     """
     Returns live quotes for all user's held symbols + watchlist,
     merged with their position quantity and avg cost.
     """
     # 1. Holdings
-    accounts = db.query(models.Account).filter_by(user_id=user_id).all()
+    all_accounts = db.query(models.Account).filter_by(user_id=user_id).all()
+    profile_filter = _profile_account_ids(profile_id, user_id, db)
+    accounts = all_accounts if profile_filter is None else [a for a in all_accounts if a.id in profile_filter]
     account_ids = [a.id for a in accounts]
     holdings = (
         db.query(models.Holding, models.Asset)

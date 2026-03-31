@@ -195,6 +195,19 @@ class RecurringTransaction(Base):
     enabled = Column(Boolean, nullable=False, default=True)
 
 
+class AccountProfile(Base):
+    """Named group of accounts (e.g. "Dad", "Son") for filtered portfolio views."""
+    __tablename__ = "account_profiles"
+
+    id          = Column(String, primary_key=True, index=True)
+    user_id     = Column(String, nullable=False, index=True)
+    name        = Column(String, nullable=False)         # "Dad", "Son", "Trading"
+    emoji       = Column(String, nullable=True, default="👤")
+    account_ids = Column(Text, nullable=False, default="[]")  # JSON array of account IDs
+    sort_order  = Column(String, nullable=True, default="0")  # kept as String for compat
+    created_at  = Column(String, nullable=True)
+
+
 class WatchlistItem(Base):
     __tablename__ = "watchlist"
 
