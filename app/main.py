@@ -15,7 +15,7 @@ from cryptography.fernet import Fernet, InvalidToken
 import pyotp
 
 from app.db import engine, SessionLocal, Base
-from sqlalchemy import text as _sql_text
+from sqlalchemy import text as _sql_text, func as _sqlfunc
 from app import models
 from app.schemas import (
     AccountList, AccountOut, AccountCreate, AccountUpdate,
@@ -550,8 +550,8 @@ def _sync_binance(conn: models.ExchangeConnection, db: Session) -> SyncResult:
                 new_qty = old_qty + leg_data["quantity"]
                 if leg_data["quantity"] > 0 and leg_data.get("unit_price"):
                     holding.avg_cost = (old_qty * holding.avg_cost + leg_data["quantity"] * leg_data["unit_price"]) / max(new_qty, 0.0001)
-                holding.quantity = max(new_qty, 0.0)
-                if holding.quantity == 0:
+                holding.quantity = new_qty   # allow negative (liability / offset accounts)
+                if new_qty == 0.0:
                     db.delete(holding)
 
                 db.add(models.TransactionLeg(
@@ -1093,8 +1093,8 @@ def _apply_legs(legs_data: list, event_id: str, db: Session):
         if leg_data["quantity"] > 0 and leg_data.get("unit_price"):
             ev = old_qty * holding.avg_cost + leg_data["quantity"] * leg_data["unit_price"]
             holding.avg_cost = ev / max(new_qty, 0.0001)
-        holding.quantity = max(new_qty, 0.0)
-        if holding.quantity == 0:
+        holding.quantity = new_qty   # allow negative (liability / offset accounts)
+        if new_qty == 0.0:
             db.delete(holding)
 
         db.add(models.TransactionLeg(
@@ -2645,7 +2645,7 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
     user_account_ids = {a.id for a in acct_q.all()}
 
     holdings = db.query(models.Holding).filter(
-        models.Holding.quantity > 0.000001,
+        _sqlfunc.abs(models.Holding.quantity) > 0.000001,   # include negative (offset/liability accounts)
         models.Holding.account_id.in_(user_account_ids)).all()
     assets   = {a.id: a for a in db.query(models.Asset).all()}
 
@@ -2731,7 +2731,7 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR", db: Session = 
         total = 0.0
         for holding in holdings:
             asset = assets.get(holding.asset_id)
-            if not asset or holding.quantity <= 0.000001:
+            if not asset or abs(holding.quantity) <= 0.000001:
                 continue
             sym = asset.symbol.upper()
             if asset.asset_class == "fiat":
