@@ -174,6 +174,18 @@ final class APIService {
         try validate(response: response, data: data)
     }
 
+    // MARK: - Portfolio Profiles
+
+    struct AccountProfile: Codable, Identifiable {
+        let id: String
+        let name: String
+        let emoji: String
+        let account_ids: [String]
+        let sort_order: Int?
+    }
+
+    struct AccountProfileList: Codable { let items: [AccountProfile] }
+
     // MARK: - Accounts
 
     struct Account: Codable, Identifiable {
@@ -577,19 +589,23 @@ final class APIService {
 
     // MARK: - Valuation & Rates
 
-    func fetchValuation(baseCurrency: String) async throws -> ValuationResponse {
-        let u = try url(path: "valuation", query: [URLQueryItem(name: "base_currency", value: baseCurrency)])
+    func fetchValuation(baseCurrency: String, profileId: String? = nil) async throws -> ValuationResponse {
+        var query = [URLQueryItem(name: "base_currency", value: baseCurrency)]
+        if let pid = profileId { query.append(URLQueryItem(name: "profile_id", value: pid)) }
+        let u = try url(path: "valuation", query: query)
         let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(ValuationResponse.self, from: data)
     }
 
-    func fetchPortfolioHistory(days: Int = 30, baseCurrency: String) async throws -> PortfolioHistoryResponse {
-        let u = try url(path: "portfolio/history", query: [
+    func fetchPortfolioHistory(days: Int = 30, baseCurrency: String, profileId: String? = nil) async throws -> PortfolioHistoryResponse {
+        var query = [
             URLQueryItem(name: "days", value: "\(days)"),
             URLQueryItem(name: "base_currency", value: baseCurrency)
-        ])
+        ]
+        if let pid = profileId { query.append(URLQueryItem(name: "profile_id", value: pid)) }
+        let u = try url(path: "portfolio/history", query: query)
         let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
@@ -1125,8 +1141,11 @@ final class APIService {
         let symbol: String
     }
 
-    func fetchMarketData() async throws -> MarketDataResponse {
-        let req = makeRequest(url: baseURL.appendingPathComponent("market/data"))
+    func fetchMarketData(profileId: String? = nil) async throws -> MarketDataResponse {
+        var query: [URLQueryItem]? = nil
+        if let pid = profileId { query = [URLQueryItem(name: "profile_id", value: pid)] }
+        let u = try url(path: "market/data", query: query)
+        let req = makeRequest(url: u)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(MarketDataResponse.self, from: data)
@@ -1200,6 +1219,41 @@ final class APIService {
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response: response, data: data)
         return try JSONDecoder().decode(NewsResponse.self, from: data)
+    }
+
+    // MARK: - Portfolio Profiles API
+
+    func fetchProfiles() async throws -> [AccountProfile] {
+        let req = makeRequest(url: baseURL.appendingPathComponent("profiles"))
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AccountProfileList.self, from: data).items
+    }
+
+    func createProfile(name: String, emoji: String, accountIds: [String]) async throws -> AccountProfile {
+        let body = try JSONSerialization.data(withJSONObject: ["name": name, "emoji": emoji, "account_ids": accountIds])
+        let req = makeRequest(url: baseURL.appendingPathComponent("profiles"), method: "POST", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AccountProfile.self, from: data)
+    }
+
+    func updateProfile(id: String, name: String? = nil, emoji: String? = nil, accountIds: [String]? = nil) async throws -> AccountProfile {
+        var dict: [String: Any] = [:]
+        if let n = name { dict["name"] = n }
+        if let e = emoji { dict["emoji"] = e }
+        if let a = accountIds { dict["account_ids"] = a }
+        let body = try JSONSerialization.data(withJSONObject: dict)
+        let req = makeRequest(url: baseURL.appendingPathComponent("profiles/\(id)"), method: "PUT", body: body)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(AccountProfile.self, from: data)
+    }
+
+    func deleteProfile(id: String) async throws {
+        let req = makeRequest(url: baseURL.appendingPathComponent("profiles/\(id)"), method: "DELETE")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response: response, data: data)
     }
 
     // MARK: - Error Handling

@@ -4,6 +4,7 @@ import Charts
 // ── InvestmentDashboardView ───────────────────────────────────────────────────
 struct InvestmentDashboardView: View {
 
+    @EnvironmentObject var pm: ProfileManager
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("baseCurrency") private var appBaseCurrency = "USD"
     @State private var localCurrency: String = ""
@@ -116,6 +117,10 @@ struct InvestmentDashboardView: View {
             .navigationTitle("Portfolio")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    ProfileSwitcherView()
+                        .environmentObject(pm)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 8) {
                         // Sort menu
@@ -165,6 +170,7 @@ struct InvestmentDashboardView: View {
                 await load()
             }
             .refreshable { await load() }
+            .onChange(of: pm.selectedProfileId) { _, _ in Task { await load() } }
         }
     }
 
@@ -615,9 +621,10 @@ struct InvestmentDashboardView: View {
     // ── Data loading ───────────────────────────────────────────────────────────
     private func load() async {
         isLoading = true; errorMessage = nil; defer { isLoading = false }
+        let profileId = pm.selectedProfileId
         do {
             async let accFetch = APIService.shared.fetchAccounts()
-            async let valFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
+            async let valFetch = APIService.shared.fetchValuation(baseCurrency: baseCurrency, profileId: profileId)
             accounts  = try await accFetch
             valuation = try await valFetch
             await loadCryptoImages()

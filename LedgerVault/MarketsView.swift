@@ -736,6 +736,7 @@ struct MarketNewsView: View {
 
 // MARK: - Main View
 struct MarketsView: View {
+    @EnvironmentObject var pm: ProfileManager
     @AppStorage("theme") private var theme = "dark"
     @AppStorage("customForexSymbols") private var customForexJSON = "[]"
     @AppStorage("hiddenForexSymbols") private var hiddenForexJSON = "[]"
@@ -860,6 +861,10 @@ struct MarketsView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbarColorScheme(theme == "dark" ? .dark : nil, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    ProfileSwitcherView()
+                        .environmentObject(pm)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         Button { showAdd = true } label: {
@@ -886,6 +891,7 @@ struct MarketsView: View {
             .onReceive(timer) { _ in
                 Task { await silentRefresh() }
             }
+            .onChange(of: pm.selectedProfileId) { _, _ in Task { await loadData() } }
             .sheet(isPresented: $showAddForex) {
                 AddForexPairSheet { symbol in
                     addCustomForexSymbol(symbol)
@@ -1069,7 +1075,8 @@ struct MarketsView: View {
     // MARK: Data
     private func loadData() async {
         isLoading = true; error = nil
-        async let quotesTask = APIService.shared.fetchMarketData()
+        let profileId = pm.selectedProfileId
+        async let quotesTask = APIService.shared.fetchMarketData(profileId: profileId)
         async let forexTask  = APIService.shared.fetchForexRates()
         do {
             let (qResp, fResp) = try await (quotesTask, forexTask)
@@ -1090,7 +1097,8 @@ struct MarketsView: View {
     /// Silent background refresh — no loading spinner, preserves existing data
     private func silentRefresh() async {
         guard !isLoading else { return }
-        async let quotesTask = APIService.shared.fetchMarketData()
+        let profileId = pm.selectedProfileId
+        async let quotesTask = APIService.shared.fetchMarketData(profileId: profileId)
         async let forexTask  = APIService.shared.fetchForexRates()
         if let (qResp, fResp) = try? await (quotesTask, forexTask) {
             quotes     = qResp.quotes

@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var profileManager = ProfileManager()
+
     var body: some View {
         TabView {
             HomeView()
@@ -19,6 +21,8 @@ struct ContentView: View {
                 .tabItem { Label("More", systemImage: "ellipsis.circle.fill") }
         }
         .tint(LVBrand.green)
+        .environmentObject(profileManager)
+        .task { await profileManager.load() }
     }
 }
 

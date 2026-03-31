@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 
 struct HomeView: View {
+    @EnvironmentObject var pm: ProfileManager
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("baseCurrency") private var baseCurrency = "USD"
 
@@ -94,6 +95,10 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                ToolbarItem(placement: .principal) {
+                    ProfileSwitcherView()
+                        .environmentObject(pm)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAddTransaction = true } label: {
                         Image(systemName: "plus.circle.fill")
@@ -107,6 +112,7 @@ struct HomeView: View {
             .task { await load() }
             .task { await startAutoRefresh() }
             .onChange(of: baseCurrency) { _, _ in Task { await load() } }
+            .onChange(of: pm.selectedProfileId) { _, _ in Task { await load() } }
             .sheet(isPresented: $showAddTransaction) {
                 AddTransactionView { Task { await load() } }
             }
@@ -825,8 +831,9 @@ struct HomeView: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
+        let profileId = pm.selectedProfileId
         do {
-            async let v   = APIService.shared.fetchValuation(baseCurrency: baseCurrency)
+            async let v   = APIService.shared.fetchValuation(baseCurrency: baseCurrency, profileId: profileId)
             async let a   = APIService.shared.fetchAccounts()
             async let as_ = APIService.shared.fetchAssets()
             async let l   = APIService.shared.fetchTransactionLegs()
@@ -848,7 +855,7 @@ struct HomeView: View {
         // Load portfolio history in background (non-blocking — can be slow)
         Task {
             portfolioHistory = try? await APIService.shared.fetchPortfolioHistory(
-                days: historyDays, baseCurrency: baseCurrency
+                days: historyDays, baseCurrency: baseCurrency, profileId: profileId
             )
         }
     }
