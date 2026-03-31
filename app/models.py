@@ -87,6 +87,7 @@ class ExchangeConnection(Base):
     __tablename__ = "exchange_connections"
 
     id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=True, index=True)   # null = legacy pre-auth row
     exchange = Column(String, nullable=False)       # binance, kraken, coinbase, bybit, kucoin, okx
     name = Column(String, nullable=False)           # user-defined label
     api_key = Column(String, nullable=False)
@@ -102,6 +103,7 @@ class BankConnection(Base):
     __tablename__ = "bank_connections"
 
     id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=True, index=True)   # null = legacy pre-auth row
     provider = Column(String, nullable=True, default="truelayer")  # "truelayer" | "saltedge"
     provider_id = Column(String, nullable=False)            # "uk-ob-revolut" | "revolut_eu"
     provider_name = Column(String, nullable=False)          # "Revolut"
@@ -166,6 +168,7 @@ class RecurringTransaction(Base):
     __tablename__ = "recurring_transactions"
 
     id = Column(String, primary_key=True, index=True)
+    user_id = Column(String, nullable=True, index=True)   # null = legacy pre-auth row
     name = Column(String, nullable=False)
     event_type = Column(String, nullable=False)     # income, expense, transfer, trade
     category = Column(String, nullable=True)

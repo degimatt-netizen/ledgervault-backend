@@ -118,6 +118,12 @@ for _stmt in [
     "ALTER TABLE transaction_events ADD COLUMN IF NOT EXISTS created_at VARCHAR",
     # Back-fill NULL created_at with the event date so existing rows sort consistently
     "UPDATE transaction_events SET created_at = date WHERE created_at IS NULL",
+    # user_id on exchange_connections — isolates each user's API keys
+    "ALTER TABLE exchange_connections ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+    # user_id on bank_connections — isolates each user's open-banking tokens
+    "ALTER TABLE bank_connections ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+    # user_id on recurring_transactions — isolates each user's recurring rules
+    "ALTER TABLE recurring_transactions ADD COLUMN IF NOT EXISTS user_id VARCHAR",
 ]:
     try:
         with engine.connect() as _conn:
@@ -2775,17 +2781,23 @@ def update_account(account_id: str, payload: AccountUpdate, db: Session = Depend
     db.commit(); db.refresh(item); return item
 
 @app.get("/accounts/{account_id}/holdings", response_model=HoldingList)
-def list_account_holdings(account_id: str, db: Session = Depends(get_db)):
+def list_account_holdings(account_id: str, db: Session = Depends(get_db),
+                          user_id: str = Depends(require_user_id)):
     account = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if account.user_id and account.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     return {"items": db.query(models.Holding).filter(models.Holding.account_id == account_id).all()}
 
 @app.get("/accounts/{account_id}/transactions", response_model=TransactionEventList)
-def list_account_transactions(account_id: str, db: Session = Depends(get_db)):
+def list_account_transactions(account_id: str, db: Session = Depends(get_db),
+                               user_id: str = Depends(require_user_id)):
     account = db.query(models.Account).filter(models.Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if account.user_id and account.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
            .filter(models.TransactionLeg.account_id == account_id).distinct().all()]
     items = (db.query(models.TransactionEvent)
@@ -2972,8 +2984,10 @@ def create_transaction_event(payload: TransactionEventCreate, db: Session = Depe
 
 # ── Exchange Connections ───────────────────────
 @app.get("/exchange-connections", response_model=ExchangeConnectionList)
-def list_exchange_connections(db: Session = Depends(get_db)):
-    items = db.query(models.ExchangeConnection).all()
+def list_exchange_connections(db: Session = Depends(get_db),
+                               user_id: str = Depends(require_user_id)):
+    items = db.query(models.ExchangeConnection).filter(
+        models.ExchangeConnection.user_id == user_id).all()
     result = []
     for c in items:
         raw_key = _decrypt(c.api_key)
@@ -2987,9 +3001,10 @@ def list_exchange_connections(db: Session = Depends(get_db)):
     return {"items": result}
 
 @app.post("/exchange-connections", response_model=ExchangeConnectionOut)
-def create_exchange_connection(payload: ExchangeConnectionCreate, db: Session = Depends(get_db)):
+def create_exchange_connection(payload: ExchangeConnectionCreate, db: Session = Depends(get_db),
+                                user_id: str = Depends(require_user_id)):
     conn = models.ExchangeConnection(
-        id=str(uuid4()), exchange=payload.exchange, name=payload.name,
+        id=str(uuid4()), user_id=user_id, exchange=payload.exchange, name=payload.name,
         api_key=_encrypt(payload.api_key), api_secret=_encrypt(payload.api_secret),
         passphrase=_encrypt(payload.passphrase) if payload.passphrase else None,
         account_id=payload.account_id, status="active",
@@ -3005,20 +3020,26 @@ def create_exchange_connection(payload: ExchangeConnectionCreate, db: Session = 
     )
 
 @app.delete("/exchange-connections/{connection_id}")
-def delete_exchange_connection(connection_id: str, db: Session = Depends(get_db)):
+def delete_exchange_connection(connection_id: str, db: Session = Depends(get_db),
+                                user_id: str = Depends(require_user_id)):
     conn = db.query(models.ExchangeConnection).filter(
         models.ExchangeConnection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     db.delete(conn); db.commit()
     return {"status": "ok"}
 
 @app.post("/exchange-connections/{connection_id}/sync", response_model=SyncResult)
-def sync_exchange_connection(connection_id: str, db: Session = Depends(get_db)):
+def sync_exchange_connection(connection_id: str, db: Session = Depends(get_db),
+                              user_id: str = Depends(require_user_id)):
     conn = db.query(models.ExchangeConnection).filter(
         models.ExchangeConnection.id == connection_id).first()
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     # Decrypt credentials before passing to sync functions
     conn.api_key    = _decrypt(conn.api_key)
@@ -3042,13 +3063,17 @@ def sync_exchange_connection(connection_id: str, db: Session = Depends(get_db)):
 
 # ── Recurring Transactions ─────────────────────
 @app.get("/recurring-transactions", response_model=RecurringTransactionList)
-def list_recurring_transactions(db: Session = Depends(get_db)):
-    return {"items": db.query(models.RecurringTransaction).all()}
+def list_recurring_transactions(db: Session = Depends(get_db),
+                                 user_id: str = Depends(require_user_id)):
+    return {"items": db.query(models.RecurringTransaction).filter(
+        models.RecurringTransaction.user_id == user_id).all()}
 
 @app.post("/recurring-transactions", response_model=RecurringTransactionOut)
-def create_recurring_transaction(payload: RecurringTransactionCreate, db: Session = Depends(get_db)):
+def create_recurring_transaction(payload: RecurringTransactionCreate, db: Session = Depends(get_db),
+                                  user_id: str = Depends(require_user_id)):
     item = models.RecurringTransaction(
         id=str(uuid4()),
+        user_id=user_id,
         name=payload.name, event_type=payload.event_type,
         category=payload.category, description=payload.description, note=payload.note,
         from_account_id=payload.from_account_id, from_asset_id=payload.from_asset_id,
@@ -3062,31 +3087,40 @@ def create_recurring_transaction(payload: RecurringTransactionCreate, db: Sessio
 
 @app.put("/recurring-transactions/{rt_id}", response_model=RecurringTransactionOut)
 def update_recurring_transaction(rt_id: str, payload: RecurringTransactionUpdate,
-                                  db: Session = Depends(get_db)):
+                                  db: Session = Depends(get_db),
+                                  user_id: str = Depends(require_user_id)):
     item = db.query(models.RecurringTransaction).filter(
         models.RecurringTransaction.id == rt_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Not found")
+    if item.user_id and item.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     for field, value in payload.dict(exclude_none=True).items():
         setattr(item, field, value)
     db.commit(); db.refresh(item); return item
 
 @app.delete("/recurring-transactions/{rt_id}")
-def delete_recurring_transaction(rt_id: str, db: Session = Depends(get_db)):
+def delete_recurring_transaction(rt_id: str, db: Session = Depends(get_db),
+                                  user_id: str = Depends(require_user_id)):
     item = db.query(models.RecurringTransaction).filter(
         models.RecurringTransaction.id == rt_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Not found")
+    if item.user_id and item.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     db.delete(item); db.commit()
     return {"status": "ok"}
 
 @app.post("/recurring-transactions/{rt_id}/execute")
-def execute_recurring_transaction(rt_id: str, db: Session = Depends(get_db)):
+def execute_recurring_transaction(rt_id: str, db: Session = Depends(get_db),
+                                   user_id: str = Depends(require_user_id)):
     """Manually execute a recurring transaction now."""
     item = db.query(models.RecurringTransaction).filter(
         models.RecurringTransaction.id == rt_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Not found")
+    if item.user_id and item.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     today = datetime.now().strftime("%Y-%m-%d")
     from_account = db.query(models.Account).filter(models.Account.id == item.from_account_id).first()
@@ -3230,7 +3264,8 @@ def bank_auth_url():
 
 
 @app.post("/bank-connections/callback", response_model=BankCallbackResponse)
-def bank_callback(code: str = Query(...), db: Session = Depends(get_db)):
+def bank_callback(code: str = Query(...), db: Session = Depends(get_db),
+                  user_id: Optional[str] = Depends(get_user_id)):
     """Exchange OAuth code for tokens; fetch & persist TrueLayer accounts."""
     # 1. Exchange code for tokens
     with httpx.Client(timeout=10) as c:
@@ -3274,6 +3309,7 @@ def bank_callback(code: str = Query(...), db: Session = Depends(get_db)):
 
         conn = models.BankConnection(
             id=str(uuid4()),
+            user_id=user_id,
             provider_id=provider_id,
             provider_name=provider_name,
             account_display_name=tl_acct.get("display_name", "Account"),
@@ -3292,16 +3328,21 @@ def bank_callback(code: str = Query(...), db: Session = Depends(get_db)):
 
 
 @app.get("/bank-connections", response_model=BankConnectionList)
-def list_bank_connections(db: Session = Depends(get_db)):
-    conns = db.query(models.BankConnection).all()
+def list_bank_connections(db: Session = Depends(get_db),
+                          user_id: str = Depends(require_user_id)):
+    conns = db.query(models.BankConnection).filter(
+        models.BankConnection.user_id == user_id).all()
     return {"items": [_tl_conn_out(c) for c in conns]}
 
 
 @app.delete("/bank-connections/{conn_id}")
-def delete_bank_connection(conn_id: str, db: Session = Depends(get_db)):
+def delete_bank_connection(conn_id: str, db: Session = Depends(get_db),
+                            user_id: str = Depends(require_user_id)):
     conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
     if not conn:
         raise HTTPException(404, "Bank connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(403, "Forbidden")
     db.delete(conn)
     db.commit()
     return {"ok": True}
@@ -3309,22 +3350,28 @@ def delete_bank_connection(conn_id: str, db: Session = Depends(get_db)):
 
 @app.put("/bank-connections/{conn_id}/link", response_model=BankConnectionOut)
 def link_bank_to_account(conn_id: str, account_id: str = Query(...),
-                         db: Session = Depends(get_db)):
+                         db: Session = Depends(get_db),
+                         user_id: str = Depends(require_user_id)):
     """Link a TrueLayer bank connection to a LedgerVault account for syncing."""
     conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
     if not conn:
         raise HTTPException(404, "Bank connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(403, "Forbidden")
     conn.ledger_account_id = account_id
     db.commit()
     return _tl_conn_out(conn)
 
 
 @app.post("/bank-connections/{conn_id}/sync", response_model=SyncResult)
-def sync_bank_connection(conn_id: str, db: Session = Depends(get_db)):
+def sync_bank_connection(conn_id: str, db: Session = Depends(get_db),
+                          user_id: str = Depends(require_user_id)):
     """Import the last 90 days of transactions from TrueLayer."""
     conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
     if not conn:
         raise HTTPException(404, "Bank connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(403, "Forbidden")
     if not conn.ledger_account_id:
         raise HTTPException(400, "Link a LedgerVault account to this connection first.")
 
@@ -3451,7 +3498,7 @@ def _se_conn_out(c: models.BankConnection) -> dict:
 
 
 @app.get("/bank-connections-saltedge/auth-url")
-def saltedge_auth_url(user_id: str = Query("default_user")):
+def saltedge_auth_url(user_id: str = Depends(require_user_id)):
     """Create a Salt Edge connect session and return the connect_url for the iOS app."""
     if not SALTEDGE_APP_ID or not SALTEDGE_SECRET:
         raise HTTPException(500, "Salt Edge credentials not configured")
@@ -3491,7 +3538,7 @@ def saltedge_auth_url(user_id: str = Query("default_user")):
                            "from_date": "2020-01-01",
                        },
                        "attempt": {
-                           "return_to": SALTEDGE_RETURN_URL,
+                           "return_to": f"{SALTEDGE_RETURN_URL}?uid={user_id}",
                            "fetch_scopes": ["accounts", "transactions"],
                        },
                    }})
@@ -3505,6 +3552,7 @@ def saltedge_auth_url(user_id: str = Query("default_user")):
 @app.get("/bank-connections-saltedge/callback")
 def saltedge_callback(
     connection_id: str = Query(...),
+    uid: Optional[str] = Query(None),   # user_id embedded in return_to URL
     db: Session = Depends(get_db),
 ):
     """Handle Salt Edge redirect after user connects a bank. Stores accounts then deep-links back to iOS."""
@@ -3546,6 +3594,7 @@ def saltedge_callback(
         else:
             new_conn = models.BankConnection(
                 id=str(uuid4()),
+                user_id=uid,   # stamped from the return_to ?uid= param
                 provider="saltedge",
                 provider_id=provider_code,
                 provider_name=provider_name,
@@ -3568,17 +3617,23 @@ def saltedge_callback(
 
 
 @app.get("/bank-connections-saltedge", response_model=BankConnectionList)
-def list_saltedge_connections(db: Session = Depends(get_db)):
-    conns = db.query(models.BankConnection).filter_by(provider="saltedge").all()
+def list_saltedge_connections(db: Session = Depends(get_db),
+                               user_id: str = Depends(require_user_id)):
+    conns = (db.query(models.BankConnection)
+               .filter(models.BankConnection.provider == "saltedge",
+                       models.BankConnection.user_id == user_id).all())
     return {"items": [_se_conn_out(c) for c in conns]}
 
 
 @app.post("/bank-connections-saltedge/{conn_id}/sync", response_model=SyncResult)
-def sync_saltedge_connection(conn_id: str, db: Session = Depends(get_db)):
+def sync_saltedge_connection(conn_id: str, db: Session = Depends(get_db),
+                              user_id: str = Depends(require_user_id)):
     """Import the last 90 days of transactions from Salt Edge."""
     conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
     if not conn:
         raise HTTPException(404, "Salt Edge connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(403, "Forbidden")
     if not conn.ledger_account_id:
         raise HTTPException(400, "Link a LedgerVault account to this connection first.")
     if not conn.saltedge_connection_id:
@@ -3788,7 +3843,7 @@ def _plaid_headers() -> dict:
 
 
 @app.get("/bank-connections-plaid/auth-url")
-def plaid_auth_url(user_id: str = Query("default_user")):
+def plaid_auth_url(user_id: str = Depends(require_user_id)):
     """Create a Plaid Link token and return the hosted link URL."""
     if not PLAID_CLIENT_ID or not PLAID_SECRET:
         raise HTTPException(500, "Plaid credentials not configured")
@@ -3818,8 +3873,8 @@ def plaid_auth_url(user_id: str = Query("default_user")):
 @app.post("/bank-connections-plaid/exchange")
 def plaid_exchange(
     public_token: str = Query(...),
-    user_id: str      = Query("default_user"),
     db: Session       = Depends(get_db),
+    user_id: str      = Depends(require_user_id),
 ):
     """Exchange a Plaid public_token for an access_token, then fetch and store accounts."""
     if not PLAID_CLIENT_ID or not PLAID_SECRET:
@@ -3881,6 +3936,7 @@ def plaid_exchange(
         else:
             existing = models.BankConnection(
                 id=str(uuid.uuid4()),
+                user_id=user_id,
                 provider="plaid",
                 provider_id=inst_id or item_id,
                 provider_name=inst_name,
@@ -3901,17 +3957,23 @@ def plaid_exchange(
 
 
 @app.get("/bank-connections-plaid")
-def list_plaid_connections(db: Session = Depends(get_db)):
-    conns = db.query(models.BankConnection).filter_by(provider="plaid").all()
+def list_plaid_connections(db: Session = Depends(get_db),
+                            user_id: str = Depends(require_user_id)):
+    conns = (db.query(models.BankConnection)
+               .filter(models.BankConnection.provider == "plaid",
+                       models.BankConnection.user_id == user_id).all())
     return {"data": [_se_conn_out(c) for c in conns]}
 
 
 @app.post("/bank-connections-plaid/{conn_id}/sync")
-def sync_plaid_connection(conn_id: str, db: Session = Depends(get_db)):
+def sync_plaid_connection(conn_id: str, db: Session = Depends(get_db),
+                           user_id: str = Depends(require_user_id)):
     """Import recent transactions for a Plaid connection."""
     conn = db.query(models.BankConnection).filter_by(id=conn_id).first()
     if not conn or conn.provider != "plaid":
         raise HTTPException(404, "Plaid connection not found")
+    if conn.user_id and conn.user_id != user_id:
+        raise HTTPException(403, "Forbidden")
 
     access_token = _decrypt(conn.access_token)
     if not access_token:
