@@ -2530,16 +2530,44 @@ def get_crypto_quote(symbol: str):
         raise HTTPException(status_code=404, detail=f"Price not found for {sym}")
     return {"symbol": sym, "price_usd": price}
 
-def _profile_account_ids(profile_id: Optional[str], user_id: Optional[str], db: Session) -> Optional[set]:
-    """Return the set of account IDs for a profile, or None (= all accounts)."""
-    if not profile_id or not user_id:
+def _all_profile_assigned_ids(user_id: str, db: Session) -> set:
+    """Return every account ID that is assigned to at least one named profile."""
+    profiles = db.query(models.AccountProfile).filter_by(user_id=user_id).all()
+    assigned: set = set()
+    for p in profiles:
+        try:
+            assigned.update(json.loads(p.account_ids or "[]"))
+        except Exception:
+            pass
+    return assigned
+
+def _profile_account_ids(profile_id: Optional[str], user_id: Optional[str],
+                          all_user_ids: set, db: Session) -> Optional[set]:
+    """
+    Return the account ID set to use for a given profile_id.
+
+    - profile_id = None  → 'Personal': all accounts that are NOT assigned to any
+                           named profile (so Dad/Son accounts are excluded).
+                           If no profiles exist yet, returns None (= all accounts,
+                           keeping the feature backward-compatible for new users).
+    - profile_id = <id>  → exactly the accounts in that named profile.
+    """
+    if not user_id:
         return None
+
+    if not profile_id:
+        # Personal: subtract accounts owned by named profiles
+        assigned = _all_profile_assigned_ids(user_id, db)
+        if not assigned:
+            return None   # no profiles yet → show everything (backward-compat)
+        return all_user_ids - assigned
+
     prof = db.query(models.AccountProfile).filter_by(id=profile_id, user_id=user_id).first()
     if not prof:
         return None
     try:
         ids = json.loads(prof.account_ids or "[]")
-        return set(ids) if ids else None
+        return set(ids) if ids else set()
     except Exception:
         return None
 
@@ -2558,8 +2586,8 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     all_accounts = {a.id: a for a in acct_q.all()}
-    # Apply profile filter if requested
-    profile_ids = _profile_account_ids(profile_id, user_id, db)
+    # Apply profile filter (Personal = exclude accounts owned by named profiles)
+    profile_ids = _profile_account_ids(profile_id, user_id, set(all_accounts.keys()), db)
     accounts = {k: v for k, v in all_accounts.items() if profile_ids is None or k in profile_ids}
     holdings  = db.query(models.Holding).filter(
         models.Holding.account_id.in_(accounts.keys())).all()
@@ -2674,7 +2702,7 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
     else:
         acct_q = acct_q.filter(models.Account.user_id == None)
     all_ids = {a.id for a in acct_q.all()}
-    profile_filter = _profile_account_ids(profile_id, user_id, db)
+    profile_filter = _profile_account_ids(profile_id, user_id, all_ids, db)
     user_account_ids = all_ids if profile_filter is None else all_ids & profile_filter
 
     holdings = db.query(models.Holding).filter(
@@ -5090,7 +5118,8 @@ def market_data(profile_id: Optional[str] = Query(None),
     """
     # 1. Holdings
     all_accounts = db.query(models.Account).filter_by(user_id=user_id).all()
-    profile_filter = _profile_account_ids(profile_id, user_id, db)
+    all_ids = {a.id for a in all_accounts}
+    profile_filter = _profile_account_ids(profile_id, user_id, all_ids, db)
     accounts = all_accounts if profile_filter is None else [a for a in all_accounts if a.id in profile_filter]
     account_ids = [a.id for a in accounts]
     holdings = (
