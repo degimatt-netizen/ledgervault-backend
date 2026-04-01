@@ -2633,18 +2633,19 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
         value_base = convert_usd_to_base(value_usd, base_currency, fx)
 
         portfolio_items.append({
-            "holding_id":   holding.id,
-            "account_id":   account.id,
-            "account_name": account.name,
-            "asset_id":     asset.id,
-            "symbol":       asset.symbol,
-            "asset_name":   asset.name,
-            "asset_class":  asset.asset_class,
-            "quantity":     holding.quantity,
-            "avg_cost":     holding.avg_cost,
-            "price_usd":    price_usd,
-            "value_in_base":round(value_base, 2),
-            "base_currency":base_currency.upper(),
+            "holding_id":    holding.id,
+            "account_id":    account.id,
+            "account_name":  account.name,
+            "asset_id":      asset.id,
+            "symbol":        asset.symbol,
+            "asset_name":    asset.name,
+            "asset_class":   asset.asset_class,
+            "quote_currency":asset.quote_currency,
+            "quantity":      holding.quantity,
+            "avg_cost":      holding.avg_cost,
+            "price_usd":     price_usd,
+            "value_in_base": round(value_base, 2),
+            "base_currency": base_currency.upper(),
         })
 
         if account.id not in excluded_account_ids:
@@ -5128,7 +5129,7 @@ def market_data(profile_id: Optional[str] = Query(None),
         .filter(models.Holding.account_id.in_(account_ids))
         .all()
     )
-    # map symbol → {qty, avg_cost}
+    # map symbol → {qty, avg_cost, asset_class, quote_currency}
     position_map: dict[str, dict] = {}
     for h, asset in holdings:
         sym = asset.symbol.upper()
@@ -5136,7 +5137,12 @@ def market_data(profile_id: Optional[str] = Query(None),
             if sym in position_map:
                 position_map[sym]["quantity"] += h.quantity
             else:
-                position_map[sym] = {"quantity": h.quantity, "avg_cost": h.avg_cost or 0.0}
+                position_map[sym] = {
+                    "quantity": h.quantity,
+                    "avg_cost": h.avg_cost or 0.0,
+                    "asset_class": asset.asset_class,
+                    "quote_currency": asset.quote_currency,
+                }
 
     # 2. Watchlist
     wl_items = db.query(models.WatchlistItem).filter_by(user_id=user_id).all()
@@ -5172,11 +5178,15 @@ def market_data(profile_id: Optional[str] = Query(None),
             continue
         out = {k: v for k, v in q.items() if not k.startswith("_")}
         if sym in position_map:
-            out["position"]  = position_map[sym]["quantity"]
-            out["avg_price"] = position_map[sym]["avg_cost"]
+            out["position"]      = position_map[sym]["quantity"]
+            out["avg_price"]     = position_map[sym]["avg_cost"]
+            out["asset_class"]   = position_map[sym]["asset_class"]
+            out["quote_currency"]= position_map[sym]["quote_currency"]
         else:
-            out["position"]  = None
-            out["avg_price"] = None
+            out["position"]      = None
+            out["avg_price"]     = None
+            out["asset_class"]   = out.get("asset_class")
+            out["quote_currency"]= out.get("quote_currency")
         out["in_watchlist"] = sym in watchlist_syms
         quotes.append(out)
 
