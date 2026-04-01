@@ -2617,6 +2617,13 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
                 if info:
                     stock_prices[sym] = info["price"]
 
+    # Stablecoins are crypto assets that track fiat — count them in cash, not crypto
+    STABLECOIN_SYMBOLS = {
+        "USDT","USDC","BUSD","DAI","TUSD","USDP","FRAX","LUSD","PYUSD","FDUSD",
+        "GUSD","PAX","USDD","CUSD","CEUR","EURS","USDE","SUSDE","USDBC","USDS",
+        "EURC","EURT","XSGD","XIDR","CADC","BRLA","BIDR"
+    }
+
     portfolio_items = []
     total_base = cash_total = crypto_total = stock_total = 0.0
 
@@ -2628,21 +2635,30 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
         if not asset or not account: continue
 
         sym = asset.symbol.upper()
+        quote_ccy = (asset.quote_currency or "USD").upper()
 
         if asset.asset_class == "fiat":
             price_usd = fx.get(sym, 1.0)
+            native_price = price_usd   # fiat price IS the USD price (via FX)
         elif asset.asset_class == "crypto":
             price_usd = crypto_prices.get(sym, 0.0)
+            native_price = price_usd   # crypto quoted in USD
         elif asset.asset_class in ("stock","etf"):
-            price_usd = stock_prices.get(sym, 0.0)
+            # Yahoo Finance returns the stock price in its native currency (e.g. EUR for VUSA.AS)
+            native_price = stock_prices.get(sym, 0.0)
+            # Convert native price to USD for consistent portfolio math
+            if quote_ccy != "USD" and quote_ccy in fx:
+                price_usd = native_price * fx.get(quote_ccy, 1.0)
+            else:
+                price_usd = native_price
         else:
-            price_usd = 0.0
+            price_usd    = 0.0
+            native_price = 0.0
 
         value_usd  = holding.quantity * price_usd
         value_base = convert_usd_to_base(value_usd, base_currency, fx)
 
         # Convert avg_cost to USD (avg_cost is stored in quote_currency)
-        quote_ccy = (asset.quote_currency or "USD").upper()
         if quote_ccy == "USD" or asset.asset_class == "fiat":
             avg_cost_usd = holding.avg_cost
         else:
@@ -2662,7 +2678,8 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
             "quote_currency":asset.quote_currency,
             "quantity":      holding.quantity,
             "avg_cost":      holding.avg_cost,
-            "price_usd":     price_usd,
+            "price_usd":     price_usd,       # always USD-equivalent
+            "native_price":  native_price,    # price in asset's quote_currency (for display)
             "value_in_base": round(value_base, 2),
             "cost_in_base":  round(cost_base, 2),
             "base_currency": base_currency.upper(),
@@ -2670,9 +2687,13 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
 
         if account.id not in excluded_account_ids:
             total_base += value_base
-            if asset.asset_class == "fiat":           cash_total   += value_base
-            elif asset.asset_class == "crypto":        crypto_total += value_base
-            elif asset.asset_class in ("stock","etf"): stock_total  += value_base
+            is_stablecoin = asset.asset_class == "crypto" and sym in STABLECOIN_SYMBOLS
+            if asset.asset_class == "fiat" or is_stablecoin:
+                cash_total   += value_base
+            elif asset.asset_class == "crypto" and not is_stablecoin:
+                crypto_total += value_base
+            elif asset.asset_class in ("stock","etf"):
+                stock_total  += value_base
 
     user_leg_event_ids = [r[0] for r in db.query(models.TransactionLeg.event_id)
         .filter(models.TransactionLeg.account_id.in_(accounts.keys())).distinct().all()]
