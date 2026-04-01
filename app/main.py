@@ -2641,6 +2641,16 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
         value_usd  = holding.quantity * price_usd
         value_base = convert_usd_to_base(value_usd, base_currency, fx)
 
+        # Convert avg_cost to USD (avg_cost is stored in quote_currency)
+        quote_ccy = (asset.quote_currency or "USD").upper()
+        if quote_ccy == "USD" or asset.asset_class == "fiat":
+            avg_cost_usd = holding.avg_cost
+        else:
+            # fx[quote_ccy] = how many USD per 1 unit of quote_ccy
+            avg_cost_usd = holding.avg_cost * fx.get(quote_ccy, 1.0)
+        cost_usd  = holding.quantity * avg_cost_usd
+        cost_base = convert_usd_to_base(cost_usd, base_currency, fx)
+
         portfolio_items.append({
             "holding_id":    holding.id,
             "account_id":    account.id,
@@ -2654,6 +2664,7 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
             "avg_cost":      holding.avg_cost,
             "price_usd":     price_usd,
             "value_in_base": round(value_base, 2),
+            "cost_in_base":  round(cost_base, 2),
             "base_currency": base_currency.upper(),
         })
 
