@@ -322,7 +322,7 @@ def convert_usd_to_base(value_usd: float, base: str, fx: dict) -> float:
 # CRYPTO PRICES  (CoinGecko — free, no key)
 # ─────────────────────────────────────────────
 CRYPTO_CACHE_TTL = int(os.getenv("CRYPTO_CACHE_TTL_SECONDS", "120"))
-_crypto_cache = {"ts": 0.0, "prices": {}}   # symbol.upper() → price_usd
+_crypto_cache = {"ts": 0.0, "prices": {}, "meta": {}}   # symbol.upper() → price_usd / full coin meta
 
 COINGECKO_TOP_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
@@ -344,12 +344,21 @@ def _fetch_crypto_prices() -> dict:
             r = c.get(COINGECKO_TOP_URL); r.raise_for_status()
             coins = r.json()
         prices = {}
+        meta = {}
         for coin in coins:
-            sym = coin.get("symbol","").upper()
+            sym = coin.get("symbol", "").upper()
             p   = coin.get("current_price")
             if sym and p is not None:
-                prices[sym] = float(p)
-        _crypto_cache.update({"ts": now, "prices": prices})
+                price = float(p)
+                chg_pct = float(coin.get("price_change_percentage_24h") or 0.0)
+                prices[sym] = price
+                meta[sym] = {
+                    "name":       coin.get("name", sym),
+                    "image":      coin.get("image", ""),
+                    "change_pct": round(chg_pct, 4),
+                    "change":     round(price * chg_pct / 100, 6),
+                }
+        _crypto_cache.update({"ts": now, "prices": prices, "meta": meta})
         return prices
     except Exception:
         logger.exception("CoinGecko prices fetch failed")
@@ -5159,16 +5168,43 @@ def market_data(profile_id: Optional[str] = Query(None),
     if not all_symbols:
         return {"quotes": [], "watchlist": watchlist_syms}
 
-    # 4. Fetch quotes
+    # 4. Separate crypto held symbols from stock symbols
+    crypto_held = {s for s in all_symbols if position_map.get(s, {}).get("asset_class") == "crypto"}
+    stock_syms  = [s for s in all_symbols if s not in crypto_held]
+
+    # 4a. Fetch stock/ETF quotes from Yahoo Finance
     now = time.time()
-    fresh = {s: _QUOTE_CACHE[s] for s in all_symbols if s in _QUOTE_CACHE and now - _QUOTE_CACHE[s]["_ts"] < _QUOTE_CACHE_TTL}
-    stale = [s for s in all_symbols if s not in fresh]
+    fresh = {s: _QUOTE_CACHE[s] for s in stock_syms if s in _QUOTE_CACHE and now - _QUOTE_CACHE[s]["_ts"] < _QUOTE_CACHE_TTL}
+    stale = [s for s in stock_syms if s not in fresh]
     if stale:
         fetched = _fetch_yahoo_quotes(stale)
         for sym, q in fetched.items():
             q["_ts"] = now
             _QUOTE_CACHE[sym] = q
             fresh[sym] = q
+
+    # 4b. Build crypto quotes from CoinGecko (real prices, not ETF proxies)
+    crypto_prices = _fetch_crypto_prices()
+    crypto_meta   = _crypto_cache.get("meta", {})
+    for sym in crypto_held:
+        price = crypto_prices.get(sym)
+        if price is None:
+            continue
+        cm = crypto_meta.get(sym, {})
+        fresh[sym] = {
+            "symbol":       sym,
+            "name":         cm.get("name", sym),
+            "last":         price,
+            "bid":          None,
+            "ask":          None,
+            "change":       cm.get("change", 0.0),
+            "change_pct":   cm.get("change_pct", 0.0),
+            "volume":       None,
+            "currency":     "USD",
+            "market_state": "REGULAR",   # crypto never closes
+            "exchange":     "CCC",
+            "image_url":    cm.get("image", ""),
+        }
 
     # 5. Merge positions
     quotes = []
@@ -5190,9 +5226,10 @@ def market_data(profile_id: Optional[str] = Query(None),
         out["in_watchlist"] = sym in watchlist_syms
         quotes.append(out)
 
-    # Recalculate market_state from local hours on every response
-    # (cached quotes retain stale state from when they were fetched)
+    # Recalculate market_state for stocks (crypto already set to REGULAR above)
     for q in quotes:
+        if q.get("exchange") == "CCC":
+            continue   # crypto — always open
         override = _calc_market_state(q.get("exchange", ""), q.get("exchange_tz", ""))
         if override is not None:
             q["market_state"] = override
