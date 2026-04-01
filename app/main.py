@@ -2573,12 +2573,13 @@ def _profile_account_ids(profile_id: Optional[str], user_id: Optional[str],
 
     prof = db.query(models.AccountProfile).filter_by(id=profile_id, user_id=user_id).first()
     if not prof:
-        return None
+        # Unknown/unauthorised profile_id → show nothing (not None which shows everything)
+        return set()
     try:
         ids = json.loads(prof.account_ids or "[]")
         return set(ids) if ids else set()
     except Exception:
-        return None
+        return set()
 
 # ── Valuation ─────────────────────────────────
 @app.get("/valuation")
@@ -2598,6 +2599,19 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
     # Apply profile filter (Personal = exclude accounts owned by named profiles)
     profile_ids = _profile_account_ids(profile_id, user_id, set(all_accounts.keys()), db)
     accounts = {k: v for k, v in all_accounts.items() if profile_ids is None or k in profile_ids}
+
+    # Empty profile (e.g. Dad/Son with no accounts assigned yet) — return zero immediately
+    if not accounts:
+        return {
+            "base_currency":   base_currency.upper(),
+            "total":           0.0,
+            "cash":            0.0,
+            "crypto":          0.0,
+            "stocks":          0.0,
+            "portfolio":       [],
+            "recent_activity": [],
+        }
+
     holdings  = db.query(models.Holding).filter(
         models.Holding.account_id.in_(accounts.keys())).all()
     assets    = {a.id: a for a in db.query(models.Asset).all()}
