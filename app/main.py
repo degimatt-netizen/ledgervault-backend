@@ -281,7 +281,7 @@ def _send_email(to: str, subject: str, html: str) -> bool:
 # FX  (open.er-api.com — free, no key)
 # ─────────────────────────────────────────────
 FX_PROVIDER_URL      = os.getenv("FX_PROVIDER_URL", "https://open.er-api.com/v6/latest/USD")
-FX_CACHE_TTL_SECONDS = int(os.getenv("FX_CACHE_TTL_SECONDS", "900"))
+FX_CACHE_TTL_SECONDS = int(os.getenv("FX_CACHE_TTL_SECONDS", "60"))
 _fx_cache = {"ts": 0.0, "fx_to_usd": None}
 
 FALLBACK_FX = {
