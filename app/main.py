@@ -443,37 +443,50 @@ def _fetch_stock_price(symbol: str) -> dict | None:
     cached = _stock_cache.get(sym)
     if cached and (time.time() - cached["ts"]) < STOCK_CACHE_TTL:
         return cached
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
-        with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
-            r = c.get(url); r.raise_for_status()
-            data = r.json()
-        meta = data["chart"]["result"][0]["meta"]
-        price  = float(meta.get("regularMarketPrice", 0))
-        prev   = float(meta.get("chartPreviousClose", price) or price)
-        chg    = ((price - prev) / prev * 100) if prev else 0.0
-        exch_code = meta.get("exchangeName", "")
-        exch_full = meta.get("fullExchangeName", exch_code)
-        exchange_map = {
-            "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ",
-            "NYQ": "NYSE", "ASE": "NYSE American",
-            "PCX": "NYSE Arca", "BTS": "BATS",
-            "NasdaqGS": "NASDAQ", "NasdaqGM": "NASDAQ", "NasdaqCM": "NASDAQ",
-        }
-        exch = exchange_map.get(exch_code, exch_full or exch_code)
-        name   = meta.get("shortName", sym)
-        mstate = meta.get("marketState", "CLOSED")
-        result = {
-            "symbol": sym, "price": price, "change_pct": round(chg, 2),
-            "exchange": exch, "name": name,
-            "currency": meta.get("currency", "USD"),
-            "market_state": mstate, "ts": time.time()
-        }
-        _stock_cache[sym] = result
-        return result
-    except Exception as e:
-        logger.warning(f"Yahoo stock fetch failed for {sym}: {e}")
-        return None
+
+    # Suffixes to try in order — bare symbol first, then exchange-specific
+    base = sym.split(".")[0] if "." not in sym else sym
+    suffixes_to_try = [sym] if "." in sym else [sym, f"{sym}.L", f"{sym}.AS", f"{sym}.PA", f"{sym}.DE", f"{sym}.MI"]
+
+    def _try_fetch(ticker: str) -> dict | None:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+            with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
+                r = c.get(url); r.raise_for_status()
+                data = r.json()
+            meta = data["chart"]["result"][0]["meta"]
+            price  = float(meta.get("regularMarketPrice", 0))
+            if price == 0:
+                return None
+            prev   = float(meta.get("chartPreviousClose", price) or price)
+            chg    = ((price - prev) / prev * 100) if prev else 0.0
+            exch_code = meta.get("exchangeName", "")
+            exch_full = meta.get("fullExchangeName", exch_code)
+            exchange_map = {
+                "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ",
+                "NYQ": "NYSE", "ASE": "NYSE American",
+                "PCX": "NYSE Arca", "BTS": "BATS",
+                "NasdaqGS": "NASDAQ", "NasdaqGM": "NASDAQ", "NasdaqCM": "NASDAQ",
+                "LSE": "LSE", "IOB": "LSE",
+            }
+            exch = exchange_map.get(exch_code, exch_full or exch_code)
+            return {
+                "symbol": sym, "price": price, "change_pct": round(chg, 2),
+                "exchange": exch, "name": meta.get("shortName", ticker),
+                "currency": meta.get("currency", "USD"),
+                "market_state": meta.get("marketState", "CLOSED"), "ts": time.time()
+            }
+        except Exception:
+            return None
+
+    for ticker in suffixes_to_try:
+        result = _try_fetch(ticker)
+        if result:
+            _stock_cache[sym] = result
+            return result
+
+    logger.warning(f"Yahoo stock fetch failed for {sym} (tried: {suffixes_to_try})")
+    return None
 
 # ─────────────────────────────────────────────
 # ASSET RESOLUTION HELPER
