@@ -13,6 +13,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from cryptography.fernet import Fernet, InvalidToken
 import pyotp
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.db import engine, SessionLocal, Base
 from sqlalchemy import text as _sql_text, func as _sqlfunc
@@ -36,6 +37,68 @@ from app.schemas import (
 
 app = FastAPI(title="LedgerVault API", version="4.3.0")
 models.Base.metadata.create_all(bind=engine)
+
+# ── Recurring transaction scheduler ──────────────────────────────────────────
+def _auto_execute_recurring():
+    """Hourly job: execute all enabled recurring transactions that are due."""
+    db = SessionLocal()
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        due = db.query(models.RecurringTransaction).filter(
+            models.RecurringTransaction.enabled == True,
+            models.RecurringTransaction.next_run_date <= today
+        ).all()
+        for item in due:
+            try:
+                # Skip if already executed today (idempotency check)
+                existing = db.query(models.TransactionEvent).filter(
+                    models.TransactionEvent.external_id == f"recurring:{item.id}:{today}"
+                ).first()
+                if existing:
+                    continue
+                from_account = db.query(models.Account).filter(
+                    models.Account.id == item.from_account_id).first()
+                if not from_account:
+                    continue
+                legs_data = []
+                from_asset = _resolve_asset(item.from_asset_id or "", from_account, db)
+                legs_data.append({
+                    "account_id": item.from_account_id, "asset_id": from_asset.id,
+                    "quantity": -item.from_quantity, "unit_price": item.unit_price,
+                    "fee_flag": "false"
+                })
+                if item.to_account_id and item.to_quantity:
+                    to_account = db.query(models.Account).filter(
+                        models.Account.id == item.to_account_id).first()
+                    if to_account:
+                        to_asset = _resolve_asset(item.to_asset_id or "", to_account, db)
+                        legs_data.append({
+                            "account_id": item.to_account_id, "asset_id": to_asset.id,
+                            "quantity": item.to_quantity, "unit_price": item.unit_price,
+                            "fee_flag": "false"
+                        })
+                event = models.TransactionEvent(
+                    id=str(uuid4()), event_type=item.event_type,
+                    category=item.category, description=item.description or item.name,
+                    date=today, note=item.note, source="recurring",
+                    external_id=f"recurring:{item.id}:{today}",
+                )
+                db.add(event); db.flush()
+                _apply_legs(legs_data, event.id, db)
+                item.last_run_date = today
+                item.next_run_date = _advance_date(today, item.frequency)
+                db.commit()
+                logger.info(f"Auto-executed recurring transaction {item.id} ({item.name})")
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Failed to auto-execute recurring {item.id}: {e}")
+    finally:
+        db.close()
+
+_scheduler = BackgroundScheduler()
+_scheduler.add_job(_auto_execute_recurring, "interval", hours=1, id="recurring_executor",
+                   next_run_time=datetime.now())  # run immediately on startup too
+_scheduler.start()
 
 logger = logging.getLogger("ledgervault")
 
@@ -3292,6 +3355,80 @@ def delete_recurring_transaction(rt_id: str, db: Session = Depends(get_db),
         raise HTTPException(status_code=403, detail="Forbidden")
     db.delete(item); db.commit()
     return {"status": "ok"}
+
+@app.get("/spending/summary")
+def spending_summary(
+    year: int = Query(None), month: int = Query(None),
+    base_currency: str = "EUR",
+    profile_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    user_id: Optional[str] = Depends(get_user_id)
+):
+    """Monthly spending/income breakdown by category."""
+    now = datetime.now()
+    y = year or now.year
+    m = month or now.month
+    start = f"{y:04d}-{m:02d}-01"
+    # last day of month
+    if m == 12:
+        end = f"{y+1:04d}-01-01"
+    else:
+        end = f"{y:04d}-{m+1:02d}-01"
+
+    events_q = db.query(models.TransactionEvent).filter(
+        models.TransactionEvent.date >= start,
+        models.TransactionEvent.date < end
+    )
+    # profile filter via account ownership
+    account_ids = None
+    if profile_id or user_id:
+        acct_q = db.query(models.Account)
+        if profile_id:
+            acct_q = acct_q.filter(models.Account.profile_id == profile_id)
+        elif user_id:
+            acct_q = acct_q.filter(models.Account.user_id == user_id)
+        account_ids = {a.id for a in acct_q.all()}
+
+    fx = _get_fx_rates()
+    income_by_cat: dict = {}
+    expense_by_cat: dict = {}
+
+    for event in events_q.all():
+        et = event.event_type.lower()
+        if et not in ("income", "expense"):
+            continue
+        # check account filter
+        legs = db.query(models.TransactionLeg).filter(
+            models.TransactionLeg.event_id == event.id,
+            models.TransactionLeg.fee_flag != "true"
+        ).all()
+        if account_ids is not None:
+            if not any(leg.account_id in account_ids for leg in legs):
+                continue
+        # sum absolute value in base_currency
+        total = 0.0
+        for leg in legs:
+            qty = abs(leg.quantity)
+            if qty == 0:
+                continue
+            asset = db.query(models.Asset).filter(models.Asset.id == leg.asset_id).first() if leg.asset_id else None
+            symbol = asset.symbol.upper() if asset else base_currency.upper()
+            usd_val = qty * (fx.get(symbol, 1.0))
+            base_usd = fx.get(base_currency.upper(), 1.0)
+            total += usd_val / base_usd if base_usd else usd_val
+        cat = event.category or ("Salary" if et == "income" else "Other")
+        if et == "income":
+            income_by_cat[cat] = income_by_cat.get(cat, 0.0) + total
+        else:
+            expense_by_cat[cat] = expense_by_cat.get(cat, 0.0) + total
+
+    return {
+        "year": y, "month": m, "base_currency": base_currency,
+        "income": [{"category": k, "amount": round(v, 2)} for k, v in sorted(income_by_cat.items(), key=lambda x: -x[1])],
+        "expenses": [{"category": k, "amount": round(v, 2)} for k, v in sorted(expense_by_cat.items(), key=lambda x: -x[1])],
+        "total_income": round(sum(income_by_cat.values()), 2),
+        "total_expenses": round(sum(expense_by_cat.values()), 2),
+    }
 
 @app.post("/recurring-transactions/{rt_id}/execute")
 def execute_recurring_transaction(rt_id: str, db: Session = Depends(get_db),
