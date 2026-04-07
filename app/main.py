@@ -2708,7 +2708,7 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
         for h in holdings
         if h.asset_id in assets and assets[h.asset_id].asset_class in ("stock", "etf")
     }
-    stock_prices: dict[str, float] = {}
+    stock_prices: dict[str, dict] = {}   # sym → {price, currency}
     if stock_symbols:
         with ThreadPoolExecutor(max_workers=min(len(stock_symbols), 8)) as pool:
             futures = {pool.submit(_fetch_stock_price, sym): sym for sym in stock_symbols}
@@ -2716,7 +2716,10 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
                 sym = futures[fut]
                 info = fut.result()
                 if info:
-                    stock_prices[sym] = info["price"]
+                    stock_prices[sym] = {
+                        "price": info["price"],
+                        "currency": info.get("currency", "USD").upper()
+                    }
 
     # Stablecoins are crypto assets that track fiat — count them in cash, not crypto
     STABLECOIN_SYMBOLS = {
@@ -2745,11 +2748,16 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
             price_usd = crypto_prices.get(sym, 0.0)
             native_price = price_usd   # crypto quoted in USD
         elif asset.asset_class in ("stock","etf"):
-            # Yahoo Finance returns the stock price in its native currency (e.g. EUR for VUSA.AS)
-            native_price = stock_prices.get(sym, 0.0)
-            # Convert native price to USD for consistent portfolio math
-            if quote_ccy != "USD" and quote_ccy in fx:
-                price_usd = native_price * fx.get(quote_ccy, 1.0)
+            stock_info  = stock_prices.get(sym, {})
+            native_price = stock_info.get("price", 0.0)
+            # Use the ACTUAL currency Yahoo Finance returned (may differ from asset.quote_currency)
+            actual_ccy  = stock_info.get("currency", quote_ccy)
+            if actual_ccy == "GBp":   # Yahoo sometimes returns pence
+                native_price /= 100.0
+                actual_ccy = "GBP"
+            # Convert actual native price to USD for consistent portfolio math
+            if actual_ccy != "USD" and actual_ccy in fx:
+                price_usd = native_price * fx.get(actual_ccy, 1.0)
             else:
                 price_usd = native_price
         else:
