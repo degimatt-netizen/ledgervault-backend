@@ -438,15 +438,24 @@ BSCSCAN_KEY     = os.getenv("BSCSCAN_API_KEY",     "")
 POLYGONSCAN_KEY = os.getenv("POLYGONSCAN_API_KEY", "")
 _stock_cache: dict[str, dict] = {}   # symbol → {price, change_pct, exchange, name, ts}
 
-def _fetch_stock_price(symbol: str) -> dict | None:
+def _fetch_stock_price(symbol: str, preferred_currency: str | None = None) -> dict | None:
     sym = symbol.upper()
     cached = _stock_cache.get(sym)
     if cached and (time.time() - cached["ts"]) < STOCK_CACHE_TTL:
         return cached
 
-    # Suffixes to try in order — bare symbol first, then exchange-specific
-    base = sym.split(".")[0] if "." not in sym else sym
-    suffixes_to_try = [sym] if "." in sym else [sym, f"{sym}.L", f"{sym}.AS", f"{sym}.PA", f"{sym}.DE", f"{sym}.MI"]
+    # Build suffix order based on preferred currency so we hit the right exchange first.
+    # EUR  → Euronext Amsterdam/Paris/Frankfurt/Milan before LSE
+    # GBP  → LSE first
+    # default (USD or unknown) → try bare symbol, then LSE, then EU exchanges
+    if "." in sym:
+        suffixes_to_try = [sym]
+    elif preferred_currency and preferred_currency.upper() == "EUR":
+        suffixes_to_try = [sym, f"{sym}.AS", f"{sym}.PA", f"{sym}.DE", f"{sym}.MI", f"{sym}.L"]
+    elif preferred_currency and preferred_currency.upper() == "GBP":
+        suffixes_to_try = [sym, f"{sym}.L", f"{sym}.AS", f"{sym}.PA", f"{sym}.DE", f"{sym}.MI"]
+    else:
+        suffixes_to_try = [sym, f"{sym}.L", f"{sym}.AS", f"{sym}.PA", f"{sym}.DE", f"{sym}.MI"]
 
     def _try_fetch(ticker: str) -> dict | None:
         try:
@@ -2703,15 +2712,17 @@ def valuation(base_currency: str = "EUR", profile_id: Optional[str] = Query(None
         models.Holding.account_id.in_(accounts.keys())).all()
     assets    = {a.id: a for a in db.query(models.Asset).all()}
 
-    stock_symbols = {
-        assets[h.asset_id].symbol.upper()
+    # Build sym → quote_currency map so we can hint Yahoo Finance which exchange to prefer
+    sym_to_quote_ccy: dict[str, str] = {
+        assets[h.asset_id].symbol.upper(): (assets[h.asset_id].quote_currency or "USD")
         for h in holdings
         if h.asset_id in assets and assets[h.asset_id].asset_class in ("stock", "etf")
     }
+    stock_symbols = set(sym_to_quote_ccy.keys())
     stock_prices: dict[str, dict] = {}   # sym → {price, currency}
     if stock_symbols:
         with ThreadPoolExecutor(max_workers=min(len(stock_symbols), 8)) as pool:
-            futures = {pool.submit(_fetch_stock_price, sym): sym for sym in stock_symbols}
+            futures = {pool.submit(_fetch_stock_price, sym, sym_to_quote_ccy.get(sym)): sym for sym in stock_symbols}
             for fut in as_completed(futures):
                 sym = futures[fut]
                 info = fut.result()
