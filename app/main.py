@@ -1999,6 +1999,17 @@ def auth_register(request: Request, payload: RegisterRequest, db: Session = Depe
     email = payload.email.strip().lower()
     existing = db.query(models.User).filter(models.User.email == email).first()
     if existing:
+        if not existing.is_verified:
+            # Unverified user trying again — resend the verification code
+            code = _gen_otp()
+            existing.verify_code = code
+            existing.verify_expires = _otp_expires()
+            db.commit()
+            _send_email(email, "Verify your LedgerVault account",
+                f"<p>Your verification code is: <strong>{code}</strong></p>"
+                f"<p>It expires in 15 minutes.</p>")
+            return AuthResponse(status="needs_verification", email=email,
+                                message="Check your email for a 6-digit verification code.")
         raise HTTPException(status_code=409, detail="Email already registered")
     code = _gen_otp()
     user = models.User(
