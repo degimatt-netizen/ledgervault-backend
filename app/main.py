@@ -381,6 +381,20 @@ def convert_usd_to_base(value_usd: float, base: str, fx: dict) -> float:
     rate = fx.get(base.upper(), 1.0)
     return value_usd / rate if rate else value_usd
 
+# Stablecoins must never be used as an account base_currency — map them to their
+# underlying fiat so balance maths and FX conversions work correctly.
+_STABLECOIN_TO_FIAT: dict[str, str] = {
+    "USDT": "USD", "USDC": "USD", "BUSD": "USD", "DAI":   "USD",
+    "TUSD": "USD", "USDP": "USD", "GUSD": "USD", "LUSD":  "USD",
+    "FRAX": "USD", "USDD": "USD", "PYUSD":"USD", "FDUSD": "USD",
+    "EURT": "EUR", "EURS": "EUR", "AGEUR":"EUR",
+}
+
+def normalize_base_currency(currency: str) -> str:
+    """Return the real fiat symbol for stablecoin inputs, else uppercase as-is."""
+    upper = currency.strip().upper()
+    return _STABLECOIN_TO_FIAT.get(upper, upper)
+
 # ─────────────────────────────────────────────
 # CRYPTO PRICES  (CoinGecko — free, no key)
 # ─────────────────────────────────────────────
@@ -3044,10 +3058,26 @@ def create_account(payload: AccountCreate, db: Session = Depends(get_db),
                    user_id: Optional[str] = Depends(get_user_id)):
     item = models.Account(id=str(uuid4()), name=payload.name,
                           account_type=payload.account_type,
-                          base_currency=payload.base_currency.upper(),
+                          base_currency=normalize_base_currency(payload.base_currency),
                           exclude_from_total=payload.exclude_from_total,
                           user_id=user_id)
     db.add(item); db.commit(); db.refresh(item); return item
+
+@app.post("/accounts/fix-base-currencies")
+def fix_account_base_currencies(db: Session = Depends(get_db),
+                                 user_id: str = Depends(require_user_id)):
+    """One-shot: normalise stablecoin base_currency values (e.g. USDC→USD, USDT→USD)
+    for all accounts belonging to the current user."""
+    accounts = db.query(models.Account).filter(models.Account.user_id == user_id).all()
+    fixed = []
+    for acc in accounts:
+        normalized = normalize_base_currency(acc.base_currency)
+        if normalized != acc.base_currency:
+            fixed.append({"id": acc.id, "name": acc.name,
+                           "old": acc.base_currency, "new": normalized})
+            acc.base_currency = normalized
+    db.commit()
+    return {"fixed": len(fixed), "accounts": fixed}
 
 @app.put("/accounts/{account_id}", response_model=AccountOut)
 def update_account(account_id: str, payload: AccountUpdate, db: Session = Depends(get_db),
@@ -3057,7 +3087,7 @@ def update_account(account_id: str, payload: AccountUpdate, db: Session = Depend
     if item.user_id != user_id: raise HTTPException(status_code=403, detail="Forbidden")
     if payload.name is not None:               item.name               = payload.name
     if payload.account_type is not None:       item.account_type       = payload.account_type
-    if payload.base_currency is not None:      item.base_currency      = payload.base_currency.upper()
+    if payload.base_currency is not None:      item.base_currency      = normalize_base_currency(payload.base_currency)
     if payload.exclude_from_total is not None: item.exclude_from_total = payload.exclude_from_total
     db.commit(); db.refresh(item); return item
 
