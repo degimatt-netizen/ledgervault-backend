@@ -2877,12 +2877,21 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
                       db: Session = Depends(get_db),
                       user_id: Optional[str] = Depends(get_user_id)):
     cache_key = f"{days}:{base_currency.upper()}:{user_id or ''}:{profile_id or ''}"
-    if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < HIST_CACHE_TTL:
+    # 1D cache is shorter (5 min) since intraday data changes frequently
+    ttl = 300 if days == 1 else HIST_CACHE_TTL
+    if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < ttl:
         return _hist_cache["data"]
 
     from datetime import date as date_type
     today = date_type.today()
-    dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+    intraday = (days == 1)   # special hourly mode
+
+    if intraday:
+        # Generate hourly slots from 00:00 to the current hour (UTC)
+        now_utc = datetime.now(timezone.utc)
+        slots = [f"{h:02d}:00" for h in range(now_utc.hour + 1)]
+    else:
+        dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
 
     acct_q = db.query(models.Account)
     if user_id:
@@ -2924,14 +2933,27 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
                 if not cg_id:
                     continue
                 try:
-                    hist_url = (f"https://api.coingecko.com/api/v3/coins/{cg_id}"
-                                f"/market_chart?vs_currency=usd&days={days}&interval=daily")
-                    with httpx.Client(timeout=10.0) as c:
-                        r = c.get(hist_url); r.raise_for_status()
-                    price_history[sym] = {}
-                    for ts_ms, price in r.json().get("prices", []):
-                        d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date().isoformat()
-                        price_history[sym][d] = float(price)
+                    if intraday:
+                        # days=1 → CoinGecko returns 5-min intervals automatically
+                        hist_url = (f"https://api.coingecko.com/api/v3/coins/{cg_id}"
+                                    f"/market_chart?vs_currency=usd&days=1")
+                        with httpx.Client(timeout=10.0) as c:
+                            r = c.get(hist_url); r.raise_for_status()
+                        price_history[sym] = {}
+                        for ts_ms, price in r.json().get("prices", []):
+                            dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                            # Keep most-recent price per hour slot
+                            slot = f"{dt.hour:02d}:00"
+                            price_history[sym][slot] = float(price)
+                    else:
+                        hist_url = (f"https://api.coingecko.com/api/v3/coins/{cg_id}"
+                                    f"/market_chart?vs_currency=usd&days={days}&interval=daily")
+                        with httpx.Client(timeout=10.0) as c:
+                            r = c.get(hist_url); r.raise_for_status()
+                        price_history[sym] = {}
+                        for ts_ms, price in r.json().get("prices", []):
+                            d = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date().isoformat()
+                            price_history[sym][d] = float(price)
                 except Exception as e:
                     logger.warning(f"CoinGecko history failed for {sym}: {e}")
         except Exception as e:
@@ -2939,9 +2961,13 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
 
     # Stock history via Yahoo Finance
     def _fetch_stock_history(sym: str) -> tuple[str, dict[str, float]]:
-        yf_range = f"{min(days, 365)}d"
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
-               f"?interval=1d&range={yf_range}")
+        if intraday:
+            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+                   f"?interval=1h&range=1d")
+        else:
+            yf_range = f"{min(days, 365)}d"
+            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+                   f"?interval=1d&range={yf_range}")
         try:
             with httpx.Client(timeout=8.0, headers={"User-Agent": "Mozilla/5.0"}) as c:
                 r = c.get(url); r.raise_for_status()
@@ -2951,8 +2977,13 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
             hist = {}
             for ts, close in zip(timestamps, closes):
                 if close is not None:
-                    d = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
-                    hist[d] = float(close)
+                    if intraday:
+                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                        slot = f"{dt.hour:02d}:00"
+                        hist[slot] = float(close)
+                    else:
+                        d = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+                        hist[d] = float(close)
             return sym, hist
         except Exception as e:
             logger.warning(f"Yahoo history failed for {sym}: {e}")
@@ -2964,19 +2995,20 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
                 if hist:
                     price_history[sym] = hist
 
-    # -- Compute daily totals --
-    def _get_price(sym: str, date_str: str) -> float:
+    # -- Compute totals per slot (hourly for 1D, daily otherwise) --
+    def _get_price(sym: str, slot: str) -> float:
         hist = price_history.get(sym)
         if not hist:
             return 0.0
-        if date_str in hist:
-            return hist[date_str]
-        # Fall back to most-recent available price before this date
-        past = sorted(d for d in hist if d <= date_str)
+        if slot in hist:
+            return hist[slot]
+        # Fall back to most-recent available price before this slot
+        past = sorted(d for d in hist if d <= slot)
         return hist[past[-1]] if past else 0.0
 
     points = []
-    for date_str in dates:
+    slot_list = slots if intraday else dates
+    for slot in slot_list:
         total = 0.0
         for holding in holdings:
             asset = assets.get(holding.asset_id)
@@ -2986,12 +3018,12 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
             if asset.asset_class == "fiat":
                 price_usd = fx.get(sym, 1.0)
             elif asset.asset_class in ("crypto", "stock", "etf"):
-                price_usd = _get_price(sym, date_str)
+                price_usd = _get_price(sym, slot)
             else:
                 price_usd = 0.0
             value_usd = holding.quantity * price_usd
             total += convert_usd_to_base(value_usd, base_currency, fx)
-        points.append({"date": date_str, "total": round(total, 2)})
+        points.append({"date": slot, "total": round(total, 2)})
 
     result = {"base_currency": base_currency.upper(), "days": days, "points": points}
     _hist_cache.update({"ts": time.time(), "key": cache_key, "data": result})
