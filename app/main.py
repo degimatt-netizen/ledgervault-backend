@@ -2366,7 +2366,7 @@ def auth_logout(user_id: str = Depends(require_user_id), db: Session = Depends(g
 
 @app.delete("/auth/account")
 def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):
-    """Hard-delete the authenticated user and all their data."""
+    """Hard-delete the authenticated user and ALL their data."""
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -2399,17 +2399,17 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
             models.Holding.account_id.in_(account_ids)
         ).delete(synchronize_session=False)
 
-        # Delete exchange connections
+        # Delete exchange connections (Binance / Kraken API keys)
         db.query(models.ExchangeConnection).filter(
             models.ExchangeConnection.account_id.in_(account_ids)
         ).delete(synchronize_session=False)
 
-        # Delete bank connections
+        # Delete bank connections (open-banking tokens)
         db.query(models.BankConnection).filter(
             models.BankConnection.ledger_account_id.in_(account_ids)
         ).delete(synchronize_session=False)
 
-        # Delete recurring transactions
+        # Delete recurring transaction rules (account-scoped)
         db.query(models.RecurringTransaction).filter(
             models.RecurringTransaction.from_account_id.in_(account_ids)
         ).delete(synchronize_session=False)
@@ -2419,7 +2419,33 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
             models.Account.user_id == user_id
         ).delete(synchronize_session=False)
 
-    # Finally delete the user
+    # Delete user-scoped data not tied to a specific account
+    db.query(models.SnaptradeConnection).filter(
+        models.SnaptradeConnection.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.VezgoConnection).filter(
+        models.VezgoConnection.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.FlanksBrokerConnection).filter(
+        models.FlanksBrokerConnection.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.AccountProfile).filter(
+        models.AccountProfile.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.WatchlistItem).filter(
+        models.WatchlistItem.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # Delete any remaining recurring transactions directly tied to user_id
+    db.query(models.RecurringTransaction).filter(
+        models.RecurringTransaction.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # Finally delete the user record itself
     db.delete(user)
     db.commit()
     return {"status": "deleted"}
