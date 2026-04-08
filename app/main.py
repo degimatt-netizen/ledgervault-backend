@@ -3101,6 +3101,53 @@ def list_transaction_legs(db: Session = Depends(get_db), user_id: Optional[str] 
     return {"items": db.query(models.TransactionLeg).filter(
         models.TransactionLeg.account_id.in_(user_account_ids)).all()}
 
+@app.put("/holdings/{holding_id}")
+def update_holding(holding_id: str, payload: dict, db: Session = Depends(get_db),
+                   user_id: str = Depends(require_user_id)):
+    """Directly update a holding's quantity and/or avg_cost (for manual corrections)."""
+    holding = db.query(models.Holding).filter(models.Holding.id == holding_id).first()
+    if not holding:
+        raise HTTPException(status_code=404, detail="Holding not found")
+    acct = db.query(models.Account).filter(
+        models.Account.id == holding.account_id,
+        models.Account.user_id == user_id).first()
+    if not acct:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if "quantity" in payload and payload["quantity"] is not None:
+        holding.quantity = float(payload["quantity"])
+    if "avg_cost" in payload and payload["avg_cost"] is not None:
+        holding.avg_cost = float(payload["avg_cost"])
+    db.commit(); db.refresh(holding)
+    return {"id": holding.id, "account_id": holding.account_id, "asset_id": holding.asset_id,
+            "quantity": holding.quantity, "avg_cost": holding.avg_cost}
+
+@app.delete("/holdings/{holding_id}")
+def delete_holding(holding_id: str, db: Session = Depends(get_db),
+                   user_id: str = Depends(require_user_id)):
+    """Delete a holding and all its associated transaction legs/events."""
+    holding = db.query(models.Holding).filter(models.Holding.id == holding_id).first()
+    if not holding:
+        raise HTTPException(status_code=404, detail="Holding not found")
+    acct = db.query(models.Account).filter(
+        models.Account.id == holding.account_id,
+        models.Account.user_id == user_id).first()
+    if not acct:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    # Find all event_ids whose legs touch this holding (account + asset)
+    event_ids = [r[0] for r in db.query(models.TransactionLeg.event_id).filter(
+        models.TransactionLeg.account_id == holding.account_id,
+        models.TransactionLeg.asset_id == holding.asset_id).distinct().all()]
+    for eid in event_ids:
+        legs = db.query(models.TransactionLeg).filter(models.TransactionLeg.event_id == eid).all()
+        for leg in legs:
+            db.delete(leg)
+        event = db.query(models.TransactionEvent).filter(models.TransactionEvent.id == eid).first()
+        if event:
+            db.delete(event)
+    db.delete(holding)
+    db.commit()
+    return {"ok": True}
+
 @app.put("/transaction-events/{event_id}", response_model=TransactionEventOut)
 def update_transaction_event(event_id: str, payload: TransactionEventUpdate, db: Session = Depends(get_db),
                               user_id: str = Depends(require_user_id)):
