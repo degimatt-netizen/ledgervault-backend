@@ -401,6 +401,15 @@ def normalize_base_currency(currency: str) -> str:
 CRYPTO_CACHE_TTL = int(os.getenv("CRYPTO_CACHE_TTL_SECONDS", "120"))
 _crypto_cache = {"ts": 0.0, "prices": {}, "meta": {}}   # symbol.upper() → price_usd / full coin meta
 
+# Stablecoins are always $1 (±tiny deviation) — never fetch these from CoinGecko
+# so a CoinGecko outage never zeros-out stablecoin portfolio values.
+_STABLECOIN_HARDCODED_USD: dict[str, float] = {
+    "USDT": 1.0, "USDC": 1.0, "BUSD": 1.0, "DAI": 1.0, "TUSD": 1.0,
+    "USDP": 1.0, "FRAX": 1.0, "LUSD": 1.0, "PYUSD": 1.0, "FDUSD": 1.0,
+    "GUSD": 1.0, "PAX": 1.0, "USDD": 1.0, "USDE": 1.0, "SUSDE": 1.0,
+    "USDBC": 1.0, "USDS": 1.0, "CUSD": 1.0,
+}
+
 COINGECKO_TOP_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
     "?vs_currency=usd&order=market_cap_desc&per_page=250&page=1"
@@ -412,16 +421,39 @@ COINGECKO_PRICE_URL  = (
     "?ids={ids}&vs_currencies=usd&include_24hr_change=true"
 )
 
+def _fetch_binance_spot_prices() -> dict[str, float]:
+    """Binance public ticker — no API key, returns USDT-pair prices as USD."""
+    try:
+        with httpx.Client(timeout=8.0) as c:
+            r = c.get("https://api.binance.com/api/v3/ticker/price")
+            r.raise_for_status()
+        prices: dict[str, float] = {}
+        for t in r.json():
+            sym: str = t.get("symbol", "")
+            if sym.endswith("USDT"):
+                base = sym[:-4]  # e.g. "BTCUSDT" → "BTC"
+                try:
+                    prices[base] = float(t["price"])
+                except (ValueError, KeyError):
+                    pass
+        return prices
+    except Exception:
+        logger.warning("Binance fallback fetch failed")
+        return {}
+
 def _fetch_crypto_prices() -> dict:
     now = time.time()
     if _crypto_cache["prices"] and (now - _crypto_cache["ts"]) < CRYPTO_CACHE_TTL:
         return _crypto_cache["prices"]
+
+    prices: dict[str, float] = {}
+    meta: dict[str, dict] = {}
+
+    # ── Primary: CoinGecko top-250 ────────────────────────────────────────────
     try:
-        with httpx.Client(timeout=10.0) as c:
+        with httpx.Client(timeout=12.0) as c:
             r = c.get(COINGECKO_TOP_URL); r.raise_for_status()
             coins = r.json()
-        prices = {}
-        meta = {}
         for coin in coins:
             sym = coin.get("symbol", "").upper()
             p   = coin.get("current_price")
@@ -435,11 +467,25 @@ def _fetch_crypto_prices() -> dict:
                     "change_pct": round(chg_pct, 4),
                     "change":     round(price * chg_pct / 100, 6),
                 }
+    except Exception:
+        logger.exception("CoinGecko prices fetch failed — trying Binance fallback")
+
+    # ── Fallback: Binance spot (no key, fills gaps when CoinGecko fails/rate-limits) ──
+    if len(prices) < 20:
+        for sym, p in _fetch_binance_spot_prices().items():
+            if sym not in prices:
+                prices[sym] = p
+
+    # ── Always inject hardcoded stablecoin prices ($1) ────────────────────────
+    # These are rock-stable; a CoinGecko outage must never zero stablecoin values.
+    for sym, p in _STABLECOIN_HARDCODED_USD.items():
+        prices.setdefault(sym, p)   # only fills gaps — real price wins if available
+
+    if prices:
         _crypto_cache.update({"ts": now, "prices": prices, "meta": meta})
         return prices
-    except Exception:
-        logger.exception("CoinGecko prices fetch failed")
-        return _crypto_cache.get("prices", {})
+    # Last resort: serve stale cache (better than zeros)
+    return _crypto_cache.get("prices", {}) or dict(_STABLECOIN_HARDCODED_USD)
 
 # ─────────────────────────────────────────────
 # STOCK PRICES  (Yahoo Finance — free, no key)
