@@ -529,14 +529,12 @@ def _apns_price_alert_job() -> None:
                 # Accumulate portfolio total
                 total_value_usd += holding.quantity * price_usd
 
-                # Per-symbol alert (skip fiat — FX noise isn't actionable)
+                # Per-symbol alert — fixed 5% threshold (always notable for a single asset)
                 if ac in ("stock", "etf", "crypto"):
                     last = _apns_last_prices.get(sym)
                     if last and last > 0:
                         pct = ((price_usd - last) / last) * 100
-                        # Use the lowest threshold across this user's devices
-                        min_threshold = min((thr for _, _, thr in user_tokens), default=3.0)
-                        if abs(pct) >= min_threshold and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                        if abs(pct) >= 5.0 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
                             triggered.append((sym, pct))
                             _apns_cooldowns[sym] = now_ts
                     _apns_last_prices[sym] = price_usd
