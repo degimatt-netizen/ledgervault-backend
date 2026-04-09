@@ -1,5 +1,43 @@
+import os
 from sqlalchemy import Column, String, Float, Boolean, ForeignKey, Text
+from sqlalchemy.types import TypeDecorator
 from app.db import Base
+
+# ── Transparent field-level encryption ───────────────────────────────────────
+# Uses the same ENCRYPTION_KEY env var as main.py.
+# If the key is absent, fields are stored/returned as plain text (dev mode).
+# Existing plaintext rows are returned as-is (graceful legacy fallback).
+try:
+    from cryptography.fernet import Fernet, InvalidToken as _InvalidToken
+    _enc_key = os.getenv("ENCRYPTION_KEY", "")
+    _fernet  = Fernet(_enc_key.encode()) if _enc_key else None
+except Exception:
+    _fernet = None
+
+
+class EncryptedString(TypeDecorator):
+    """
+    SQLAlchemy column type that transparently encrypts on write and
+    decrypts on read using AES-128 (Fernet).  Falls back to plain text
+    when ENCRYPTION_KEY is not configured or the value is legacy plaintext.
+    """
+    impl          = String
+    cache_ok      = True
+
+    def process_bind_param(self, value, dialect):
+        """Encrypt before INSERT / UPDATE."""
+        if value is None or not _fernet:
+            return value
+        return _fernet.encrypt(value.encode()).decode()
+
+    def process_result_value(self, value, dialect):
+        """Decrypt after SELECT."""
+        if value is None or not _fernet:
+            return value
+        try:
+            return _fernet.decrypt(value.encode()).decode()
+        except (_InvalidToken, Exception):
+            return value   # already plaintext (pre-encryption legacy row)
 
 
 class User(Base):
@@ -28,7 +66,7 @@ class Account(Base):
 
     id = Column(String, primary_key=True, index=True)
     user_id = Column(String, nullable=True, index=True)  # null = guest / legacy
-    name = Column(String, nullable=False)
+    name = Column(EncryptedString, nullable=False)
     account_type = Column(String, nullable=False)   # bank, exchange, broker, crypto_wallet, cash
     base_currency = Column(String, nullable=False)
     exclude_from_total = Column(Boolean, nullable=False, default=False)
@@ -59,10 +97,10 @@ class TransactionEvent(Base):
 
     id = Column(String, primary_key=True, index=True)
     event_type = Column(String, nullable=False)     # income, expense, transfer, conversion, trade
-    category = Column(String, nullable=True)
-    description = Column(String, nullable=True)
+    category = Column(EncryptedString, nullable=True)
+    description = Column(EncryptedString, nullable=True)
     date = Column(String, nullable=False)           # ISO date string for now
-    note = Column(String, nullable=True)
+    note = Column(EncryptedString, nullable=True)
 
     source = Column(String, nullable=False, default="manual")   # manual, api, imported
     external_id = Column(String, nullable=True)
@@ -169,11 +207,11 @@ class RecurringTransaction(Base):
 
     id = Column(String, primary_key=True, index=True)
     user_id = Column(String, nullable=True, index=True)   # null = legacy pre-auth row
-    name = Column(String, nullable=False)
+    name = Column(EncryptedString, nullable=False)
     event_type = Column(String, nullable=False)     # income, expense, transfer, trade
-    category = Column(String, nullable=True)
-    description = Column(String, nullable=True)
-    note = Column(String, nullable=True)
+    category = Column(EncryptedString, nullable=True)
+    description = Column(EncryptedString, nullable=True)
+    note = Column(EncryptedString, nullable=True)
 
     # Source leg (debit side)
     from_account_id = Column(String, ForeignKey("accounts.id"), nullable=False)
