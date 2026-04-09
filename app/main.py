@@ -534,7 +534,7 @@ def _apns_price_alert_job() -> None:
                     last = _apns_last_prices.get(sym)
                     if last and last > 0:
                         pct = ((price_usd - last) / last) * 100
-                        if abs(pct) >= 5.0 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                        if abs(pct) >= 3.0 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
                             triggered.append((sym, pct))
                             _apns_cooldowns[sym] = now_ts
                     _apns_last_prices[sym] = price_usd
