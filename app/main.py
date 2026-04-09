@@ -424,32 +424,40 @@ def _send_apns_sync(
         return False
 
 
-# Server-side state for APNs price alerts (in-memory; resets on restart — fine for this use)
-_apns_last_prices: dict[str, float] = {}   # symbol → last price snapshot
-_apns_cooldowns:   dict[str, float] = {}   # symbol → timestamp of last alert push
+# Server-side state for APNs price alerts (in-memory; resets on restart — acceptable)
+_apns_last_prices:         dict[str, float] = {}  # symbol → last checked price (USD)
+_apns_cooldowns:           dict[str, float] = {}  # symbol → timestamp of last per-symbol push
+_apns_portfolio_values:    dict[str, float] = {}  # user_id → last total portfolio value (USD)
+_apns_portfolio_cooldowns: dict[str, float] = {}  # user_id → timestamp of last portfolio push
 
 
 def _apns_price_alert_job() -> None:
-    """APScheduler job — runs every 5 min. Sends price-volatility APNs pushes."""
+    """
+    APScheduler job — runs every 5 min.
+    • Proactively fetches fresh stock quotes for every user's held stocks.
+    • Sends per-symbol APNs push if any asset moves ≥ 4 % since last check.
+    • Sends portfolio-level push if the total portfolio value moves ≥ 5 %.
+    """
     if not _get_apns_jwt():
         return  # APNs not configured — skip silently
     db = SessionLocal()
     try:
-        tokens: list[models.DeviceToken] = db.query(models.DeviceToken).all()
+        tokens: list = db.query(models.DeviceToken).all()
         if not tokens:
             return
 
-        # Group tokens by user_id so we can do per-user symbol lookups
-        token_map: dict[str, list[tuple[str, bool]]] = {}
+        # Group tokens by user_id
+        token_map: dict = {}
         for t in tokens:
             token_map.setdefault(t.user_id, []).append((t.token, bool(t.sandbox)))
 
-        # Grab current prices from the in-memory caches (no extra API calls)
-        crypto_prices: dict[str, float] = dict(_crypto_cache.get("prices", {}))
+        # Crypto prices from cache (populated by the regular cache refresh)
+        crypto_prices: dict = dict(_crypto_cache.get("prices", {}))
+        fx_to_usd: dict = _fx_cache.get("fx_to_usd") or {}
         now_ts = time.time()
 
         for user_id, user_tokens in token_map.items():
-            # Build the set of symbols this user actually holds
+            # ── Load user holdings ───────────────────────────────────────────
             acct_ids = [
                 a.id for a in db.query(models.Account)
                 .filter(models.Account.user_id == user_id).all()
@@ -457,48 +465,98 @@ def _apns_price_alert_job() -> None:
             if not acct_ids:
                 continue
             rows = (
-                db.query(models.Holding, models.Asset)
+                db.query(models.Holding, models.Asset, models.Account)
                 .join(models.Asset, models.Holding.asset_id == models.Asset.id)
+                .join(models.Account, models.Holding.account_id == models.Account.id)
                 .filter(
                     models.Holding.account_id.in_(acct_ids),
                     models.Holding.quantity > 1e-8,
                 )
                 .all()
             )
-            held_symbols: set[str] = {r.Asset.symbol.upper() for r in rows}
-            if not held_symbols:
+            if not rows:
                 continue
 
-            # Check volatility: crypto held symbols
-            triggered: list[tuple[str, float]] = []
-            for sym, price in crypto_prices.items():
-                if sym.upper() not in held_symbols:
-                    continue
-                last = _apns_last_prices.get(sym)
-                if not last or last <= 0:
-                    continue
-                pct = ((price - last) / last) * 100
-                if abs(pct) >= 4 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
-                    triggered.append((sym, pct))
-                    _apns_cooldowns[sym] = now_ts
+            # ── Proactively fetch fresh stock/ETF prices ─────────────────────
+            stock_syms = list({
+                r.Asset.symbol.upper() for r in rows
+                if r.Asset.asset_class in ("stock", "etf")
+            })
+            fresh_stock_prices: dict = {}
+            if stock_syms:
+                try:
+                    fetched = _fetch_yahoo_quotes(stock_syms)
+                    for sym, data in fetched.items():
+                        price = float(data.get("last") or data.get("price") or 0)
+                        if price > 0:
+                            fresh_stock_prices[sym] = price
+                            # Populate the shared stock cache so other endpoints benefit too
+                            _stock_cache[sym] = {**data, "price": price, "ts": now_ts}
+                except Exception as e:
+                    logger.warning(f"APNs stock fetch error for user {user_id}: {e}")
 
-            # Check volatility: stock held symbols (from stock quote cache)
-            for sym in held_symbols:
-                if sym in crypto_prices:
-                    continue  # already handled
-                cached = _stock_cache.get(sym) or _stock_cache.get(sym.upper())
-                if not cached:
-                    continue
-                price = cached.get("price", 0)
-                last = _apns_last_prices.get(sym)
-                if not last or last <= 0 or price <= 0:
-                    continue
-                pct = ((price - last) / last) * 100
-                if abs(pct) >= 4 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
-                    triggered.append((sym, pct))
-                    _apns_cooldowns[sym] = now_ts
+            # ── Per-symbol volatility check ──────────────────────────────────
+            triggered: list = []
+            total_value_usd = 0.0
 
-            # Send at most 2 alerts per user per cycle (worst movers first)
+            for r in rows:
+                holding, asset, account = r
+                sym = asset.symbol.upper()
+                ac  = asset.asset_class
+
+                # Resolve current USD price
+                if ac in ("stock", "etf"):
+                    price_usd = fresh_stock_prices.get(sym, 0)
+                    # Convert non-USD quoted stocks (e.g. VUSA.AS quoted in EUR)
+                    ccy = (asset.quote_currency or "USD").upper()
+                    if ccy != "USD" and price_usd > 0:
+                        rate = fx_to_usd.get(ccy, 0)
+                        price_usd = price_usd / rate if rate > 0 else price_usd
+                elif ac == "crypto":
+                    price_usd = crypto_prices.get(sym, 0)
+                elif ac == "fiat":
+                    ccy = (asset.quote_currency or sym).upper()
+                    rate = fx_to_usd.get(ccy, 0)
+                    price_usd = 1.0 / rate if rate > 0 else 0
+                else:
+                    continue
+
+                if price_usd <= 0:
+                    continue
+
+                # Accumulate portfolio total
+                total_value_usd += holding.quantity * price_usd
+
+                # Per-symbol alert (skip fiat — FX noise isn't actionable)
+                if ac in ("stock", "etf", "crypto"):
+                    last = _apns_last_prices.get(sym)
+                    if last and last > 0:
+                        pct = ((price_usd - last) / last) * 100
+                        if abs(pct) >= 4 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                            triggered.append((sym, pct))
+                            _apns_cooldowns[sym] = now_ts
+                    _apns_last_prices[sym] = price_usd
+
+            # ── Portfolio-level alert (≥ 5 % total swing) ───────────────────
+            last_portfolio = _apns_portfolio_values.get(user_id, 0)
+            if last_portfolio > 0 and total_value_usd > 0:
+                port_pct = ((total_value_usd - last_portfolio) / last_portfolio) * 100
+                if abs(port_pct) >= 5 and now_ts - _apns_portfolio_cooldowns.get(user_id, 0) > 3600:
+                    _apns_portfolio_cooldowns[user_id] = now_ts
+                    icon  = "📈" if port_pct > 0 else "📉"
+                    direction = "up" if port_pct > 0 else "down"
+                    push_title = f"{icon} Portfolio {direction} {abs(port_pct):.1f}%"
+                    push_body  = (
+                        f"Your total portfolio is {direction} "
+                        f"{abs(port_pct):.1f}% — open LedgerVault to review."
+                    )
+                    for token, sandbox in user_tokens:
+                        _send_apns_sync(token, push_title, push_body, sandbox=sandbox)
+
+            if total_value_usd > 0:
+                _apns_portfolio_values[user_id] = total_value_usd
+
+            # ── Per-symbol pushes (worst 2 movers per cycle) ─────────────────
             for sym, pct in sorted(triggered, key=lambda x: abs(x[1]), reverse=True)[:2]:
                 direction = "▲" if pct > 0 else "▼"
                 push_title = f"{direction} {sym} moved {abs(pct):.1f}%"
@@ -508,13 +566,6 @@ def _apns_price_alert_job() -> None:
                 )
                 for token, sandbox in user_tokens:
                     _send_apns_sync(token, push_title, push_body, sandbox=sandbox)
-
-        # Update last-price snapshot for next cycle (only symbols we checked)
-        _apns_last_prices.update(crypto_prices)
-        for sym, data in _stock_cache.items():
-            p = data.get("price", 0)
-            if p > 0:
-                _apns_last_prices[sym] = p
 
     except Exception as e:
         logger.error(f"APNs price alert job error: {e}")
