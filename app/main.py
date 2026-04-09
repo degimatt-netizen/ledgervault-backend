@@ -3058,15 +3058,23 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
                     price_history[sym] = hist
 
     # -- Compute totals per slot (hourly for 1D, daily otherwise) --
-    def _get_price(sym: str, slot: str) -> float:
+    # avg_cost fallback: when no historical price exists for a slot (e.g. pre-market
+    # for intraday, or before a holding was added), use the holding's avg_cost instead
+    # of 0.  This means newly-imported holdings contribute their cost basis to all
+    # earlier slots, so an import mid-day never appears as a "profit spike".
+    def _get_price(sym: str, slot: str, cost_basis_fallback: float = 0.0) -> float:
         hist = price_history.get(sym)
         if not hist:
-            return 0.0
+            # No price history at all → treat as if held at cost basis
+            return cost_basis_fallback
         if slot in hist:
             return hist[slot]
         # Fall back to most-recent available price before this slot
         past = sorted(d for d in hist if d <= slot)
-        return hist[past[-1]] if past else 0.0
+        if past:
+            return hist[past[-1]]
+        # No data before this slot (e.g. pre-market hours) → use cost basis
+        return cost_basis_fallback
 
     points = []
     slot_list = slots if intraday else dates
@@ -3080,7 +3088,9 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
             if asset.asset_class == "fiat":
                 price_usd = fx.get(sym, 1.0)
             elif asset.asset_class in ("crypto", "stock", "etf"):
-                price_usd = _get_price(sym, slot)
+                # Pass avg_cost as fallback so slots with no market data show cost
+                # basis rather than zero — prevents import events appearing as gains
+                price_usd = _get_price(sym, slot, holding.avg_cost or 0.0)
             else:
                 price_usd = 0.0
             value_usd = holding.quantity * price_usd
