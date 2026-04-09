@@ -5798,8 +5798,20 @@ def market_forex(user_id: str = Depends(require_user_id)):
 
 @app.get("/market/news")
 def market_news(symbols: str = "", user_id: str = Depends(require_user_id)):
-    """Fetch latest news from Yahoo Finance for given symbols (comma-separated)."""
-    sym_list = [s.upper().strip() for s in symbols.split(",") if s.strip()][:10]
+    """Fetch latest news from Yahoo Finance for given symbols (comma-separated).
+    ^GSPC and ^DJI are always included so major macro/geopolitical events that
+    move the whole market (rate decisions, wars, trade policy) are never missed."""
+    user_syms = [s.upper().strip() for s in symbols.split(",") if s.strip()]
+    # Broad market symbols catch market-wide events even if not in user's portfolio
+    market_wide = ["^GSPC", "^DJI", "^VIX"]
+    # Combine, deduplicate, cap at 10 to avoid hammering Yahoo Finance
+    seen_syms: set[str] = set()
+    sym_list: list[str] = []
+    for s in user_syms + market_wide:
+        if s not in seen_syms:
+            seen_syms.add(s); sym_list.append(s)
+        if len(sym_list) >= 10:
+            break
     seen: set[str] = set()
     articles: list[dict] = []
     headers = {"User-Agent": "Mozilla/5.0"}
