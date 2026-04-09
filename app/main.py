@@ -532,7 +532,7 @@ def _apns_price_alert_job() -> None:
                     last = _apns_last_prices.get(sym)
                     if last and last > 0:
                         pct = ((price_usd - last) / last) * 100
-                        if abs(pct) >= 4 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                        if abs(pct) >= 3 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
                             triggered.append((sym, pct))
                             _apns_cooldowns[sym] = now_ts
                     _apns_last_prices[sym] = price_usd
@@ -541,7 +541,7 @@ def _apns_price_alert_job() -> None:
             last_portfolio = _apns_portfolio_values.get(user_id, 0)
             if last_portfolio > 0 and total_value_usd > 0:
                 port_pct = ((total_value_usd - last_portfolio) / last_portfolio) * 100
-                if abs(port_pct) >= 5 and now_ts - _apns_portfolio_cooldowns.get(user_id, 0) > 3600:
+                if abs(port_pct) >= 3 and now_ts - _apns_portfolio_cooldowns.get(user_id, 0) > 3600:
                     _apns_portfolio_cooldowns[user_id] = now_ts
                     icon  = "📈" if port_pct > 0 else "📉"
                     direction = "up" if port_pct > 0 else "down"
