@@ -2890,7 +2890,9 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
                       profile_id: Optional[str] = Query(None),
                       db: Session = Depends(get_db),
                       user_id: Optional[str] = Depends(get_user_id)):
-    cache_key = f"{days}:{base_currency.upper()}:{user_id or ''}:{profile_id or ''}"
+    # Include leg count in key so cache busts automatically when holdings change
+    leg_count = db.query(_sqlfunc.count(models.TransactionLeg.id)).scalar() or 0
+    cache_key = f"{days}:{base_currency.upper()}:{user_id or ''}:{profile_id or ''}:{leg_count}"
     # 1D cache is shorter (5 min) since intraday data changes frequently
     ttl = 300 if days == 1 else HIST_CACHE_TTL
     if _hist_cache["key"] == cache_key and (time.time() - _hist_cache["ts"]) < ttl:
