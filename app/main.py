@@ -205,9 +205,11 @@ for _stmt in [
         user_id VARCHAR NOT NULL,
         token VARCHAR NOT NULL UNIQUE,
         sandbox BOOLEAN NOT NULL DEFAULT FALSE,
+        threshold_pct FLOAT NOT NULL DEFAULT 3.0,
         updated_at VARCHAR
     )""",
     "CREATE INDEX IF NOT EXISTS ix_device_tokens_user_id ON device_tokens (user_id)",
+    "ALTER TABLE device_tokens ADD COLUMN IF NOT EXISTS threshold_pct FLOAT NOT NULL DEFAULT 3.0",
 ]:
     try:
         with engine.connect() as _conn:
@@ -446,10 +448,10 @@ def _apns_price_alert_job() -> None:
         if not tokens:
             return
 
-        # Group tokens by user_id
+        # Group tokens by user_id — store (token, sandbox, threshold_pct) per device
         token_map: dict = {}
         for t in tokens:
-            token_map.setdefault(t.user_id, []).append((t.token, bool(t.sandbox)))
+            token_map.setdefault(t.user_id, []).append((t.token, bool(t.sandbox), float(t.threshold_pct or 3.0)))
 
         # Crypto prices from cache (populated by the regular cache refresh)
         crypto_prices: dict = dict(_crypto_cache.get("prices", {}))
@@ -532,39 +534,43 @@ def _apns_price_alert_job() -> None:
                     last = _apns_last_prices.get(sym)
                     if last and last > 0:
                         pct = ((price_usd - last) / last) * 100
-                        if abs(pct) >= 3 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                        # Use the lowest threshold across this user's devices
+                        min_threshold = min((thr for _, _, thr in user_tokens), default=3.0)
+                        if abs(pct) >= min_threshold and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
                             triggered.append((sym, pct))
                             _apns_cooldowns[sym] = now_ts
                     _apns_last_prices[sym] = price_usd
 
-            # ── Portfolio-level alert (≥ 5 % total swing) ───────────────────
+            # ── Portfolio-level alert — per-device threshold ─────────────────
             last_portfolio = _apns_portfolio_values.get(user_id, 0)
             if last_portfolio > 0 and total_value_usd > 0:
                 port_pct = ((total_value_usd - last_portfolio) / last_portfolio) * 100
-                if abs(port_pct) >= 3 and now_ts - _apns_portfolio_cooldowns.get(user_id, 0) > 3600:
-                    _apns_portfolio_cooldowns[user_id] = now_ts
-                    icon  = "📈" if port_pct > 0 else "📉"
-                    direction = "up" if port_pct > 0 else "down"
-                    push_title = f"{icon} Portfolio {direction} {abs(port_pct):.1f}%"
-                    push_body  = (
-                        f"Your total portfolio is {direction} "
-                        f"{abs(port_pct):.1f}% — open LedgerVault to review."
-                    )
-                    for token, sandbox in user_tokens:
-                        _send_apns_sync(token, push_title, push_body, sandbox=sandbox)
+                port_cooldown = _apns_portfolio_cooldowns.get(user_id, 0)
+                if now_ts - port_cooldown > 3600:
+                    for token, sandbox, threshold in user_tokens:
+                        if abs(port_pct) >= threshold:
+                            _apns_portfolio_cooldowns[user_id] = now_ts
+                            icon      = "📈" if port_pct > 0 else "📉"
+                            direction = "up" if port_pct > 0 else "down"
+                            push_title = f"{icon} Portfolio {direction} {abs(port_pct):.1f}%"
+                            push_body  = (
+                                f"Your total portfolio is {direction} "
+                                f"{abs(port_pct):.1f}% — open LedgerVault to review."
+                            )
+                            _send_apns_sync(token, push_title, push_body, sandbox=sandbox)
 
             if total_value_usd > 0:
                 _apns_portfolio_values[user_id] = total_value_usd
 
             # ── Per-symbol pushes (worst 2 movers per cycle) ─────────────────
             for sym, pct in sorted(triggered, key=lambda x: abs(x[1]), reverse=True)[:2]:
-                direction = "▲" if pct > 0 else "▼"
+                direction  = "▲" if pct > 0 else "▼"
                 push_title = f"{direction} {sym} moved {abs(pct):.1f}%"
                 push_body  = (
                     f"{sym} is {'up' if pct > 0 else 'down'} "
                     f"{abs(pct):.1f}% in your portfolio."
                 )
-                for token, sandbox in user_tokens:
+                for token, sandbox, _ in user_tokens:
                     _send_apns_sync(token, push_title, push_body, sandbox=sandbox)
 
     except Exception as e:
@@ -2762,8 +2768,9 @@ def apns_register_device(
     user_id: str = Depends(require_user_id),
 ):
     """Store (or update) an APNs device token for the authenticated user."""
-    token   = (body.get("token") or "").strip()
-    sandbox = bool(body.get("sandbox", False))
+    token         = (body.get("token") or "").strip()
+    sandbox       = bool(body.get("sandbox", False))
+    threshold_pct = float(body.get("threshold_pct", 3.0) or 3.0)
     if not token:
         raise HTTPException(status_code=400, detail="token required")
     existing = db.query(models.DeviceToken).filter(
@@ -2771,13 +2778,15 @@ def apns_register_device(
     ).first()
     now_iso = datetime.now(timezone.utc).isoformat()
     if existing:
-        existing.user_id    = user_id
-        existing.sandbox    = sandbox
-        existing.updated_at = now_iso
+        existing.user_id       = user_id
+        existing.sandbox       = sandbox
+        existing.threshold_pct = threshold_pct
+        existing.updated_at    = now_iso
     else:
         db.add(models.DeviceToken(
             id=str(uuid4()), user_id=user_id,
-            token=token, sandbox=sandbox, updated_at=now_iso,
+            token=token, sandbox=sandbox,
+            threshold_pct=threshold_pct, updated_at=now_iso,
         ))
     db.commit()
 
