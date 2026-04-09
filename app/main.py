@@ -5548,19 +5548,30 @@ def market_data(profile_id: Optional[str] = Query(None),
         .all()
     )
     # map symbol → {qty, avg_cost, asset_class, quote_currency}
+    # When the same symbol is held across multiple brokers, combine with a
+    # weighted-average cost so that POSITION and AVG PRICE are both correct.
     position_map: dict[str, dict] = {}
     for h, asset in holdings:
         sym = asset.symbol.upper()
-        if h.quantity and abs(h.quantity) > 1e-8:
-            if sym in position_map:
-                position_map[sym]["quantity"] += h.quantity
-            else:
-                position_map[sym] = {
-                    "quantity": h.quantity,
-                    "avg_cost": h.avg_cost or 0.0,
-                    "asset_class": asset.asset_class,
-                    "quote_currency": asset.quote_currency,
-                }
+        qty = h.quantity or 0.0
+        if abs(qty) <= 1e-8:
+            continue
+        if sym in position_map:
+            old_qty = position_map[sym]["quantity"]
+            old_avg = position_map[sym]["avg_cost"]
+            new_avg = h.avg_cost or 0.0
+            combined_qty = old_qty + qty
+            # Weighted average: (old_shares * old_avg + new_shares * new_avg) / total
+            if combined_qty > 1e-8:
+                position_map[sym]["avg_cost"] = (old_qty * old_avg + qty * new_avg) / combined_qty
+            position_map[sym]["quantity"] = combined_qty
+        else:
+            position_map[sym] = {
+                "quantity": qty,
+                "avg_cost": h.avg_cost or 0.0,
+                "asset_class": asset.asset_class,
+                "quote_currency": asset.quote_currency,
+            }
 
     # 2. Watchlist
     wl_items = db.query(models.WatchlistItem).filter_by(user_id=user_id).all()
