@@ -3084,20 +3084,45 @@ def portfolio_history(days: int = 30, base_currency: str = "EUR",
             asset = assets.get(holding.asset_id)
             if not asset or abs(holding.quantity) <= 0.000001:
                 continue
-            sym = asset.symbol.upper()
+            sym       = asset.symbol.upper()
+            quote_ccy = (asset.quote_currency or "USD").upper()
             if asset.asset_class == "fiat":
                 price_usd = fx.get(sym, 1.0)
             elif asset.asset_class in ("crypto", "stock", "etf"):
-                # Pass avg_cost as fallback so slots with no market data show cost
-                # basis rather than zero — prevents import events appearing as gains
-                price_usd = _get_price(sym, slot, holding.avg_cost or 0.0)
+                # avg_cost is stored in quote_currency (USD for most crypto/stocks,
+                # EUR for VUSA.AS etc.) — convert to USD before using as fallback
+                # so pre-market / no-history slots show the true cost basis, not zero.
+                avg_cost_usd = (holding.avg_cost or 0.0) * fx.get(quote_ccy, 1.0)
+                price_usd = _get_price(sym, slot, avg_cost_usd)
             else:
                 price_usd = 0.0
             value_usd = holding.quantity * price_usd
             total += convert_usd_to_base(value_usd, base_currency, fx)
         points.append({"date": slot, "total": round(total, 2)})
 
-    result = {"base_currency": base_currency.upper(), "days": days, "points": points}
+    # Total cost basis in base currency — used by the app to show true P&L
+    # (current_value - cost_basis) so imports never register as profit/loss.
+    cost_basis = 0.0
+    for holding in holdings:
+        asset = assets.get(holding.asset_id)
+        if not asset or abs(holding.quantity) <= 0.000001:
+            continue
+        sym       = asset.symbol.upper()
+        quote_ccy = (asset.quote_currency or "USD").upper()
+        if asset.asset_class == "fiat":
+            cost_usd = holding.quantity * fx.get(sym, 1.0)
+        elif quote_ccy == "USD":
+            cost_usd = holding.quantity * (holding.avg_cost or 0.0)
+        else:
+            cost_usd = holding.quantity * (holding.avg_cost or 0.0) * fx.get(quote_ccy, 1.0)
+        cost_basis += convert_usd_to_base(cost_usd, base_currency, fx)
+
+    result = {
+        "base_currency": base_currency.upper(),
+        "days":          days,
+        "points":        points,
+        "cost_basis":    round(cost_basis, 2),
+    }
     _hist_cache.update({"ts": time.time(), "key": cache_key, "data": result})
     return result
 
