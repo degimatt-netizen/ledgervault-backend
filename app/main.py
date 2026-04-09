@@ -98,7 +98,6 @@ def _auto_execute_recurring():
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(_auto_execute_recurring, "interval", hours=1, id="recurring_executor",
                    next_run_time=datetime.now())  # run immediately on startup too
-_scheduler.add_job(_apns_price_alert_job, "interval", minutes=5, id="apns_price_alerts")
 _scheduler.start()
 
 logger = logging.getLogger("ledgervault")
@@ -521,6 +520,10 @@ def _apns_price_alert_job() -> None:
         logger.error(f"APNs price alert job error: {e}")
     finally:
         db.close()
+
+
+# Register the APNs job NOW — after the function is defined, but scheduler is already running
+_scheduler.add_job(_apns_price_alert_job, "interval", minutes=5, id="apns_price_alerts")
 
 
 # ─────────────────────────────────────────────
