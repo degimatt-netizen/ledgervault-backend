@@ -203,13 +203,17 @@ for _stmt in [
     """CREATE TABLE IF NOT EXISTS device_tokens (
         id VARCHAR PRIMARY KEY,
         user_id VARCHAR NOT NULL,
-        token VARCHAR NOT NULL UNIQUE,
+        token VARCHAR NOT NULL,
+        token_hash VARCHAR UNIQUE,
         sandbox BOOLEAN NOT NULL DEFAULT FALSE,
         threshold_pct FLOAT NOT NULL DEFAULT 3.0,
         updated_at VARCHAR
     )""",
     "CREATE INDEX IF NOT EXISTS ix_device_tokens_user_id ON device_tokens (user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_device_tokens_token_hash ON device_tokens (token_hash)",
     "ALTER TABLE device_tokens ADD COLUMN IF NOT EXISTS threshold_pct FLOAT NOT NULL DEFAULT 3.0",
+    "ALTER TABLE device_tokens ADD COLUMN IF NOT EXISTS token_hash VARCHAR",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_device_tokens_token_hash ON device_tokens (token_hash)",
 ]:
     try:
         with engine.connect() as _conn:
@@ -384,6 +388,11 @@ def _get_apns_jwt() -> Optional[str]:
         return None
 
 
+def _hash_device_token(token: str) -> str:
+    """SHA-256 hex digest of an APNs device token — used for dedup lookup."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def _send_apns_sync(
     device_token: str,
     title: str,
@@ -448,10 +457,11 @@ def _apns_price_alert_job() -> None:
         if not tokens:
             return
 
-        # Group tokens by user_id — store (token, sandbox, threshold_pct) per device
+        # Group tokens by user_id — decrypt token before use, store (plaintext_token, sandbox, threshold)
         token_map: dict = {}
         for t in tokens:
-            token_map.setdefault(t.user_id, []).append((t.token, bool(t.sandbox), float(t.threshold_pct or 3.0)))
+            plain = _decrypt(t.token)   # Fernet decrypt; falls back to plaintext for legacy rows
+            token_map.setdefault(t.user_id, []).append((plain, bool(t.sandbox), float(t.threshold_pct or 3.0)))
 
         # Crypto prices from cache (populated by the regular cache refresh)
         crypto_prices: dict = dict(_crypto_cache.get("prices", {}))
@@ -2475,7 +2485,7 @@ def auth_login(request: Request, payload: LoginRequest, db: Session = Depends(ge
             return AuthResponse(status="totp_required", email=email,
                                 totp_required=True,
                                 message="Two-factor authentication code required.")
-        totp = pyotp.TOTP(user.totp_secret)
+        totp = pyotp.TOTP(_decrypt(user.totp_secret))
         if not totp.verify(payload.totp_code, valid_window=1):
             raise HTTPException(status_code=401, detail="Invalid two-factor authentication code")
     token = _create_token(user.id)
@@ -2611,9 +2621,9 @@ def totp_setup(request: Request, user_id: str = Depends(require_user_id), db: Se
     secret = pyotp.random_base32()
     label  = urllib.parse.quote(user.email or user_id)
     uri    = f"otpauth://totp/LedgerVault:{label}?secret={secret}&issuer=LedgerVault"
-    # Temporarily store the pending secret (not yet confirmed) in totp_secret.
+    # Temporarily store the pending secret (encrypted) in totp_secret.
     # totp_enabled stays False until confirmed.
-    user.totp_secret  = secret
+    user.totp_secret  = _encrypt(secret)
     user.totp_enabled = False
     db.commit()
     return TotpSetupResponse(secret=secret, uri=uri)
@@ -2629,7 +2639,7 @@ def totp_enable(request: Request, payload: TotpVerifyRequest,
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user or not user.totp_secret:
         raise HTTPException(status_code=400, detail="No pending TOTP setup. Call /auth/totp/setup first.")
-    totp = pyotp.TOTP(user.totp_secret)
+    totp = pyotp.TOTP(_decrypt(user.totp_secret))
     if not totp.verify(payload.code, valid_window=1):
         raise HTTPException(status_code=400, detail="Invalid TOTP code. Check your authenticator app and try again.")
     user.totp_enabled = True
@@ -2648,7 +2658,7 @@ def totp_disable(request: Request, payload: TotpVerifyRequest,
         raise HTTPException(status_code=404, detail="User not found")
     if not user.totp_enabled or not user.totp_secret:
         raise HTTPException(status_code=400, detail="TOTP is not currently enabled.")
-    totp = pyotp.TOTP(user.totp_secret)
+    totp = pyotp.TOTP(_decrypt(user.totp_secret))
     if not totp.verify(payload.code, valid_window=1):
         raise HTTPException(status_code=400, detail="Invalid TOTP code.")
     user.totp_enabled = False
@@ -2766,25 +2776,28 @@ def apns_register_device(
     user_id: str = Depends(require_user_id),
 ):
     """Store (or update) an APNs device token for the authenticated user."""
-    token         = (body.get("token") or "").strip()
+    raw_token     = (body.get("token") or "").strip()
     sandbox       = bool(body.get("sandbox", False))
     threshold_pct = float(body.get("threshold_pct", 3.0) or 3.0)
-    if not token:
+    if not raw_token:
         raise HTTPException(status_code=400, detail="token required")
-    existing = db.query(models.DeviceToken).filter(
-        models.DeviceToken.token == token
-    ).first()
+    token_hash      = _hash_device_token(raw_token)
+    encrypted_token = _encrypt(raw_token)   # Fernet — encrypted at rest
     now_iso = datetime.now(timezone.utc).isoformat()
+    existing = db.query(models.DeviceToken).filter(
+        models.DeviceToken.token_hash == token_hash
+    ).first()
     if existing:
         existing.user_id       = user_id
+        existing.token         = encrypted_token
         existing.sandbox       = sandbox
         existing.threshold_pct = threshold_pct
         existing.updated_at    = now_iso
     else:
         db.add(models.DeviceToken(
             id=str(uuid4()), user_id=user_id,
-            token=token, sandbox=sandbox,
-            threshold_pct=threshold_pct, updated_at=now_iso,
+            token=encrypted_token, token_hash=token_hash,
+            sandbox=sandbox, threshold_pct=threshold_pct, updated_at=now_iso,
         ))
     db.commit()
 
@@ -2796,10 +2809,10 @@ def apns_unregister_device(
     user_id: str = Depends(require_user_id),
 ):
     """Remove an APNs device token (called on sign-out or when permissions revoked)."""
-    token = (body.get("token") or "").strip()
+    raw_token = (body.get("token") or "").strip()
     q = db.query(models.DeviceToken).filter(models.DeviceToken.user_id == user_id)
-    if token:
-        q = q.filter(models.DeviceToken.token == token)
+    if raw_token:
+        q = q.filter(models.DeviceToken.token_hash == _hash_device_token(raw_token))
     q.delete(synchronize_session=False)
     db.commit()
 

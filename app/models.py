@@ -223,7 +223,8 @@ class DeviceToken(Base):
 
     id            = Column(String, primary_key=True, index=True)
     user_id       = Column(String, nullable=False, index=True)
-    token         = Column(String, nullable=False, unique=True)
-    sandbox       = Column(Boolean, nullable=False, default=False)   # True = dev/TestFlight sandbox
-    threshold_pct = Column(Float, nullable=False, default=3.0)       # alert threshold set by user
+    token         = Column(String, nullable=False)           # Fernet-encrypted APNs token
+    token_hash    = Column(String, nullable=True, unique=True, index=True)  # SHA-256 for dedup lookup
+    sandbox       = Column(Boolean, nullable=False, default=False)
+    threshold_pct = Column(Float, nullable=False, default=3.0)
     updated_at    = Column(String, nullable=True)
