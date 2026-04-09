@@ -98,6 +98,7 @@ def _auto_execute_recurring():
 _scheduler = BackgroundScheduler()
 _scheduler.add_job(_auto_execute_recurring, "interval", hours=1, id="recurring_executor",
                    next_run_time=datetime.now())  # run immediately on startup too
+_scheduler.add_job(_apns_price_alert_job, "interval", minutes=5, id="apns_price_alerts")
 _scheduler.start()
 
 logger = logging.getLogger("ledgervault")
@@ -199,6 +200,15 @@ for _stmt in [
         created_at VARCHAR
     )""",
     "CREATE INDEX IF NOT EXISTS ix_account_profiles_user_id ON account_profiles (user_id)",
+    # APNs device tokens — server-side push notifications
+    """CREATE TABLE IF NOT EXISTS device_tokens (
+        id VARCHAR PRIMARY KEY,
+        user_id VARCHAR NOT NULL,
+        token VARCHAR NOT NULL UNIQUE,
+        sandbox BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at VARCHAR
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_device_tokens_user_id ON device_tokens (user_id)",
 ]:
     try:
         with engine.connect() as _conn:
@@ -339,6 +349,179 @@ def _send_email(to: str, subject: str, html: str) -> bool:
     except Exception as e:
         logger.warning(f"Email send failed: {e}")
         return False
+
+# ─────────────────────────────────────────────
+# APNs  (Apple Push Notification Service)
+# ─────────────────────────────────────────────
+APNS_KEY_ID      = os.getenv("APNS_KEY_ID", "")       # 10-char key ID from Apple Developer
+APNS_TEAM_ID     = os.getenv("APNS_TEAM_ID", "")      # 10-char team ID
+APNS_BUNDLE_ID   = os.getenv("APNS_BUNDLE_ID", "")    # e.g. com.myledgervault.LedgerVault
+APNS_KEY_CONTENT = os.getenv("APNS_KEY_CONTENT", "")  # Full PEM; Railway stores \n as literal \n
+
+_apns_jwt_cache: dict = {"token": None, "expires": 0}
+
+def _get_apns_jwt() -> Optional[str]:
+    """Return a cached APNs auth JWT (valid 55 min, refreshed automatically)."""
+    if not all([APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_CONTENT]):
+        return None
+    now = int(time.time())
+    if _apns_jwt_cache["token"] and _apns_jwt_cache["expires"] > now + 60:
+        return _apns_jwt_cache["token"]
+    key_pem = APNS_KEY_CONTENT.replace("\\n", "\n")
+    try:
+        token = pyjwt.encode(
+            {"iss": APNS_TEAM_ID, "iat": now},
+            key_pem,
+            algorithm="ES256",
+            headers={"kid": APNS_KEY_ID},
+        )
+        _apns_jwt_cache["token"] = token
+        _apns_jwt_cache["expires"] = now + 3300   # refresh 5 min before 1-hr expiry
+        return token
+    except Exception as e:
+        logger.error(f"APNs JWT generation failed: {e}")
+        return None
+
+
+def _send_apns_sync(
+    device_token: str,
+    title: str,
+    body: str,
+    subtitle: str = "",
+    user_info: Optional[dict] = None,
+    sandbox: bool = False,
+) -> bool:
+    """Send a single APNs push notification (synchronous, HTTP/2). Returns True on success."""
+    jwt_token = _get_apns_jwt()
+    if not jwt_token or not APNS_BUNDLE_ID:
+        return False
+    host = "api.sandbox.push.apple.com" if sandbox else "api.push.apple.com"
+    url  = f"https://{host}/3/device/{device_token}"
+    payload: dict = {
+        "aps": {
+            "alert": {"title": title, "body": body},
+            "sound": "default",
+        }
+    }
+    if subtitle:
+        payload["aps"]["alert"]["subtitle"] = subtitle
+    if user_info:
+        payload.update(user_info)
+    headers = {
+        "authorization": f"bearer {jwt_token}",
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "apns-topic": APNS_BUNDLE_ID,
+    }
+    try:
+        with httpx.Client(http2=True, timeout=10) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                logger.warning(f"APNs {resp.status_code} for token …{device_token[-8:]}: {resp.text[:200]}")
+                return False
+            return True
+    except Exception as e:
+        logger.error(f"APNs send error: {e}")
+        return False
+
+
+# Server-side state for APNs price alerts (in-memory; resets on restart — fine for this use)
+_apns_last_prices: dict[str, float] = {}   # symbol → last price snapshot
+_apns_cooldowns:   dict[str, float] = {}   # symbol → timestamp of last alert push
+
+
+def _apns_price_alert_job() -> None:
+    """APScheduler job — runs every 5 min. Sends price-volatility APNs pushes."""
+    if not _get_apns_jwt():
+        return  # APNs not configured — skip silently
+    db = SessionLocal()
+    try:
+        tokens: list[models.DeviceToken] = db.query(models.DeviceToken).all()
+        if not tokens:
+            return
+
+        # Group tokens by user_id so we can do per-user symbol lookups
+        token_map: dict[str, list[tuple[str, bool]]] = {}
+        for t in tokens:
+            token_map.setdefault(t.user_id, []).append((t.token, bool(t.sandbox)))
+
+        # Grab current prices from the in-memory caches (no extra API calls)
+        crypto_prices: dict[str, float] = dict(_crypto_cache.get("prices", {}))
+        now_ts = time.time()
+
+        for user_id, user_tokens in token_map.items():
+            # Build the set of symbols this user actually holds
+            acct_ids = [
+                a.id for a in db.query(models.Account)
+                .filter(models.Account.user_id == user_id).all()
+            ]
+            if not acct_ids:
+                continue
+            rows = (
+                db.query(models.Holding, models.Asset)
+                .join(models.Asset, models.Holding.asset_id == models.Asset.id)
+                .filter(
+                    models.Holding.account_id.in_(acct_ids),
+                    models.Holding.quantity > 1e-8,
+                )
+                .all()
+            )
+            held_symbols: set[str] = {r.Asset.symbol.upper() for r in rows}
+            if not held_symbols:
+                continue
+
+            # Check volatility: crypto held symbols
+            triggered: list[tuple[str, float]] = []
+            for sym, price in crypto_prices.items():
+                if sym.upper() not in held_symbols:
+                    continue
+                last = _apns_last_prices.get(sym)
+                if not last or last <= 0:
+                    continue
+                pct = ((price - last) / last) * 100
+                if abs(pct) >= 4 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                    triggered.append((sym, pct))
+                    _apns_cooldowns[sym] = now_ts
+
+            # Check volatility: stock held symbols (from stock quote cache)
+            for sym in held_symbols:
+                if sym in crypto_prices:
+                    continue  # already handled
+                cached = _stock_cache.get(sym) or _stock_cache.get(sym.upper())
+                if not cached:
+                    continue
+                price = cached.get("price", 0)
+                last = _apns_last_prices.get(sym)
+                if not last or last <= 0 or price <= 0:
+                    continue
+                pct = ((price - last) / last) * 100
+                if abs(pct) >= 4 and now_ts - _apns_cooldowns.get(sym, 0) > 3600:
+                    triggered.append((sym, pct))
+                    _apns_cooldowns[sym] = now_ts
+
+            # Send at most 2 alerts per user per cycle (worst movers first)
+            for sym, pct in sorted(triggered, key=lambda x: abs(x[1]), reverse=True)[:2]:
+                direction = "▲" if pct > 0 else "▼"
+                push_title = f"{direction} {sym} moved {abs(pct):.1f}%"
+                push_body  = (
+                    f"{sym} is {'up' if pct > 0 else 'down'} "
+                    f"{abs(pct):.1f}% in your portfolio."
+                )
+                for token, sandbox in user_tokens:
+                    _send_apns_sync(token, push_title, push_body, sandbox=sandbox)
+
+        # Update last-price snapshot for next cycle (only symbols we checked)
+        _apns_last_prices.update(crypto_prices)
+        for sym, data in _stock_cache.items():
+            p = data.get("price", 0)
+            if p > 0:
+                _apns_last_prices[sym] = p
+
+    except Exception as e:
+        logger.error(f"APNs price alert job error: {e}")
+    finally:
+        db.close()
+
 
 # ─────────────────────────────────────────────
 # FX  (open.er-api.com — free, no key)
@@ -2500,6 +2683,11 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
         models.WatchlistItem.user_id == user_id
     ).delete(synchronize_session=False)
 
+    # Remove APNs device tokens so this user no longer receives pushes
+    db.query(models.DeviceToken).filter(
+        models.DeviceToken.user_id == user_id
+    ).delete(synchronize_session=False)
+
     # Delete any remaining recurring transactions directly tied to user_id
     db.query(models.RecurringTransaction).filter(
         models.RecurringTransaction.user_id == user_id
@@ -2509,6 +2697,51 @@ def auth_delete_account(user_id: str = Depends(require_user_id), db: Session = D
     db.delete(user)
     db.commit()
     return {"status": "deleted"}
+
+
+# ── APNs Device Token Registration ───────────────────────────────────────────
+
+@app.post("/apns/register-device", status_code=204)
+def apns_register_device(
+    body: dict,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(require_user_id),
+):
+    """Store (or update) an APNs device token for the authenticated user."""
+    token   = (body.get("token") or "").strip()
+    sandbox = bool(body.get("sandbox", False))
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+    existing = db.query(models.DeviceToken).filter(
+        models.DeviceToken.token == token
+    ).first()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if existing:
+        existing.user_id    = user_id
+        existing.sandbox    = sandbox
+        existing.updated_at = now_iso
+    else:
+        db.add(models.DeviceToken(
+            id=str(uuid4()), user_id=user_id,
+            token=token, sandbox=sandbox, updated_at=now_iso,
+        ))
+    db.commit()
+
+
+@app.delete("/apns/unregister-device", status_code=204)
+def apns_unregister_device(
+    body: dict,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(require_user_id),
+):
+    """Remove an APNs device token (called on sign-out or when permissions revoked)."""
+    token = (body.get("token") or "").strip()
+    q = db.query(models.DeviceToken).filter(models.DeviceToken.user_id == user_id)
+    if token:
+        q = q.filter(models.DeviceToken.token == token)
+    q.delete(synchronize_session=False)
+    db.commit()
+
 
 @app.delete("/user/transactions")
 def user_clear_transactions(user_id: str = Depends(require_user_id), db: Session = Depends(get_db)):

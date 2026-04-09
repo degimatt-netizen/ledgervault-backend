@@ -215,3 +215,14 @@ class WatchlistItem(Base):
     user_id   = Column(String, nullable=False, index=True)
     symbol    = Column(String, nullable=False)
     added_at  = Column(String, nullable=True)
+
+
+class DeviceToken(Base):
+    """APNs device tokens — one row per device per user."""
+    __tablename__ = "device_tokens"
+
+    id         = Column(String, primary_key=True, index=True)
+    user_id    = Column(String, nullable=False, index=True)
+    token      = Column(String, nullable=False, unique=True)
+    sandbox    = Column(Boolean, nullable=False, default=False)   # True = dev/TestFlight sandbox
+    updated_at = Column(String, nullable=True)
